@@ -48,8 +48,8 @@
         "DEPLOYMENT_NAME"
       ],
       "env-overrides": {
-        "N8N_RUNNERS_STDLIB_ALLOW": "json,re,datetime,math,statistics,urllib",
-        "N8N_RUNNERS_EXTERNAL_ALLOW": "youtube_transcript_api"
+        "N8N_RUNNERS_STDLIB_ALLOW": "*",
+        "N8N_RUNNERS_EXTERNAL_ALLOW": "youtube_transcript_api,requests,defusedxml,charset_normalizer,chardet,idna,urllib3,certifi"
       }
     }
   ]
