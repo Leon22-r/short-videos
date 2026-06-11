@@ -1,0 +1,52 @@
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-2.25.7}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_RUNNERS_MODE=external
+      - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
+      - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN:-local-dev-task-runner-token-change-me}
+      - N8N_NATIVE_PYTHON_RUNNER=true
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_SECURE_COOKIE=false
+      - N8N_METRICS=true
+      - N8N_OTEL_ENABLED=true
+      - N8N_OTEL_TRACES_PRODUCTION_ONLY=false
+      - N8N_OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318/
+      - WEBHOOK_URL=http://localhost:5678/
+      - N8N_LOGGING_LEVEL=debug
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-Africa/Nairobi}
+      - TZ=${GENERIC_TIMEZONE:-Africa/Nairobi}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./local-files:/files
+
+  task-runners:
+    build:
+      context: ./runners
+      args:
+        N8N_VERSION: ${N8N_VERSION:-2.25.7}
+    image: short-videos/n8n-runners:${N8N_VERSION:-2.25.7}
+    restart: unless-stopped
+    environment:
+      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n:5679
+      - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN:-local-dev-task-runner-token-change-me}
+      - N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT=0
+    depends_on:
+      - n8n
+
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    ports:
+      - "16686:16686" # UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+
+volumes:
+  n8n_data:
+  jaeger_data:
