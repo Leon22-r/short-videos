@@ -63,8 +63,8 @@ Notes:
 ssemble_job_id	video_id	clip_moment_id	niche	source_video_url	start_sec	end_sec	request_payload	response_payload	job_status	webhook_received	error_message	created_at	completed_at
 ```
 
-- `job_status`: `SUBMITTED` → `COMPLETED` | `FAILED`
-- One row per Ssemble API call = one credit. Counting today's rows = today's credit spend.
+- `job_status`: `SUBMITTED` → `COMPLETED` | `FAILED` (processing failure reported by webhook); `SUBMIT_FAILED` = API call rejected, NO credit consumed
+- One row per accepted Ssemble API call = one credit. Today's credit spend = today's rows excluding `SUBMIT_FAILED` (counted in Nairobi calendar days).
 
 ## Tab 6: `Created_Clips`
 
@@ -100,14 +100,18 @@ Candidate_Videos.processing_status:
       ──(WF4 transcript ok)──> transcript_available=TRUE
       ──(WF5)──> ANALYZED or SKIPPED
 Clip_Moments.ssemble_status:
-  PENDING ──(WF6)──> SUBMITTED ──(WF7 webhook)──> COMPLETED
+  PENDING ──(WF6)──> SUBMITTED ──(WF7 webhook)──> COMPLETED or ERROR
+  PENDING ──(WF6 submit failure)──> ERROR (Ssemble_Jobs gets SUBMIT_FAILED row; reset to PENDING to retry)
   AWAITING_MANUAL_APPROVAL ──(you set PENDING)──> picked up by WF6
 Created_Clips.review_status:
   AWAITING_DOWNLOAD ──(WF8)──> NEEDS_REVIEW ──(you)──> APPROVED/REJECTED
 ```
 
-Each workflow only reads rows in its input state and writes the next state — re-running any
-workflow is safe (no double processing).
+Each workflow only reads rows in its input state and writes the next state. Re-runs are safe:
+WF2 dedups on `youtube_video_id`; WF4/WF5/WF7 write via appendOrUpdate on deterministic keys
+(`analysis_id`, `clip_moment_id`, `created_clip_id`); WF6 refuses to re-dispatch any
+`clip_moment_id` that already has a non-`SUBMIT_FAILED` row in `Ssemble_Jobs`; WF8 reuses
+already-uploaded Drive files instead of re-uploading.
 
 ## Seeding tips
 
