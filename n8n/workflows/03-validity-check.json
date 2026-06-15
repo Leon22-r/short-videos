@@ -1,0 +1,171 @@
+{
+  "name": "WF3 Validity Check",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000001",
+      "name": "Schedule Hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Source_Channels"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000002",
+      "name": "Read Source_Channels",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidate_Videos"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000003",
+      "name": "Read Candidate_Videos",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const riskBySource = {};\nfor (const s of $('Read Source_Channels').all()) {\n  riskBySource[s.json.source_id] = String(s.json.risk_level || 'low').toLowerCase();\n}\n\nconst REJECT_PATTERNS = [\n  [/(official\\s+)?(trailer|teaser)\\b/i, 'TRAILER_OR_PROMO'],\n  [/\\bpromo(tion)?\\b/i, 'TRAILER_OR_PROMO'],\n  [/\\b(official (music )?video|lyric video|audio)\\b/i, 'MUSIC_VIDEO'],\n  [/\\b(compilation|best of|top \\d+ moments|highlights)\\b/i, 'COMPILATION'],\n  [/\\b(news bulletin|breaking news|live news)\\b/i, 'NEWS_CLIP'],\n  [/#shorts/i, 'SHORTS_UPLOAD'],\n];\nconst PREFER_PATTERNS = [\n  /podcast/i, /interview/i, /sermon/i, /teaching/i, /lesson/i, /masterclass/i,\n  /conversation/i, /keynote/i, /q\\s*&\\s*a/i, /panel/i, /testimony/i,\n];\n\nconst out = [];\nfor (const item of $input.all()) {\n  const v = item.json;\n  if (String(v.processing_status) !== 'NEW' || String(v.validity_status || '') !== '') continue;\n\n  const title = String(v.video_title || '');\n  const dur = Number(v.duration_seconds || 0);\n  let status = 'VALID';\n  let reason = '';\n\n  if (dur > 0 && dur <= 60) { status = 'REJECTED'; reason = 'SHORTS_UPLOAD'; }\n  else if (dur > 0 && dur < 180) { status = 'REJECTED'; reason = 'TOO_SHORT'; }\n  else {\n    for (const [re, code] of REJECT_PATTERNS) {\n      if (re.test(title)) { status = 'REJECTED'; reason = code; break; }\n    }\n  }\n\n  const lang = String(v.language || '').toLowerCase();\n  if (status === 'VALID' && lang && !lang.startsWith('en') && !lang.startsWith('sw')) {\n    status = 'FLAGGED'; reason = 'LANGUAGE_CHECK';\n  }\n\n  let score = 5;\n  if (dur >= 900 && dur <= 7200) score += 2;\n  else if (dur >= 300) score += 1;\n  if (PREFER_PATTERNS.some(re => re.test(title))) score += 2;\n  const views = Number(v.view_count || 0);\n  if (views >= 10000) score += 1;\n  score = Math.min(10, score);\n\n  if (status === 'VALID' && riskBySource[v.source_id] === 'high') {\n    status = 'FLAGGED'; reason = 'MANUAL_APPROVAL_REQUIRED';\n  }\n\n  out.push({\n    json: {\n      video_id: v.video_id,\n      validity_status: status,\n      validity_score: score,\n      rejection_reason: reason,\n      processing_status: status === 'REJECTED' ? 'SKIPPED' : v.processing_status,\n    },\n    pairedItem: { item: 0 },\n  });\n}\nreturn out;"
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000004",
+      "name": "Apply Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidate_Videos"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "video_id"
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000005",
+      "name": "Update Candidate Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        880,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Hourly": {
+      "main": [
+        [
+          {
+            "node": "Read Source_Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Source_Channels": {
+      "main": [
+        [
+          {
+            "node": "Read Candidate_Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Candidate_Videos": {
+      "main": [
+        [
+          {
+            "node": "Apply Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Rules": {
+      "main": [
+        [
+          {
+            "node": "Update Candidate Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}
