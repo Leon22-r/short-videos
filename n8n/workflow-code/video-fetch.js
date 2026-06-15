@@ -10,6 +10,14 @@ function pickActiveChannels(sourceRows) {
   );
 }
 
+function countFetchedVideosBySource(candidateRows) {
+  return candidateRows.reduce((counts, row) => {
+    if (!row.source_id || !row.youtube_video_id) return counts;
+    counts[row.source_id] = (counts[row.source_id] || 0) + 1;
+    return counts;
+  }, {});
+}
+
 function channelMeta(channel) {
   return {
     source_id: channel.source_id,
@@ -27,6 +35,24 @@ function buildUploadsLookup(channel, playlistApi) {
 
   if (ids.length === 0) return { __empty: true, ...meta };
   return { video_ids: ids.join(','), ...meta };
+}
+
+function buildFetchPlan(channel) {
+  const base = {
+    uploads_playlist_id: channel.uploads_playlist_id,
+    source_id: channel.source_id,
+  };
+  const plan = [{ ...base, fetch_kind: 'latest', page_token: '' }];
+
+  if (String(channel.backfill_status || '').toUpperCase() !== 'COMPLETE') {
+    plan.push({
+      ...base,
+      fetch_kind: 'backfill',
+      page_token: channel.backfill_next_page_token || '',
+    });
+  }
+
+  return plan;
 }
 
 function buildCandidateRows(meta, videoApi, existingIds, now = new Date().toISOString()) {
@@ -96,9 +122,25 @@ function touchedChannelUpdates(sourceIds, now = new Date().toISOString()) {
   }));
 }
 
+function buildSourceUpdate(channel, backfillApi, fetchedCounts, now = new Date().toISOString()) {
+  const nextToken = backfillApi.nextPageToken || '';
+  return {
+    source_id: channel.source_id,
+    backfill_next_page_token: nextToken,
+    backfill_status: nextToken ? 'IN_PROGRESS' : 'COMPLETE',
+    videos_known_count: Number((backfillApi.pageInfo || {}).totalResults || 0),
+    videos_fetched_count: Number(fetchedCounts[channel.source_id] || 0),
+    backfill_last_run_at: now,
+    last_checked_at: now,
+  };
+}
+
 module.exports = {
   buildCandidateRows,
+  buildFetchPlan,
+  buildSourceUpdate,
   buildUploadsLookup,
+  countFetchedVideosBySource,
   isoDurationToSeconds,
   pickActiveChannels,
   stripInternalFields,

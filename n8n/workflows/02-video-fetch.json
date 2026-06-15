@@ -73,7 +73,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Build dedup set + select active channels. staticData survives across loop iterations.\nconst sd = $getWorkflowStaticData('global');\nsd.existingIds = {};\nfor (const item of $('Read Candidate_Videos').all()) {\n  const id = item.json.youtube_video_id;\n  if (id) sd.existingIds[id] = true;\n}\nsd.touchedSources = [];\nconst channels = $('Read Source_Channels').all()\n  .filter(i => String(i.json.active_status).toUpperCase() === 'TRUE' && i.json.uploads_playlist_id)\n  .map((i, idx) => ({ json: i.json, pairedItem: { item: idx } }));\nreturn channels;"
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nsd.existingIds = {};\nsd.fetchedCounts = {};\nfor (const item of $('Read Candidate_Videos').all()) {\n  const row = item.json;\n  if (row.youtube_video_id) sd.existingIds[row.youtube_video_id] = true;\n  if (row.source_id && row.youtube_video_id) sd.fetchedCounts[row.source_id] = (sd.fetchedCounts[row.source_id] || 0) + 1;\n}\nsd.sourceUpdates = {};\nconst channels = $('Read Source_Channels').all()\n  .filter(i => String(i.json.active_status).toUpperCase() === 'TRUE' && i.json.uploads_playlist_id)\n  .map((i, idx) => ({ json: i.json, pairedItem: { item: idx } }));\nreturn channels;"
       },
       "id": "a1b2c3d4-0002-4000-8000-000000000004",
       "name": "Init Run",
@@ -100,14 +100,13 @@
     },
     {
       "parameters": {
-        "method": "GET",
-        "url": "=https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=10&playlistId={{ $json.uploads_playlist_id }}&key=YOUTUBE_API_KEY",
-        "options": {}
+        "mode": "runOnceForAllItems",
+        "jsCode": "const channel = $('Channel Loop').first().json;\nconst base = { ...channel, page_token: '', fetch_kind: 'latest' };\nconst out = [{ json: base, pairedItem: { item: 0 } }];\nif (String(channel.backfill_status || '').toUpperCase() !== 'COMPLETE') {\n  out.push({\n    json: { ...channel, page_token: channel.backfill_next_page_token || '', fetch_kind: 'backfill' },\n    pairedItem: { item: 0 },\n  });\n}\nreturn out;"
       },
       "id": "a1b2c3d4-0002-4000-8000-000000000006",
-      "name": "Fetch Uploads",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "name": "Build Fetch Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         1100,
         120
@@ -115,15 +114,30 @@
     },
     {
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "const channel = $('Channel Loop').first().json;\nconst api = $input.first().json;\nconst ids = (api.items || []).map(i => i.contentDetails && i.contentDetails.videoId).filter(Boolean);\nif (ids.length === 0) {\n  return [{ json: { __empty: true, ...channelMeta(channel) }, pairedItem: { item: 0 } }];\n}\nreturn [{ json: { video_ids: ids.join(','), ...channelMeta(channel) }, pairedItem: { item: 0 } }];\n\nfunction channelMeta(c) {\n  return { source_id: c.source_id, source_name: c.source_name, niche: c.niche, risk_level: c.risk_level };\n}"
+        "method": "GET",
+        "url": "={{ 'https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=50&playlistId=' + $json.uploads_playlist_id + ($json.page_token ? '&pageToken=' + $json.page_token : '') + '&key=YOUTUBE_API_KEY' }}",
+        "options": {}
       },
       "id": "a1b2c3d4-0002-4000-8000-000000000007",
+      "name": "Fetch Uploads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const requests = $('Build Fetch Requests').all();\nconst out = [];\nfor (const [i, item] of $input.all().entries()) {\n  const request = requests[i].json;\n  const api = item.json;\n  const ids = (api.items || []).map(v => v.contentDetails && v.contentDetails.videoId).filter(Boolean);\n  if (request.fetch_kind === 'backfill') {\n    const sd = $getWorkflowStaticData('global');\n    sd.sourceUpdates[request.source_id] = {\n      source_id: request.source_id,\n      backfill_next_page_token: api.nextPageToken || '',\n      backfill_status: api.nextPageToken ? 'IN_PROGRESS' : 'COMPLETE',\n      videos_known_count: Number((api.pageInfo || {}).totalResults || 0),\n    };\n  }\n  if (ids.length === 0) {\n    out.push({ json: { __empty: true, ...channelMeta(request) }, pairedItem: { item: i } });\n  } else {\n    out.push({ json: { video_ids: ids.join(','), ...channelMeta(request) }, pairedItem: { item: i } });\n  }\n}\nreturn out;\n\nfunction channelMeta(c) {\n  return {\n    source_id: c.source_id,\n    source_name: c.source_name,\n    niche: c.niche,\n    risk_level: c.risk_level,\n    fetch_kind: c.fetch_kind,\n  };\n}"
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000008",
       "name": "Build Videos Lookup",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1320,
+        1540,
         120
       ]
     },
@@ -133,12 +147,12 @@
         "url": "=https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id={{ $json.video_ids || 'dQw4w9WgXcQ' }}&key=YOUTUBE_API_KEY",
         "options": {}
       },
-      "id": "a1b2c3d4-0002-4000-8000-000000000008",
+      "id": "a1b2c3d4-0002-4000-8000-000000000009",
       "name": "Fetch Video Details",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1540,
+        1760,
         120
       ],
       "alwaysOutputData": true
@@ -146,24 +160,10 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const sd = $getWorkflowStaticData('global');\nconst meta = $('Build Videos Lookup').first().json;\nsd.touchedSources.push(meta.source_id);\nif (meta.__empty) return [{ json: { __noop: true }, pairedItem: { item: 0 } }];\nconst api = $input.first().json;\nconst out = [];\nconst now = new Date().toISOString();\nfor (const v of api.items || []) {\n  if (sd.existingIds[v.id]) continue;\n  sd.existingIds[v.id] = true;\n  out.push({\n    json: {\n      video_id: `VID-${v.id}`,\n      niche: meta.niche,\n      source_id: meta.source_id,\n      source_name: meta.source_name,\n      video_title: v.snippet.title,\n      video_url: `https://www.youtube.com/watch?v=${v.id}`,\n      youtube_video_id: v.id,\n      duration_seconds: isoDurationToSeconds(v.contentDetails.duration),\n      published_at: v.snippet.publishedAt,\n      view_count: Number((v.statistics || {}).viewCount || 0),\n      like_count: Number((v.statistics || {}).likeCount || 0),\n      comment_count: Number((v.statistics || {}).commentCount || 0),\n      transcript_available: '',\n      language: v.snippet.defaultAudioLanguage || v.snippet.defaultLanguage || '',\n      validity_status: '',\n      validity_score: '',\n      rejection_reason: '',\n      duplicate_status: 'UNIQUE',\n      processing_status: 'NEW',\n      created_at: now,\n      __category_id: v.snippet.categoryId || '',\n      __is_live: v.snippet.liveBroadcastContent || 'none',\n      __title_lower: (v.snippet.title || '').toLowerCase(),\n    },\n    pairedItem: { item: 0 },\n  });\n}\nif (out.length === 0) return [{ json: { __noop: true }, pairedItem: { item: 0 } }];\nreturn out;\n\nfunction isoDurationToSeconds(iso) {\n  const m = String(iso || '').match(/PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?/);\n  if (!m) return 0;\n  return (Number(m[1] || 0) * 3600) + (Number(m[2] || 0) * 60) + Number(m[3] || 0);\n}"
-      },
-      "id": "a1b2c3d4-0002-4000-8000-000000000009",
-      "name": "Build Candidate Rows",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1760,
-        120
-      ]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "return $input.all().map((item, i) => {\n  if (item.json.__noop) return { json: { __noop: true }, pairedItem: { item: i } };\n  const { __category_id, __is_live, __title_lower, ...row } = item.json;\n  if (__category_id === '10') { row.validity_status = 'REJECTED'; row.rejection_reason = 'MUSIC_VIDEO'; row.processing_status = 'SKIPPED'; }\n  if (__is_live === 'live' || __is_live === 'upcoming') { row.validity_status = 'REJECTED'; row.rejection_reason = 'LIVE_STREAM'; row.processing_status = 'SKIPPED'; }\n  return { json: row, pairedItem: { item: i } };\n});"
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nconst metas = $('Build Videos Lookup').all();\nconst out = [];\nconst now = new Date().toISOString();\nfor (const [i, item] of $input.all().entries()) {\n  const meta = metas[i].json;\n  if (meta.__empty) continue;\n  for (const v of item.json.items || []) {\n    if (!v.id || sd.existingIds[v.id]) continue;\n    sd.existingIds[v.id] = true;\n    sd.fetchedCounts[meta.source_id] = (sd.fetchedCounts[meta.source_id] || 0) + 1;\n    out.push({\n      json: {\n        video_id: `VID-${v.id}`,\n        niche: meta.niche,\n        source_id: meta.source_id,\n        source_name: meta.source_name,\n        video_title: v.snippet.title,\n        video_url: `https://www.youtube.com/watch?v=${v.id}`,\n        youtube_video_id: v.id,\n        duration_seconds: isoDurationToSeconds(v.contentDetails.duration),\n        published_at: v.snippet.publishedAt,\n        view_count: Number((v.statistics || {}).viewCount || 0),\n        like_count: Number((v.statistics || {}).likeCount || 0),\n        comment_count: Number((v.statistics || {}).commentCount || 0),\n        transcript_available: '',\n        language: v.snippet.defaultAudioLanguage || v.snippet.defaultLanguage || '',\n        validity_status: '',\n        validity_score: '',\n        rejection_reason: '',\n        duplicate_status: 'UNIQUE',\n        processing_status: 'NEW',\n        created_at: now,\n        __category_id: v.snippet.categoryId || '',\n        __is_live: v.snippet.liveBroadcastContent || 'none',\n        __title_lower: (v.snippet.title || '').toLowerCase(),\n      },\n      pairedItem: { item: i },\n    });\n  }\n}\nif (out.length === 0) return [{ json: { __noop: true }, pairedItem: { item: 0 } }];\nreturn out;\n\nfunction isoDurationToSeconds(iso) {\n  const m = String(iso || '').match(/PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?/);\n  if (!m) return 0;\n  return (Number(m[1] || 0) * 3600) + (Number(m[2] || 0) * 60) + Number(m[3] || 0);\n}"
       },
       "id": "a1b2c3d4-0002-4000-8000-000000000010",
-      "name": "Strip Internal Fields",
+      "name": "Build Candidate Rows",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -174,14 +174,28 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "return $input.all().filter(i => !i.json.__noop);"
+        "jsCode": "return $input.all().map((item, i) => {\n  if (item.json.__noop) return { json: { __noop: true }, pairedItem: { item: i } };\n  const { __category_id, __is_live, __title_lower, ...row } = item.json;\n  if (__category_id === '10') { row.validity_status = 'REJECTED'; row.rejection_reason = 'MUSIC_VIDEO'; row.processing_status = 'SKIPPED'; }\n  if (__is_live === 'live' || __is_live === 'upcoming') { row.validity_status = 'REJECTED'; row.rejection_reason = 'LIVE_STREAM'; row.processing_status = 'SKIPPED'; }\n  return { json: row, pairedItem: { item: i } };\n});"
       },
       "id": "a1b2c3d4-0002-4000-8000-000000000011",
-      "name": "Filter Real Rows",
+      "name": "Strip Internal Fields",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         2200,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all().filter(i => !i.json.__noop);"
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000012",
+      "name": "Filter Real Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
         20
       ]
     },
@@ -205,22 +219,22 @@
           "matchingColumns": []
         }
       },
-      "id": "a1b2c3d4-0002-4000-8000-000000000012",
+      "id": "a1b2c3d4-0002-4000-8000-000000000013",
       "name": "Append Candidates",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
       "position": [
-        2420,
+        2640,
         20
       ]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const sd = $getWorkflowStaticData('global');\nconst now = new Date().toISOString();\nconst ids = [...new Set(sd.touchedSources || [])];\nsd.touchedSources = [];\nsd.existingIds = {};\nreturn ids.map((id, i) => ({ json: { source_id: id, last_checked_at: now }, pairedItem: { item: i } }));"
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nconst channel = $('Channel Loop').first().json;\nconst now = new Date().toISOString();\nconst update = sd.sourceUpdates[channel.source_id] || {\n  source_id: channel.source_id,\n  backfill_next_page_token: channel.backfill_next_page_token || '',\n  backfill_status: channel.backfill_status || 'COMPLETE',\n  videos_known_count: Number(channel.videos_known_count || 0),\n};\ndelete sd.sourceUpdates[channel.source_id];\nreturn [{\n  json: {\n    source_id: channel.source_id,\n    backfill_next_page_token: update.backfill_next_page_token || '',\n    backfill_status: update.backfill_status || 'COMPLETE',\n    videos_known_count: Number(update.videos_known_count || 0),\n    videos_fetched_count: Number((sd.fetchedCounts || {})[channel.source_id] || 0),\n    backfill_last_run_at: now,\n    last_checked_at: now,\n  },\n  pairedItem: { item: 0 },\n}];"
       },
-      "id": "a1b2c3d4-0002-4000-8000-000000000013",
-      "name": "Emit Touched Channels",
+      "id": "a1b2c3d4-0002-4000-8000-000000000014",
+      "name": "Emit Source Update",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -250,8 +264,8 @@
           ]
         }
       },
-      "id": "a1b2c3d4-0002-4000-8000-000000000014",
-      "name": "Update last_checked_at",
+      "id": "a1b2c3d4-0002-4000-8000-000000000015",
+      "name": "Update Source Backfill State",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
       "position": [
@@ -307,13 +321,18 @@
     },
     "Channel Loop": {
       "main": [
+        [],
         [
           {
-            "node": "Emit Touched Channels",
+            "node": "Build Fetch Requests",
             "type": "main",
             "index": 0
           }
-        ],
+        ]
+      ]
+    },
+    "Build Fetch Requests": {
+      "main": [
         [
           {
             "node": "Fetch Uploads",
@@ -376,7 +395,7 @@
             "index": 0
           },
           {
-            "node": "Channel Loop",
+            "node": "Emit Source Update",
             "type": "main",
             "index": 0
           }
@@ -394,11 +413,22 @@
         ]
       ]
     },
-    "Emit Touched Channels": {
+    "Emit Source Update": {
       "main": [
         [
           {
-            "node": "Update last_checked_at",
+            "node": "Update Source Backfill State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Source Backfill State": {
+      "main": [
+        [
+          {
+            "node": "Channel Loop",
             "type": "main",
             "index": 0
           }

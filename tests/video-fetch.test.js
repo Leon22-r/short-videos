@@ -3,6 +3,9 @@ const test = require('node:test');
 const {
   buildCandidateRows,
   buildUploadsLookup,
+  buildFetchPlan,
+  buildSourceUpdate,
+  countFetchedVideosBySource,
   isoDurationToSeconds,
   pickActiveChannels,
   stripInternalFields,
@@ -117,4 +120,86 @@ test('deduplicates touched source updates', () => {
     { source_id: 'SRC-1', last_checked_at: '2026-06-15T00:00:00.000Z' },
     { source_id: 'SRC-2', last_checked_at: '2026-06-15T00:00:00.000Z' },
   ]);
+});
+
+test('plans latest plus first backfill fetch for channels without saved token', () => {
+  const plan = buildFetchPlan({
+    source_id: 'SRC-1',
+    uploads_playlist_id: 'UU1',
+    backfill_next_page_token: '',
+    backfill_status: '',
+  });
+
+  assert.deepEqual(plan, [
+    { fetch_kind: 'latest', page_token: '', uploads_playlist_id: 'UU1', source_id: 'SRC-1' },
+    { fetch_kind: 'backfill', page_token: '', uploads_playlist_id: 'UU1', source_id: 'SRC-1' },
+  ]);
+});
+
+test('plans latest plus saved backfill token for in-progress channels', () => {
+  const plan = buildFetchPlan({
+    source_id: 'SRC-1',
+    uploads_playlist_id: 'UU1',
+    backfill_next_page_token: 'PAGE-2',
+    backfill_status: 'IN_PROGRESS',
+  });
+
+  assert.deepEqual(plan.map((p) => [p.fetch_kind, p.page_token]), [
+    ['latest', ''],
+    ['backfill', 'PAGE-2'],
+  ]);
+});
+
+test('skips backfill fetch for completed channels while still checking latest uploads', () => {
+  const plan = buildFetchPlan({
+    source_id: 'SRC-1',
+    uploads_playlist_id: 'UU1',
+    backfill_next_page_token: '',
+    backfill_status: 'COMPLETE',
+  });
+
+  assert.deepEqual(plan.map((p) => p.fetch_kind), ['latest']);
+});
+
+test('builds source update for in-progress backfill', () => {
+  const update = buildSourceUpdate(
+    { source_id: 'SRC-1' },
+    { pageInfo: { totalResults: 123 }, nextPageToken: 'NEXT-2' },
+    { 'SRC-1': 41 },
+    '2026-06-15T00:00:00.000Z',
+  );
+
+  assert.deepEqual(update, {
+    source_id: 'SRC-1',
+    backfill_next_page_token: 'NEXT-2',
+    backfill_status: 'IN_PROGRESS',
+    videos_known_count: 123,
+    videos_fetched_count: 41,
+    backfill_last_run_at: '2026-06-15T00:00:00.000Z',
+    last_checked_at: '2026-06-15T00:00:00.000Z',
+  });
+});
+
+test('marks source complete when backfill response has no next page token', () => {
+  const update = buildSourceUpdate(
+    { source_id: 'SRC-1' },
+    { pageInfo: { totalResults: 123 } },
+    { 'SRC-1': 123 },
+    '2026-06-15T00:00:00.000Z',
+  );
+
+  assert.equal(update.backfill_next_page_token, '');
+  assert.equal(update.backfill_status, 'COMPLETE');
+});
+
+test('counts fetched candidate videos by source', () => {
+  assert.deepEqual(countFetchedVideosBySource([
+    { source_id: 'SRC-1', youtube_video_id: 'a' },
+    { source_id: 'SRC-1', youtube_video_id: 'b' },
+    { source_id: 'SRC-2', youtube_video_id: 'c' },
+    { source_id: 'SRC-2', youtube_video_id: '' },
+  ]), {
+    'SRC-1': 2,
+    'SRC-2': 1,
+  });
 });

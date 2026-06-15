@@ -12,7 +12,7 @@ Create 8 tabs with EXACT names below. Paste each header row into cell A1 of the 
 ## Tab 1: `Source_Channels`
 
 ```
-source_id	niche	source_name	youtube_channel_url	youtube_channel_id	uploads_playlist_id	source_type	priority	risk_level	permission_risk	monetization_risk	notes	active_status	last_checked_at
+source_id	niche	source_name	youtube_channel_url	youtube_channel_id	uploads_playlist_id	source_type	priority	risk_level	permission_risk	monetization_risk	notes	active_status	last_checked_at	backfill_next_page_token	backfill_status	videos_known_count	videos_fetched_count	backfill_last_run_at
 ```
 
 Notes:
@@ -20,6 +20,8 @@ Notes:
 - `uploads_playlist_id` is an extra helper column (filled by WF1) — the channel's uploads playlist (`UU...`), used by WF2 to fetch videos cheaply (1 API unit instead of 100 for search)
 - `risk_level` / `permission_risk` / `monetization_risk`: `low | medium | high`
 - `active_status`: `TRUE` / `FALSE`
+- `backfill_status`: `NOT_STARTED` / `IN_PROGRESS` / `COMPLETE`; WF2 uses this plus `backfill_next_page_token` to resume older upload pages until the channel is fully fetched
+- `videos_known_count` is YouTube's uploads playlist total; `videos_fetched_count` is how many candidate rows currently exist for that source
 - `source_type`: e.g. `podcast`, `sermon_channel`, `interview_show`, `business_channel`
 - This tab is human-maintained. You add rows; WF1 fills in `youtube_channel_id` + `uploads_playlist_id`.
 
