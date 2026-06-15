@@ -1,0 +1,468 @@
+{
+  "name": "WF4 Transcript Fetch",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000001",
+      "name": "Schedule Hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidate_Videos"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000002",
+      "name": "Read Candidate_Videos",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const pending = $input.all()\n  .filter(i => String(i.json.validity_status) === 'VALID'\n            && String(i.json.transcript_available || '') === '')\n  .slice(0, 10);\nreturn pending.map((i, idx) => ({ json: i.json, pairedItem: { item: idx } }));"
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000003",
+      "name": "Pick Pending Transcripts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000004",
+      "name": "Video Loop",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "TRANSCRIPT_SERVICE_URL",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "TRANSCRIPT_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ youtube_url: $json.video_url, language_preferences: ['en','en-US','en-GB','sw'] }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000005",
+      "name": "Call Transcript Service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        120
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000006",
+      "name": "Route On Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const video = $('Video Loop').first().json;\nconst resp = $input.first().json;\nconst snippets = resp.transcript || [];\n\nconst lines = snippets.map(s => {\n  const t = Math.floor(Number(s.start) || 0);\n  const mm = String(Math.floor(t / 60)).padStart(2, '0');\n  const ss = String(t % 60).padStart(2, '0');\n  return `[${mm}:${ss}] ${s.text}`;\n});\nlet transcriptText = lines.join('\\n');\nlet status = 'FETCHED';\nconst LIMIT = 45000;\nif (transcriptText.length > LIMIT) {\n  transcriptText = transcriptText.slice(0, LIMIT) + '\\n...[TRUNCATED]';\n  status = 'TRUNCATED';\n}\nconst words = (resp.plain_text || '').split(/\\s+/).filter(Boolean).length;\n\nreturn [{\n  json: {\n    analysis_id: `AN-${video.youtube_video_id}`,\n    video_id: video.video_id,\n    niche: video.niche,\n    video_title: video.video_title,\n    video_url: video.video_url,\n    transcript_status: status,\n    transcript_text: transcriptText,\n    transcript_length_words: words,\n    ai_episode_score: '',\n    recommended_strategy: '',\n    recommended_start_sec: '',\n    recommended_end_sec: '',\n    reason_for_strategy: '',\n    rights_risk: '',\n    permission_risk: '',\n    monetization_risk: '',\n    originality_potential: '',\n    kenya_relevance: '',\n    ai_json_output: '',\n    created_at: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000007",
+      "name": "Build Analysis Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Transcript_Analysis"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "analysis_id"
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000008",
+      "name": "Append Transcript_Analysis",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1540,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const video = $('Video Loop').first().json;\nconst resp = $('Call Transcript Service').first().json;\nreturn [{ json: {\n  video_id: video.video_id,\n  transcript_available: 'TRUE',\n  language: resp.language_code || video.language,\n}, pairedItem: { item: 0 } }];"
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000009",
+      "name": "Mark Transcript OK",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidate_Videos"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "video_id"
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000010",
+      "name": "Update Candidate OK",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1980,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 3
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000011",
+      "name": "Wait 3s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2200,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const video = $('Video Loop').first().json;\nconst resp = $input.first().json;\nconst code = resp.error_code || (resp.error ? 'HTTP_ERROR' : 'UNKNOWN');\nconst infra = code === 'IP_BLOCKED' || code === 'FETCH_FAILED' || code === 'HTTP_ERROR';\nreturn [{ json: {\n  video_id: video.video_id,\n  transcript_available: infra ? '' : 'FALSE',\n  validity_status: infra ? video.validity_status : 'REJECTED',\n  rejection_reason: infra ? '' : `TRANSCRIPT_${code}`,\n  processing_status: infra ? video.processing_status : 'SKIPPED',\n}, pairedItem: { item: 0 } }];"
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000012",
+      "name": "Mark Transcript Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidate_Videos"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "video_id"
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000013",
+      "name": "Update Candidate Failed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1540,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 3
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000014",
+      "name": "Wait 3s b",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Hourly": {
+      "main": [
+        [
+          {
+            "node": "Read Candidate_Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Candidate_Videos": {
+      "main": [
+        [
+          {
+            "node": "Pick Pending Transcripts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Pending Transcripts": {
+      "main": [
+        [
+          {
+            "node": "Video Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Video Loop": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Call Transcript Service",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Transcript Service": {
+      "main": [
+        [
+          {
+            "node": "Route On Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route On Success": {
+      "main": [
+        [
+          {
+            "node": "Build Analysis Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Transcript Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Analysis Row": {
+      "main": [
+        [
+          {
+            "node": "Append Transcript_Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Transcript_Analysis": {
+      "main": [
+        [
+          {
+            "node": "Mark Transcript OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Transcript OK": {
+      "main": [
+        [
+          {
+            "node": "Update Candidate OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Candidate OK": {
+      "main": [
+        [
+          {
+            "node": "Wait 3s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 3s": {
+      "main": [
+        [
+          {
+            "node": "Video Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Transcript Failed": {
+      "main": [
+        [
+          {
+            "node": "Update Candidate Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Candidate Failed": {
+      "main": [
+        [
+          {
+            "node": "Wait 3s b",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 3s b": {
+      "main": [
+        [
+          {
+            "node": "Video Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}
