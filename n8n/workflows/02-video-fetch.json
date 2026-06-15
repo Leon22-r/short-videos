@@ -1,0 +1,416 @@
+{
+  "name": "WF2 Video Fetch",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000001",
+      "name": "Schedule 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Source_Channels"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000002",
+      "name": "Read Source_Channels",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidate_Videos"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000003",
+      "name": "Read Candidate_Videos",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Build dedup set + select active channels. staticData survives across loop iterations.\nconst sd = $getWorkflowStaticData('global');\nsd.existingIds = {};\nfor (const item of $('Read Candidate_Videos').all()) {\n  const id = item.json.youtube_video_id;\n  if (id) sd.existingIds[id] = true;\n}\nsd.touchedSources = [];\nconst channels = $('Read Source_Channels').all()\n  .filter(i => String(i.json.active_status).toUpperCase() === 'TRUE' && i.json.uploads_playlist_id)\n  .map((i, idx) => ({ json: i.json, pairedItem: { item: idx } }));\nreturn channels;"
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000004",
+      "name": "Init Run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000005",
+      "name": "Channel Loop",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=10&playlistId={{ $json.uploads_playlist_id }}&key=YOUTUBE_API_KEY",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000006",
+      "name": "Fetch Uploads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const channel = $('Channel Loop').first().json;\nconst api = $input.first().json;\nconst ids = (api.items || []).map(i => i.contentDetails && i.contentDetails.videoId).filter(Boolean);\nif (ids.length === 0) {\n  return [{ json: { __empty: true, ...channelMeta(channel) }, pairedItem: { item: 0 } }];\n}\nreturn [{ json: { video_ids: ids.join(','), ...channelMeta(channel) }, pairedItem: { item: 0 } }];\n\nfunction channelMeta(c) {\n  return { source_id: c.source_id, source_name: c.source_name, niche: c.niche, risk_level: c.risk_level };\n}"
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000007",
+      "name": "Build Videos Lookup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id={{ $json.video_ids || 'dQw4w9WgXcQ' }}&key=YOUTUBE_API_KEY",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000008",
+      "name": "Fetch Video Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        120
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nconst meta = $('Build Videos Lookup').first().json;\nsd.touchedSources.push(meta.source_id);\nif (meta.__empty) return [{ json: { __noop: true }, pairedItem: { item: 0 } }];\nconst api = $input.first().json;\nconst out = [];\nconst now = new Date().toISOString();\nfor (const v of api.items || []) {\n  if (sd.existingIds[v.id]) continue;\n  sd.existingIds[v.id] = true;\n  out.push({\n    json: {\n      video_id: `VID-${v.id}`,\n      niche: meta.niche,\n      source_id: meta.source_id,\n      source_name: meta.source_name,\n      video_title: v.snippet.title,\n      video_url: `https://www.youtube.com/watch?v=${v.id}`,\n      youtube_video_id: v.id,\n      duration_seconds: isoDurationToSeconds(v.contentDetails.duration),\n      published_at: v.snippet.publishedAt,\n      view_count: Number((v.statistics || {}).viewCount || 0),\n      like_count: Number((v.statistics || {}).likeCount || 0),\n      comment_count: Number((v.statistics || {}).commentCount || 0),\n      transcript_available: '',\n      language: v.snippet.defaultAudioLanguage || v.snippet.defaultLanguage || '',\n      validity_status: '',\n      validity_score: '',\n      rejection_reason: '',\n      duplicate_status: 'UNIQUE',\n      processing_status: 'NEW',\n      created_at: now,\n      __category_id: v.snippet.categoryId || '',\n      __is_live: v.snippet.liveBroadcastContent || 'none',\n      __title_lower: (v.snippet.title || '').toLowerCase(),\n    },\n    pairedItem: { item: 0 },\n  });\n}\nif (out.length === 0) return [{ json: { __noop: true }, pairedItem: { item: 0 } }];\nreturn out;\n\nfunction isoDurationToSeconds(iso) {\n  const m = String(iso || '').match(/PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?/);\n  if (!m) return 0;\n  return (Number(m[1] || 0) * 3600) + (Number(m[2] || 0) * 60) + Number(m[3] || 0);\n}"
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000009",
+      "name": "Build Candidate Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all().map((item, i) => {\n  if (item.json.__noop) return { json: { __noop: true }, pairedItem: { item: i } };\n  const { __category_id, __is_live, __title_lower, ...row } = item.json;\n  if (__category_id === '10') { row.validity_status = 'REJECTED'; row.rejection_reason = 'MUSIC_VIDEO'; row.processing_status = 'SKIPPED'; }\n  if (__is_live === 'live' || __is_live === 'upcoming') { row.validity_status = 'REJECTED'; row.rejection_reason = 'LIVE_STREAM'; row.processing_status = 'SKIPPED'; }\n  return { json: row, pairedItem: { item: i } };\n});"
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000010",
+      "name": "Strip Internal Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $input.all().filter(i => !i.json.__noop);"
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000011",
+      "name": "Filter Real Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidate_Videos"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": []
+        }
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000012",
+      "name": "Append Candidates",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2420,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nconst now = new Date().toISOString();\nconst ids = [...new Set(sd.touchedSources || [])];\nsd.touchedSources = [];\nsd.existingIds = {};\nreturn ids.map((id, i) => ({ json: { source_id: id, last_checked_at: now }, pairedItem: { item: i } }));"
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000013",
+      "name": "Emit Touched Channels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Source_Channels"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "source_id"
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000014",
+      "name": "Update last_checked_at",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1320,
+        -160
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule 6h": {
+      "main": [
+        [
+          {
+            "node": "Read Source_Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Source_Channels": {
+      "main": [
+        [
+          {
+            "node": "Read Candidate_Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Candidate_Videos": {
+      "main": [
+        [
+          {
+            "node": "Init Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Run": {
+      "main": [
+        [
+          {
+            "node": "Channel Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Channel Loop": {
+      "main": [
+        [
+          {
+            "node": "Emit Touched Channels",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch Uploads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Uploads": {
+      "main": [
+        [
+          {
+            "node": "Build Videos Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Videos Lookup": {
+      "main": [
+        [
+          {
+            "node": "Fetch Video Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Video Details": {
+      "main": [
+        [
+          {
+            "node": "Build Candidate Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Candidate Rows": {
+      "main": [
+        [
+          {
+            "node": "Strip Internal Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Strip Internal Fields": {
+      "main": [
+        [
+          {
+            "node": "Filter Real Rows",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Channel Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Real Rows": {
+      "main": [
+        [
+          {
+            "node": "Append Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Emit Touched Channels": {
+      "main": [
+        [
+          {
+            "node": "Update last_checked_at",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}
