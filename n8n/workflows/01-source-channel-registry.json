@@ -34,7 +34,8 @@
       "position": [
         220,
         0
-      ]
+      ],
+      "executeOnce": true
     },
     {
       "parameters": {

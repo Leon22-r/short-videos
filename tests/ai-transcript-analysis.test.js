@@ -1,10 +1,15 @@
 const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
 const test = require('node:test');
 const {
+  ANALYSIS_SCHEMA,
   buildAnalysisRequest,
+  buildMissingWindowMoments,
   parseAndGate,
   pickUnanalyzed,
 } = require('../n8n/workflow-code/ai-transcript-analysis');
+const fixtures = require('./fixtures/wf5-ai-responses');
+const workflow = require('../n8n/workflows/05-ai-transcript-analysis.json');
 
 const baseRow = {
   analysis_id: 'AN-video1234567',
@@ -15,6 +20,7 @@ const baseRow = {
   transcript_status: 'FETCHED',
   transcript_text: '[00:00] hello world',
   ai_episode_score: '',
+  processing_status: 'NEW',
   source_risk: 'low',
 };
 
@@ -71,21 +77,218 @@ test('picks fetched unanalyzed transcripts and joins source risk', () => {
       { ...baseRow, video_id: 'VID-3', transcript_status: 'FAILED' },
     ],
     [{ source_id: 'SRC-1', risk_level: 'high' }],
-    [{ video_id: 'VID-1', source_id: 'SRC-1' }],
+    [{ video_id: 'VID-1', source_id: 'SRC-1', processing_status: 'READY_FOR_ANALYSIS' }],
   );
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].source_risk, 'high');
+  assert.equal(rows[0].processing_status, 'READY_FOR_ANALYSIS');
 });
 
-test('builds OpenAI json request body', () => {
+test('builds OpenAI app node analysis inputs', () => {
   const result = buildAnalysisRequest(baseRow);
-  const body = JSON.parse(result.openai_body);
 
-  assert.equal(body.model, 'gpt-4o-mini');
-  assert.equal(body.response_format.type, 'json_object');
-  assert.equal(body.messages.length, 2);
-  assert.match(body.messages[1].content, /FINANCE_BUSINESS/);
+  assert.equal(ANALYSIS_SCHEMA.properties.output, undefined);
+  assert.deepEqual(ANALYSIS_SCHEMA.properties.overall_episode_score, {
+    type: 'number', minimum: 0, maximum: 10,
+  });
+  assert.equal(result.video_id, baseRow.video_id);
+  assert.equal(result.openai_model, 'gpt-4o-mini');
+  assert.deepEqual(JSON.parse(result.analysis_schema), ANALYSIS_SCHEMA);
+  assert.match(result.system_message, /content strategist/);
+  assert.match(result.user_message, /FINANCE_BUSINESS/);
+  assert.match(result.user_message, /"overall_episode_score"/);
+  assert.match(result.user_message, /Return the bare analysis object/);
+  assert.match(result.user_message, /Do not use Markdown code fences/);
+  assert.doesNotMatch(result.user_message, /top-level object must have exactly one key named "output"/);
+  assert.doesNotMatch(result.user_message, /```json/);
+  assert.match(result.user_message, /raw seconds from the beginning/);
+  assert.match(result.user_message, /minute 5.*300/i);
+  assert.match(result.user_message, /USE_20_MIN_WINDOW.*exact_clips may be empty/);
+  assert.match(result.user_message, /USE_EXACT_CLIPS_ONLY.*at least one clip/);
+});
+
+test('parses output wrapper responses', () => {
+  const result = parseAndGate(baseRow, { output: ai() });
+
+  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_EXACT_CLIPS_ONLY');
+  assert.equal(result.momentRows.length, 1);
+});
+
+test('parses official OpenAI node fenced output text responses', () => {
+  const response = {
+    id: 'msg_123',
+    type: 'message',
+    status: 'completed',
+    content: [{
+      type: 'output_text',
+      text: `\`\`\`json
+{
+  "output": ${JSON.stringify(ai())}
+}
+\`\`\``,
+    }],
+    role: 'assistant',
+  };
+
+  const result = parseAndGate(baseRow, response);
+
+  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_EXACT_CLIPS_ONLY');
+  assert.equal(result.momentRows.length, 1);
+});
+
+test('parses array-wrapped official OpenAI node output', () => {
+  const response = [{
+    id: 'msg_123',
+    type: 'message',
+    status: 'completed',
+    content: [{
+      type: 'output_text',
+      annotations: [],
+      logprobs: [],
+      text: `\`\`\`json
+{
+  "output": ${JSON.stringify(ai({
+    recommended_strategy: 'USE_20_MIN_WINDOW',
+    best_20_min_window: {
+      use_this: true,
+      start_sec: 60,
+      end_sec: 120,
+      why_this_window: 'Useful but does not contain enough strong clips',
+      estimated_number_of_good_clips: 3
+    },
+    exact_clips: [
+      clip({ rank: 1, start_sec: 3, end_sec: 7, clip_length_seconds: 4 }),
+      clip({ rank: 2, start_sec: 20, end_sec: 36, clip_length_seconds: 16, clip_score: 8 }),
+    ],
+  }))}
+}
+\`\`\``,
+    }],
+    role: 'assistant',
+  }];
+
+  const result = parseAndGate(baseRow, response);
+
+  assert.equal(result.analysisUpdate.ai_episode_score, 8);
+  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_20_MIN_WINDOW');
+  assert.equal(result.candidateUpdate.processing_status, 'ANALYZED');
+  assert.equal(result.momentRows.length, 1);
+});
+
+test('parses official OpenAI node output string wrappers', () => {
+  const response = {
+    output: JSON.stringify([{
+      id: 'msg_123',
+      type: 'message',
+      status: 'completed',
+      content: [{
+        type: 'output_text',
+        annotations: [],
+        logprobs: [],
+        text: `\`\`\`json
+{
+  "output": ${JSON.stringify(ai({
+    recommended_strategy: 'USE_20_MIN_WINDOW',
+    reason_for_strategy: 'The video provides practical insights.',
+    best_20_min_window: {
+      use_this: true,
+      start_sec: 0,
+      end_sec: 40,
+      why_this_window: 'Short useful opening section',
+      estimated_number_of_good_clips: 3
+    },
+    exact_clips: [],
+    risk_notes: 'low',
+  }))}
+}
+\`\`\``,
+      }],
+      role: 'assistant',
+    }]),
+  };
+
+  const result = parseAndGate(baseRow, response);
+
+  assert.equal(result.analysisUpdate.ai_episode_score, 8);
+  assert.equal(result.analysisUpdate.recommended_strategy, 'SKIP_THIS_VIDEO');
+  assert.equal(result.analysisUpdate.reason_for_strategy, 'The video provides practical insights.');
+  assert.match(result.analysisUpdate.ai_json_output, /overall_episode_score/);
+  assert.doesNotMatch(result.analysisUpdate.ai_json_output, /msg_123/);
+  assert.equal(result.candidateUpdate.processing_status, 'SKIPPED');
+  assert.deepEqual(result.momentRows, []);
+});
+
+test('WF5 uses official OpenAI node without separate moderation', () => {
+  const nodeTypes = Object.fromEntries(workflow.nodes.map((node) => [node.name, node.type]));
+  const openAi = workflow.nodes.find((node) => node.name === 'Call OpenAI');
+
+  assert.equal(nodeTypes['Moderate Transcript'], undefined);
+  assert.equal(nodeTypes['Build OpenAI Request'], 'n8n-nodes-base.code');
+  assert.equal(nodeTypes['Call OpenAI'], '@n8n/n8n-nodes-langchain.openAi');
+  assert(!workflow.nodes.some((node) => node.name.toLowerCase().includes('gemini')));
+  assert(!workflow.nodes.some((node) => node.type.toLowerCase().includes('gemini')));
+  assert.equal(openAi.parameters.operation, undefined);
+  assert.equal(openAi.parameters.modelId.value, 'gpt-4o-mini');
+  assert.equal(openAi.parameters.responses.values.length, 2);
+  assert(openAi.parameters.responses.values.every((message) => message.role && message.content));
+  assert.equal(openAi.parameters.responses.values[0].role, 'system');
+  assert.equal(openAi.parameters.responses.values[0].content, '={{ $json.system_message }}');
+  assert.equal(openAi.parameters.responses.values[1].content, '={{ $json.user_message }}');
+  assert.deepEqual(openAi.parameters.builtInTools, {});
+  assert.deepEqual(openAi.parameters.options.textFormat.textOptions, {
+    type: 'json_schema',
+    name: 'transcript_analysis',
+    schema: '={{ $json.analysis_schema }}',
+    strict: true,
+  });
+  assert.equal(openAi.onError, 'continueRegularOutput');
+
+  const buildRequest = workflow.nodes.find((node) => node.name === 'Build OpenAI Request');
+  assert(buildRequest.parameters.jsCode.includes(buildAnalysisRequest(baseRow).system_message));
+
+  assert.equal(
+    workflow.connections['Build OpenAI Request'].main[0][0].node,
+    'Call OpenAI',
+  );
+  assert.equal(workflow.connections['Call OpenAI'].main[0][0].node, 'Parse And Gate');
+});
+
+test('WF5 generator embeds the helper prompt without overriding it', () => {
+  const generator = readFileSync('n8n/workflow-code/create-wf5-ai-transcript-analysis.js', 'utf8');
+
+  assert.doesNotMatch(generator, /replace\(\/const SYSTEM_PROMPT/);
+});
+
+test('WF5 independently backfills missing window moments from sheet state', () => {
+  const readMoments = workflow.nodes.find((node) => node.name === 'Read Clip_Moments');
+  const buildMissing = workflow.nodes.find((node) => node.name === 'Build Missing Window Moments');
+  const backfill = workflow.nodes.find((node) => node.name === 'Backfill Clip_Moments');
+
+  assert.equal(readMoments.type, 'n8n-nodes-base.googleSheets');
+  assert.equal(readMoments.parameters.operation, 'read');
+  assert.equal(readMoments.parameters.sheetName.value, 'Clip_Moments');
+  assert.equal(readMoments.executeOnce, true);
+  assert.equal(readMoments.alwaysOutputData, true);
+  assert.equal(buildMissing.type, 'n8n-nodes-base.code');
+  assert.match(buildMissing.parameters.jsCode, /buildMissingWindowMoments/);
+  assert.equal(backfill.type, 'n8n-nodes-base.googleSheets');
+  assert.equal(backfill.parameters.operation, 'appendOrUpdate');
+  assert.equal(backfill.parameters.sheetName.value, 'Clip_Moments');
+  assert.deepEqual(backfill.parameters.columns.matchingColumns, ['clip_moment_id']);
+
+  assert.equal(
+    workflow.connections['Read Candidate_Videos'].main[0][0].node,
+    'Read Clip_Moments',
+  );
+  assert.deepEqual(
+    workflow.connections['Read Clip_Moments'].main[0].map((connection) => connection.node).sort(),
+    ['Build Missing Window Moments', 'Pick Unanalyzed'],
+  );
+  assert.equal(
+    workflow.connections['Build Missing Window Moments'].main[0][0].node,
+    'Backfill Clip_Moments',
+  );
 });
 
 test('forces low scoring episodes to skip with no moments', () => {
@@ -150,9 +353,270 @@ test('creates one pending window row when there are enough strong clips in range
   assert.equal(result.momentRows[0].ssemble_status, 'PENDING');
 });
 
+test('creates one pending window row without exact clips', () => {
+  const result = parseAndGate(baseRow, ai({
+    recommended_strategy: 'USE_20_MIN_WINDOW',
+    best_20_min_window: {
+      use_this: true,
+      start_sec: 300,
+      end_sec: 1500,
+      why_this_window: 'Dense section for automatic clipping',
+      estimated_number_of_good_clips: 3,
+    },
+    exact_clips: [],
+  }));
+
+  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_20_MIN_WINDOW');
+  assert.equal(result.candidateUpdate.processing_status, 'ANALYZED');
+  assert.equal(result.momentRows.length, 1);
+  assert.equal(result.momentRows[0].start_sec, 300);
+  assert.equal(result.momentRows[0].end_sec, 1500);
+  assert.deepEqual(Object.keys(result.momentRows[0]), [
+    'clip_moment_id', 'video_id', 'niche', 'rank', 'start_sec', 'end_sec',
+    'clip_length_seconds', 'hook_first_2_seconds', 'core_idea', 'why_valuable',
+    'target_audience', 'suggested_title', 'suggested_caption', 'on_screen_text',
+    'suggested_broll', 'commentary_angle', 'kenyan_african_application',
+    'bible_verse_if_relevant', 'needs_extra_context', 'originality_score',
+    'clip_score', 'rights_risk', 'final_recommendation', 'ssemble_status',
+    'ssemble_job_id', 'strategy', 'source_video_url', 'created_at',
+  ]);
+});
+
+test('backfills one complete deterministic row for a missing window moment', () => {
+  const now = '2026-06-23T10:00:00.000Z';
+  const analysisRows = [{
+    video_id: 'VID-1',
+    niche: 'FINANCE_BUSINESS',
+    video_url: 'https://youtube.test/1',
+    ai_episode_score: 75,
+    recommended_strategy: 'USE_20_MIN_WINDOW',
+    recommended_start_sec: 0,
+    recommended_end_sec: 1200,
+    reason_for_strategy: 'Useful window',
+    rights_risk: 'medium',
+    ai_json_output: JSON.stringify({
+      best_20_min_window: {
+        why_this_window: 'Dense founder section',
+        estimated_number_of_good_clips: 5,
+      },
+    }),
+  }];
+
+  const rows = buildMissingWindowMoments(
+    analysisRows,
+    [{ source_id: 'SRC-1', risk_level: 'low' }],
+    [{ video_id: 'VID-1', source_id: 'SRC-1' }],
+    [],
+    now,
+  );
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].clip_moment_id, 'CM-VID-1-W0');
+  assert.equal(rows[0].rank, 0);
+  assert.equal(rows[0].clip_score, 10);
+  assert.equal(rows[0].rights_risk, 'medium');
+  assert.equal(rows[0].ssemble_status, 'PENDING');
+  assert.equal(rows[0].core_idea, 'Dense founder section');
+  assert.equal(rows[0].why_valuable, 'window with ~5 strong clips');
+  assert.equal(rows[0].created_at, now);
+});
+
+test('window backfill skips existing, non-window, and invalid-window rows', () => {
+  const valid = {
+    video_id: 'VID-1',
+    recommended_strategy: 'USE_20_MIN_WINDOW',
+    recommended_start_sec: 0,
+    recommended_end_sec: 1200,
+  };
+
+  assert.deepEqual(buildMissingWindowMoments(
+    [valid], [], [], [{ clip_moment_id: 'CM-VID-1-W0' }], '2026-06-23T10:00:00.000Z',
+  ), []);
+  assert.deepEqual(buildMissingWindowMoments([
+    { ...valid, video_id: 'VID-2', recommended_strategy: 'SKIP_THIS_VIDEO' },
+    { ...valid, video_id: 'VID-3', recommended_end_sec: 20 },
+    { ...valid, video_id: 'VID-4', recommended_end_sec: 1300 },
+  ], [], [], [], '2026-06-23T10:00:00.000Z'), []);
+});
+
+test('window backfill tolerates malformed metadata and routes high-risk sources for approval', () => {
+  const rows = buildMissingWindowMoments([{
+    video_id: 'VID-2',
+    niche: 'AFRICAN_KENYAN_SUCCESS',
+    video_url: 'https://youtube.test/2',
+    ai_episode_score: 8,
+    recommended_strategy: 'USE_20_MIN_WINDOW',
+    recommended_start_sec: 300,
+    recommended_end_sec: 900,
+    reason_for_strategy: 'Fallback reason',
+    rights_risk: '',
+    ai_json_output: '{bad json',
+  }], [{ source_id: 'SRC-2', risk_level: 'high' }], [{
+    video_id: 'VID-2', source_id: 'SRC-2',
+  }], [], '2026-06-23T10:00:00.000Z');
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].core_idea, 'Fallback reason');
+  assert.equal(rows[0].rights_risk, 'low');
+  assert.equal(rows[0].ssemble_status, 'AWAITING_MANUAL_APPROVAL');
+});
+
 test('high risk source requires manual approval before Ssemble', () => {
   const result = parseAndGate({ ...baseRow, source_risk: 'high' }, ai());
 
   assert.equal(result.candidateUpdate.processing_status, 'ANALYZED');
   assert.equal(result.momentRows[0].ssemble_status, 'AWAITING_MANUAL_APPROVAL');
+});
+
+test('returns a retryable result for OpenAI errors', () => {
+  const result = parseAndGate(
+    { ...baseRow, processing_status: 'READY_FOR_ANALYSIS' },
+    { error: { message: 'Rate limit exceeded' } },
+  );
+
+  assert.equal(result.retryable, true);
+  assert.equal(result.analysisUpdate.ai_episode_score, '');
+  assert.equal(result.analysisUpdate.recommended_strategy, '');
+  assert.match(result.analysisUpdate.reason_for_strategy, /Rate limit exceeded/);
+  assert.match(result.analysisUpdate.ai_json_output, /Rate limit exceeded/);
+  assert.equal(result.candidateUpdate.processing_status, 'READY_FOR_ANALYSIS');
+  assert.deepEqual(result.momentRows, []);
+});
+
+test('returns a retryable result for unknown response shapes', () => {
+  const result = parseAndGate(baseRow, { unexpected: true });
+
+  assert.equal(result.retryable, true);
+  assert.equal(result.analysisUpdate.ai_episode_score, '');
+  assert.equal(result.candidateUpdate.processing_status, 'NEW');
+  assert.deepEqual(result.momentRows, []);
+});
+
+test('returns a retryable result for malformed JSON', () => {
+  const result = parseAndGate(baseRow, '{not-json');
+
+  assert.equal(result.retryable, true);
+  assert.equal(result.analysisUpdate.ai_episode_score, '');
+  assert.match(result.analysisUpdate.reason_for_strategy, /JSON/);
+  assert.deepEqual(result.momentRows, []);
+});
+
+test('maps permission risk and Kenya relevance to their semantic sources', () => {
+  const result = parseAndGate(baseRow, ai({
+    risk_notes: 'Copyright warning, not audience relevance',
+    exact_clips: [clip({
+      copyright_or_reused_content_risk: 'medium',
+      kenyan_african_application: 'Explain the lesson using M-Pesa budgeting.',
+    })],
+  }));
+
+  assert.equal(result.analysisUpdate.permission_risk, 'medium');
+  assert.equal(result.analysisUpdate.kenya_relevance, 'Explain the lesson using M-Pesa budgeting.');
+  assert.doesNotMatch(result.analysisUpdate.kenya_relevance, /Copyright warning/);
+});
+
+test('rejects legacy output with risk_notes outside the analysis wrapper', () => {
+  const result = parseAndGate(baseRow, fixtures.misplacedRiskNotes);
+
+  assert.equal(result.retryable, true);
+  assert.match(result.analysisUpdate.reason_for_strategy, /missing required fields: risk_notes/);
+});
+
+test('rejects legacy output with a missing closing fence', () => {
+  const result = parseAndGate(baseRow, fixtures.missingClosingFence);
+
+  assert.equal(result.retryable, true);
+  assert.match(result.analysisUpdate.reason_for_strategy, /Unexpected token|fence|JSON/);
+});
+
+test('accepts complete legacy exact-clip output', () => {
+  const result = parseAndGate(baseRow, fixtures.validLegacyExact);
+
+  assert.equal(result.retryable, false);
+  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_EXACT_CLIPS_ONLY');
+  assert.equal(result.momentRows.length, 1);
+});
+
+test('accepts complete legacy window output and stores only bare analysis JSON', () => {
+  const result = parseAndGate(baseRow, fixtures.validLegacyWindow);
+  const stored = JSON.parse(result.analysisUpdate.ai_json_output);
+
+  assert.equal(result.retryable, false);
+  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_20_MIN_WINDOW');
+  assert.deepEqual(stored, fixtures.windowAnalysis);
+  assert.equal(stored.output, undefined);
+  assert.doesNotMatch(result.analysisUpdate.ai_json_output, /msg_legacy_window|```/);
+});
+
+test('accepts canonical unfenced output in the n8n transport envelope', () => {
+  const result = parseAndGate(baseRow, fixtures.canonicalUnfenced);
+
+  assert.equal(result.retryable, false);
+  assert.deepEqual(JSON.parse(result.analysisUpdate.ai_json_output), fixtures.windowAnalysis);
+});
+
+test('accepts n8n structured output when content text is already an object', () => {
+  const result = parseAndGate(baseRow, fixtures.structuredObject);
+
+  assert.equal(result.retryable, false);
+  assert.deepEqual(JSON.parse(result.analysisUpdate.ai_json_output), fixtures.windowAnalysis);
+});
+
+test('rejects a SKIP response with an incomplete window object', () => {
+  const result = parseAndGate(baseRow, fixtures.skipWithEmptyWindow);
+
+  assert.equal(result.retryable, true);
+  assert.match(result.analysisUpdate.reason_for_strategy, /best_20_min_window.*missing required fields/);
+});
+
+test('rejects invalid schema enums', () => {
+  const result = parseAndGate(baseRow, {
+    ...fixtures.windowAnalysis,
+    recommended_strategy: 'UNKNOWN_STRATEGY',
+  });
+
+  assert.equal(result.retryable, true);
+  assert.match(result.analysisUpdate.reason_for_strategy, /recommended_strategy.*allowed values/);
+});
+
+test('rejects non-finite analysis numbers', () => {
+  const result = parseAndGate(baseRow, {
+    ...fixtures.windowAnalysis,
+    overall_episode_score: Infinity,
+  });
+
+  assert.equal(result.retryable, true);
+  assert.match(result.analysisUpdate.reason_for_strategy, /overall_episode_score.*finite number/);
+});
+
+test('constrains all AI quality scores to the zero-to-ten range', () => {
+  assert.deepEqual(ANALYSIS_SCHEMA.properties.overall_episode_score, {
+    type: 'number', minimum: 0, maximum: 10,
+  });
+  assert.deepEqual(ANALYSIS_SCHEMA.properties.exact_clips.items.properties.clip_score, {
+    type: 'number', minimum: 0, maximum: 10,
+  });
+  assert.deepEqual(ANALYSIS_SCHEMA.properties.exact_clips.items.properties.originality_score, {
+    type: 'number', minimum: 0, maximum: 10,
+  });
+});
+
+test('rejects an AI episode score above ten instead of silently clamping it', () => {
+  const result = parseAndGate(baseRow, {
+    ...fixtures.windowAnalysis,
+    overall_episode_score: 75,
+  });
+
+  assert.equal(result.retryable, true);
+  assert.match(result.analysisUpdate.reason_for_strategy, /overall_episode_score.*at most 10/);
+});
+
+test('rejects incomplete exact clips', () => {
+  const result = parseAndGate(baseRow, {
+    ...fixtures.exactAnalysis,
+    exact_clips: [{ rank: 1, start_sec: 0, end_sec: 60 }],
+  });
+
+  assert.equal(result.retryable, true);
+  assert.match(result.analysisUpdate.reason_for_strategy, /exact_clips\[0\].*missing required fields/);
 });

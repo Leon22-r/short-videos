@@ -26,6 +26,7 @@ const sheetsNode = (id, name, position, parameters, extra = {}) => ({
   type: 'n8n-nodes-base.googleSheets',
   typeVersion: 4.5,
   position,
+  ...(parameters.operation === 'read' ? { executeOnce: true } : {}),
   ...extra,
 });
 

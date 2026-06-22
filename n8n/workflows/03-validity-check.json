@@ -27,7 +27,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
         },
         "sheetName": {
           "__rl": true,
@@ -43,7 +43,8 @@
       "position": [
         220,
         0
-      ]
+      ],
+      "executeOnce": true
     },
     {
       "parameters": {
@@ -51,7 +52,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
         },
         "sheetName": {
           "__rl": true,
@@ -67,7 +68,8 @@
       "position": [
         440,
         0
-      ]
+      ],
+      "executeOnce": true
     },
     {
       "parameters": {
@@ -89,7 +91,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
         },
         "sheetName": {
           "__rl": true,

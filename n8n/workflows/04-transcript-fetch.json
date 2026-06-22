@@ -27,7 +27,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
         },
         "sheetName": {
           "__rl": true,
@@ -43,7 +43,8 @@
       "position": [
         220,
         0
-      ]
+      ],
+      "executeOnce": true
     },
     {
       "parameters": {
@@ -76,13 +77,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "TRANSCRIPT_SERVICE_URL",
+        "url": "http://host.docker.internal:8787/transcript",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "x-api-key",
-              "value": "TRANSCRIPT_API_KEY"
+              "value": "local-test-key"
             }
           ]
         },
@@ -152,7 +153,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
         },
         "sheetName": {
           "__rl": true,
@@ -197,7 +198,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
         },
         "sheetName": {
           "__rl": true,
@@ -227,7 +228,7 @@
         "amount": 3
       },
       "id": "a1b2c3d4-0004-4000-8000-000000000011",
-      "name": "Wait 3s",
+      "name": "Wait 10s",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
@@ -255,7 +256,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
         },
         "sheetName": {
           "__rl": true,
@@ -285,7 +286,7 @@
         "amount": 3
       },
       "id": "a1b2c3d4-0004-4000-8000-000000000014",
-      "name": "Wait 3s b",
+      "name": "Wait 10s b",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
@@ -406,14 +407,14 @@
       "main": [
         [
           {
-            "node": "Wait 3s",
+            "node": "Wait 10s",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Wait 3s": {
+    "Wait 10s": {
       "main": [
         [
           {
@@ -439,14 +440,14 @@
       "main": [
         [
           {
-            "node": "Wait 3s b",
+            "node": "Wait 10s b",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Wait 3s b": {
+    "Wait 10s b": {
       "main": [
         [
           {
