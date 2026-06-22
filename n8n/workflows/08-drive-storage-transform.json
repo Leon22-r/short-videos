@@ -1,0 +1,529 @@
+{
+  "name": "WF8 Drive Storage Transform",
+  "nodes": [
+    {
+      "id": "wf8-001",
+      "name": "Schedule 30m",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf8-002",
+      "name": "Read Created_Clips",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Created_Clips"
+        },
+        "options": {}
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "wf8-003",
+      "name": "Read Ssemble_Jobs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ssemble_Jobs"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "wf8-004",
+      "name": "Read Clip_Moments",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Clip_Moments"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "wf8-005",
+      "name": "Pick Awaiting Download",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const TITLE_FORMULAS = {\n  CHRISTIAN_CONTENT: ['God Is Not Asking You to Ignore This', 'This Is What Waiting on God Really Means', 'A Biblical Lesson Most People Miss'],\n  MOTIVATION_DISCIPLINE: [\"The Real Reason You Can't Stay Consistent\", 'Motivation Is Not Your Problem', 'Stop Waiting to Feel Ready'],\n  FINANCE_BUSINESS: ['Why High Income Still Feels Like Poverty', 'This Money Mistake Keeps People Broke', 'Income Is Not Wealth'],\n  LIFE_VALUES_RELATIONSHIPS: [\"This Is Not Love, It's Fear\", 'Healthy Boundaries Sound Like This', 'Stop Calling This Loyalty'],\n  AFRICAN_KENYAN_SUCCESS: ['Every Young Kenyan Builder Should Hear This', 'This Advice Works Differently in Africa', 'The Reality of Building in Kenya'],\n};\n\nfunction pickAwaitingDownloads(clips, jobs, moments, folders, limit = 5) {\n  const jobsById = Object.fromEntries(jobs.map((job) => [job.ssemble_job_id, job]));\n  const momentsById = Object.fromEntries(moments.map((moment) => [moment.clip_moment_id, moment]));\n\n  return clips\n    .filter((clip) => String(clip.review_status) === 'AWAITING_DOWNLOAD')\n    .slice(0, limit)\n    .map((clip) => {\n      const job = jobsById[clip.ssemble_job_id] || {};\n      const moment = momentsById[job.clip_moment_id] || {};\n      const niche = clip.niche || job.niche || 'AFRICAN_KENYAN_SUCCESS';\n      return {\n        ...clip,\n        niche,\n        video_id: clip.video_id || job.video_id || '',\n        drive_folder_id: folders[niche],\n        file_name: `${niche}_${clip.created_clip_id}.mp4`,\n        moment_core_idea: moment.core_idea || '',\n        moment_commentary_angle: moment.commentary_angle || '',\n        moment_kenyan_application: moment.kenyan_african_application || '',\n        moment_bible_verse: moment.bible_verse_if_relevant || '',\n        moment_hook: moment.hook_first_2_seconds || '',\n        moment_suggested_title: moment.suggested_title || '',\n      };\n    });\n}\n\nfunction buildDriveIdUpdate(clip, drive) {\n  return {\n    created_clip_id: clip.created_clip_id,\n    local_file_name: clip.file_name,\n    google_drive_file_id: drive.id,\n    google_drive_url: drive.webViewLink || `https://drive.google.com/file/d/${drive.id}/view`,\n  };\n}\n\nfunction buildPlannerRequest(clip) {\n  const driveFileId = clip.google_drive_file_id || clip.drive_file_id;\n  const driveUrl = clip.google_drive_url || clip.drive_url;\n  const systemPrompt = `You are an originality-first short-form video editor, scriptwriter, and monetization-safety reviewer.\n\nTransform the selected clip into a video that clearly adds original value. The final output must not look like a reposted podcast clip. It must look like original commentary content that uses the clip as supporting material.\n\nReturn JSON only with: content_thesis, best_title, alternative_titles, hook, narration_script, commentary_angle, kenyan_african_localization, bible_verse_if_relevant, on_screen_text_beats, broll_plan, editing_style, caption, hashtags, cta, risk_warning, originality_checklist.\n\nTitle style guides: ${JSON.stringify(TITLE_FORMULAS)}.`;\n  const userContent = [\n    `Niche: ${clip.niche}`,\n    `Clip title: ${clip.clip_title}`,\n    `Clip duration: ${clip.duration_seconds}s`,\n    `Core idea: ${clip.moment_core_idea}`,\n    `Planned commentary angle: ${clip.moment_commentary_angle}`,\n    `Kenyan/African application: ${clip.moment_kenyan_application}`,\n    `Bible verse hint: ${clip.moment_bible_verse || 'none'}`,\n    `Original hook idea: ${clip.moment_hook}`,\n    `Suggested title from analysis: ${clip.moment_suggested_title}`,\n  ].join('\\n');\n\n  return {\n    created_clip_id: clip.created_clip_id,\n    video_id: clip.video_id,\n    niche: clip.niche,\n    drive_file_id: driveFileId,\n    drive_url: driveUrl,\n    file_name: clip.file_name || clip.local_file_name,\n    openai_model: 'gpt-4o-mini',\n    system_message: systemPrompt,\n    user_message: userContent,\n  };\n}\n\nfunction parseTransformationPlan(meta, response) {\n  let plan = {};\n  try {\n    if (response.choices) plan = JSON.parse(response.choices[0].message.content);\n    else if (response.message && response.message.content) plan = JSON.parse(response.message.content);\n    else if (response.text) plan = JSON.parse(response.text);\n    else if (response.content) plan = JSON.parse(response.content);\n    else plan = response.output || response;\n  } catch (error) {\n    plan = { parse_error: String(error) };\n  }\n  return {\n    created_clip_id: meta.created_clip_id,\n    video_id: meta.video_id,\n    niche: meta.niche,\n    local_file_name: meta.file_name || meta.local_file_name,\n    google_drive_file_id: meta.drive_file_id || meta.google_drive_file_id,\n    google_drive_url: meta.drive_url || meta.google_drive_url,\n    suggested_title: String(plan.best_title || ''),\n    suggested_caption: String(plan.caption || '').slice(0, 500),\n    transformation_plan: JSON.stringify(plan).slice(0, 40000),\n    review_status: 'NEEDS_REVIEW',\n  };\n}\n\n\nconst rows = pickAwaitingDownloads(\n  $('Read Created_Clips').all().map(i => i.json),\n  $('Read Ssemble_Jobs').all().map(i => i.json),\n  $('Read Clip_Moments').all().map(i => i.json),\n  {\n  CHRISTIAN_CONTENT: 'GOOGLE_DRIVE_FOLDER_CHRISTIAN_CONTENT',\n  MOTIVATION_DISCIPLINE: 'GOOGLE_DRIVE_FOLDER_MOTIVATION_DISCIPLINE',\n  FINANCE_BUSINESS: 'GOOGLE_DRIVE_FOLDER_FINANCE_BUSINESS',\n  LIFE_VALUES_RELATIONSHIPS: 'GOOGLE_DRIVE_FOLDER_LIFE_VALUES_RELATIONSHIPS',\n  AFRICAN_KENYAN_SUCCESS: 'GOOGLE_DRIVE_FOLDER_AFRICAN_KENYAN_SUCCESS',\n},\n);\nreturn rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));"
+      }
+    },
+    {
+      "id": "wf8-006",
+      "name": "Clip Loop",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "wf8-007",
+      "name": "Already Uploaded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.google_drive_file_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "wf8-008",
+      "name": "Download Clip",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        220
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.clip_url }}",
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "wf8-009",
+      "name": "Upload To Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1760,
+        220
+      ],
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $(\"Clip Loop\").first().json.file_name }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $(\"Clip Loop\").first().json.drive_folder_id }}"
+        },
+        "inputDataFieldName": "data",
+        "options": {}
+      }
+    },
+    {
+      "id": "wf8-010",
+      "name": "Shape Drive Ids",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        220
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const TITLE_FORMULAS = {\n  CHRISTIAN_CONTENT: ['God Is Not Asking You to Ignore This', 'This Is What Waiting on God Really Means', 'A Biblical Lesson Most People Miss'],\n  MOTIVATION_DISCIPLINE: [\"The Real Reason You Can't Stay Consistent\", 'Motivation Is Not Your Problem', 'Stop Waiting to Feel Ready'],\n  FINANCE_BUSINESS: ['Why High Income Still Feels Like Poverty', 'This Money Mistake Keeps People Broke', 'Income Is Not Wealth'],\n  LIFE_VALUES_RELATIONSHIPS: [\"This Is Not Love, It's Fear\", 'Healthy Boundaries Sound Like This', 'Stop Calling This Loyalty'],\n  AFRICAN_KENYAN_SUCCESS: ['Every Young Kenyan Builder Should Hear This', 'This Advice Works Differently in Africa', 'The Reality of Building in Kenya'],\n};\n\nfunction pickAwaitingDownloads(clips, jobs, moments, folders, limit = 5) {\n  const jobsById = Object.fromEntries(jobs.map((job) => [job.ssemble_job_id, job]));\n  const momentsById = Object.fromEntries(moments.map((moment) => [moment.clip_moment_id, moment]));\n\n  return clips\n    .filter((clip) => String(clip.review_status) === 'AWAITING_DOWNLOAD')\n    .slice(0, limit)\n    .map((clip) => {\n      const job = jobsById[clip.ssemble_job_id] || {};\n      const moment = momentsById[job.clip_moment_id] || {};\n      const niche = clip.niche || job.niche || 'AFRICAN_KENYAN_SUCCESS';\n      return {\n        ...clip,\n        niche,\n        video_id: clip.video_id || job.video_id || '',\n        drive_folder_id: folders[niche],\n        file_name: `${niche}_${clip.created_clip_id}.mp4`,\n        moment_core_idea: moment.core_idea || '',\n        moment_commentary_angle: moment.commentary_angle || '',\n        moment_kenyan_application: moment.kenyan_african_application || '',\n        moment_bible_verse: moment.bible_verse_if_relevant || '',\n        moment_hook: moment.hook_first_2_seconds || '',\n        moment_suggested_title: moment.suggested_title || '',\n      };\n    });\n}\n\nfunction buildDriveIdUpdate(clip, drive) {\n  return {\n    created_clip_id: clip.created_clip_id,\n    local_file_name: clip.file_name,\n    google_drive_file_id: drive.id,\n    google_drive_url: drive.webViewLink || `https://drive.google.com/file/d/${drive.id}/view`,\n  };\n}\n\nfunction buildPlannerRequest(clip) {\n  const driveFileId = clip.google_drive_file_id || clip.drive_file_id;\n  const driveUrl = clip.google_drive_url || clip.drive_url;\n  const systemPrompt = `You are an originality-first short-form video editor, scriptwriter, and monetization-safety reviewer.\n\nTransform the selected clip into a video that clearly adds original value. The final output must not look like a reposted podcast clip. It must look like original commentary content that uses the clip as supporting material.\n\nReturn JSON only with: content_thesis, best_title, alternative_titles, hook, narration_script, commentary_angle, kenyan_african_localization, bible_verse_if_relevant, on_screen_text_beats, broll_plan, editing_style, caption, hashtags, cta, risk_warning, originality_checklist.\n\nTitle style guides: ${JSON.stringify(TITLE_FORMULAS)}.`;\n  const userContent = [\n    `Niche: ${clip.niche}`,\n    `Clip title: ${clip.clip_title}`,\n    `Clip duration: ${clip.duration_seconds}s`,\n    `Core idea: ${clip.moment_core_idea}`,\n    `Planned commentary angle: ${clip.moment_commentary_angle}`,\n    `Kenyan/African application: ${clip.moment_kenyan_application}`,\n    `Bible verse hint: ${clip.moment_bible_verse || 'none'}`,\n    `Original hook idea: ${clip.moment_hook}`,\n    `Suggested title from analysis: ${clip.moment_suggested_title}`,\n  ].join('\\n');\n\n  return {\n    created_clip_id: clip.created_clip_id,\n    video_id: clip.video_id,\n    niche: clip.niche,\n    drive_file_id: driveFileId,\n    drive_url: driveUrl,\n    file_name: clip.file_name || clip.local_file_name,\n    openai_model: 'gpt-4o-mini',\n    system_message: systemPrompt,\n    user_message: userContent,\n  };\n}\n\nfunction parseTransformationPlan(meta, response) {\n  let plan = {};\n  try {\n    if (response.choices) plan = JSON.parse(response.choices[0].message.content);\n    else if (response.message && response.message.content) plan = JSON.parse(response.message.content);\n    else if (response.text) plan = JSON.parse(response.text);\n    else if (response.content) plan = JSON.parse(response.content);\n    else plan = response.output || response;\n  } catch (error) {\n    plan = { parse_error: String(error) };\n  }\n  return {\n    created_clip_id: meta.created_clip_id,\n    video_id: meta.video_id,\n    niche: meta.niche,\n    local_file_name: meta.file_name || meta.local_file_name,\n    google_drive_file_id: meta.drive_file_id || meta.google_drive_file_id,\n    google_drive_url: meta.drive_url || meta.google_drive_url,\n    suggested_title: String(plan.best_title || ''),\n    suggested_caption: String(plan.caption || '').slice(0, 500),\n    transformation_plan: JSON.stringify(plan).slice(0, 40000),\n    review_status: 'NEEDS_REVIEW',\n  };\n}\n\n\nconst clip = $('Clip Loop').first().json;\nconst drive = $input.first().json;\nreturn [{ json: buildDriveIdUpdate(clip, drive), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf8-011",
+      "name": "Save Drive Ids",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2200,
+        220
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Created_Clips"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "created_clip_id"
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf8-012",
+      "name": "Build Planner Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const TITLE_FORMULAS = {\n  CHRISTIAN_CONTENT: ['God Is Not Asking You to Ignore This', 'This Is What Waiting on God Really Means', 'A Biblical Lesson Most People Miss'],\n  MOTIVATION_DISCIPLINE: [\"The Real Reason You Can't Stay Consistent\", 'Motivation Is Not Your Problem', 'Stop Waiting to Feel Ready'],\n  FINANCE_BUSINESS: ['Why High Income Still Feels Like Poverty', 'This Money Mistake Keeps People Broke', 'Income Is Not Wealth'],\n  LIFE_VALUES_RELATIONSHIPS: [\"This Is Not Love, It's Fear\", 'Healthy Boundaries Sound Like This', 'Stop Calling This Loyalty'],\n  AFRICAN_KENYAN_SUCCESS: ['Every Young Kenyan Builder Should Hear This', 'This Advice Works Differently in Africa', 'The Reality of Building in Kenya'],\n};\n\nfunction pickAwaitingDownloads(clips, jobs, moments, folders, limit = 5) {\n  const jobsById = Object.fromEntries(jobs.map((job) => [job.ssemble_job_id, job]));\n  const momentsById = Object.fromEntries(moments.map((moment) => [moment.clip_moment_id, moment]));\n\n  return clips\n    .filter((clip) => String(clip.review_status) === 'AWAITING_DOWNLOAD')\n    .slice(0, limit)\n    .map((clip) => {\n      const job = jobsById[clip.ssemble_job_id] || {};\n      const moment = momentsById[job.clip_moment_id] || {};\n      const niche = clip.niche || job.niche || 'AFRICAN_KENYAN_SUCCESS';\n      return {\n        ...clip,\n        niche,\n        video_id: clip.video_id || job.video_id || '',\n        drive_folder_id: folders[niche],\n        file_name: `${niche}_${clip.created_clip_id}.mp4`,\n        moment_core_idea: moment.core_idea || '',\n        moment_commentary_angle: moment.commentary_angle || '',\n        moment_kenyan_application: moment.kenyan_african_application || '',\n        moment_bible_verse: moment.bible_verse_if_relevant || '',\n        moment_hook: moment.hook_first_2_seconds || '',\n        moment_suggested_title: moment.suggested_title || '',\n      };\n    });\n}\n\nfunction buildDriveIdUpdate(clip, drive) {\n  return {\n    created_clip_id: clip.created_clip_id,\n    local_file_name: clip.file_name,\n    google_drive_file_id: drive.id,\n    google_drive_url: drive.webViewLink || `https://drive.google.com/file/d/${drive.id}/view`,\n  };\n}\n\nfunction buildPlannerRequest(clip) {\n  const driveFileId = clip.google_drive_file_id || clip.drive_file_id;\n  const driveUrl = clip.google_drive_url || clip.drive_url;\n  const systemPrompt = `You are an originality-first short-form video editor, scriptwriter, and monetization-safety reviewer.\n\nTransform the selected clip into a video that clearly adds original value. The final output must not look like a reposted podcast clip. It must look like original commentary content that uses the clip as supporting material.\n\nReturn JSON only with: content_thesis, best_title, alternative_titles, hook, narration_script, commentary_angle, kenyan_african_localization, bible_verse_if_relevant, on_screen_text_beats, broll_plan, editing_style, caption, hashtags, cta, risk_warning, originality_checklist.\n\nTitle style guides: ${JSON.stringify(TITLE_FORMULAS)}.`;\n  const userContent = [\n    `Niche: ${clip.niche}`,\n    `Clip title: ${clip.clip_title}`,\n    `Clip duration: ${clip.duration_seconds}s`,\n    `Core idea: ${clip.moment_core_idea}`,\n    `Planned commentary angle: ${clip.moment_commentary_angle}`,\n    `Kenyan/African application: ${clip.moment_kenyan_application}`,\n    `Bible verse hint: ${clip.moment_bible_verse || 'none'}`,\n    `Original hook idea: ${clip.moment_hook}`,\n    `Suggested title from analysis: ${clip.moment_suggested_title}`,\n  ].join('\\n');\n\n  return {\n    created_clip_id: clip.created_clip_id,\n    video_id: clip.video_id,\n    niche: clip.niche,\n    drive_file_id: driveFileId,\n    drive_url: driveUrl,\n    file_name: clip.file_name || clip.local_file_name,\n    openai_model: 'gpt-4o-mini',\n    system_message: systemPrompt,\n    user_message: userContent,\n  };\n}\n\nfunction parseTransformationPlan(meta, response) {\n  let plan = {};\n  try {\n    if (response.choices) plan = JSON.parse(response.choices[0].message.content);\n    else if (response.message && response.message.content) plan = JSON.parse(response.message.content);\n    else if (response.text) plan = JSON.parse(response.text);\n    else if (response.content) plan = JSON.parse(response.content);\n    else plan = response.output || response;\n  } catch (error) {\n    plan = { parse_error: String(error) };\n  }\n  return {\n    created_clip_id: meta.created_clip_id,\n    video_id: meta.video_id,\n    niche: meta.niche,\n    local_file_name: meta.file_name || meta.local_file_name,\n    google_drive_file_id: meta.drive_file_id || meta.google_drive_file_id,\n    google_drive_url: meta.drive_url || meta.google_drive_url,\n    suggested_title: String(plan.best_title || ''),\n    suggested_caption: String(plan.caption || '').slice(0, 500),\n    transformation_plan: JSON.stringify(plan).slice(0, 40000),\n    review_status: 'NEEDS_REVIEW',\n  };\n}\n\n\nconst clip = { ...$('Clip Loop').first().json };\ntry {\n  const saved = $('Shape Drive Ids').first().json;\n  clip.google_drive_file_id = clip.google_drive_file_id || saved.google_drive_file_id;\n  clip.google_drive_url = clip.google_drive_url || saved.google_drive_url;\n} catch (error) {}\nreturn [{ json: buildPlannerRequest(clip), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf8-013",
+      "name": "Call OpenAI Planner",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        120
+      ],
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "={{ $json.system_message }}"
+            },
+            {
+              "role": "user",
+              "content": "={{ $json.user_message }}"
+            },
+            {}
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      }
+    },
+    {
+      "id": "wf8-014",
+      "name": "Parse Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const TITLE_FORMULAS = {\n  CHRISTIAN_CONTENT: ['God Is Not Asking You to Ignore This', 'This Is What Waiting on God Really Means', 'A Biblical Lesson Most People Miss'],\n  MOTIVATION_DISCIPLINE: [\"The Real Reason You Can't Stay Consistent\", 'Motivation Is Not Your Problem', 'Stop Waiting to Feel Ready'],\n  FINANCE_BUSINESS: ['Why High Income Still Feels Like Poverty', 'This Money Mistake Keeps People Broke', 'Income Is Not Wealth'],\n  LIFE_VALUES_RELATIONSHIPS: [\"This Is Not Love, It's Fear\", 'Healthy Boundaries Sound Like This', 'Stop Calling This Loyalty'],\n  AFRICAN_KENYAN_SUCCESS: ['Every Young Kenyan Builder Should Hear This', 'This Advice Works Differently in Africa', 'The Reality of Building in Kenya'],\n};\n\nfunction pickAwaitingDownloads(clips, jobs, moments, folders, limit = 5) {\n  const jobsById = Object.fromEntries(jobs.map((job) => [job.ssemble_job_id, job]));\n  const momentsById = Object.fromEntries(moments.map((moment) => [moment.clip_moment_id, moment]));\n\n  return clips\n    .filter((clip) => String(clip.review_status) === 'AWAITING_DOWNLOAD')\n    .slice(0, limit)\n    .map((clip) => {\n      const job = jobsById[clip.ssemble_job_id] || {};\n      const moment = momentsById[job.clip_moment_id] || {};\n      const niche = clip.niche || job.niche || 'AFRICAN_KENYAN_SUCCESS';\n      return {\n        ...clip,\n        niche,\n        video_id: clip.video_id || job.video_id || '',\n        drive_folder_id: folders[niche],\n        file_name: `${niche}_${clip.created_clip_id}.mp4`,\n        moment_core_idea: moment.core_idea || '',\n        moment_commentary_angle: moment.commentary_angle || '',\n        moment_kenyan_application: moment.kenyan_african_application || '',\n        moment_bible_verse: moment.bible_verse_if_relevant || '',\n        moment_hook: moment.hook_first_2_seconds || '',\n        moment_suggested_title: moment.suggested_title || '',\n      };\n    });\n}\n\nfunction buildDriveIdUpdate(clip, drive) {\n  return {\n    created_clip_id: clip.created_clip_id,\n    local_file_name: clip.file_name,\n    google_drive_file_id: drive.id,\n    google_drive_url: drive.webViewLink || `https://drive.google.com/file/d/${drive.id}/view`,\n  };\n}\n\nfunction buildPlannerRequest(clip) {\n  const driveFileId = clip.google_drive_file_id || clip.drive_file_id;\n  const driveUrl = clip.google_drive_url || clip.drive_url;\n  const systemPrompt = `You are an originality-first short-form video editor, scriptwriter, and monetization-safety reviewer.\n\nTransform the selected clip into a video that clearly adds original value. The final output must not look like a reposted podcast clip. It must look like original commentary content that uses the clip as supporting material.\n\nReturn JSON only with: content_thesis, best_title, alternative_titles, hook, narration_script, commentary_angle, kenyan_african_localization, bible_verse_if_relevant, on_screen_text_beats, broll_plan, editing_style, caption, hashtags, cta, risk_warning, originality_checklist.\n\nTitle style guides: ${JSON.stringify(TITLE_FORMULAS)}.`;\n  const userContent = [\n    `Niche: ${clip.niche}`,\n    `Clip title: ${clip.clip_title}`,\n    `Clip duration: ${clip.duration_seconds}s`,\n    `Core idea: ${clip.moment_core_idea}`,\n    `Planned commentary angle: ${clip.moment_commentary_angle}`,\n    `Kenyan/African application: ${clip.moment_kenyan_application}`,\n    `Bible verse hint: ${clip.moment_bible_verse || 'none'}`,\n    `Original hook idea: ${clip.moment_hook}`,\n    `Suggested title from analysis: ${clip.moment_suggested_title}`,\n  ].join('\\n');\n\n  return {\n    created_clip_id: clip.created_clip_id,\n    video_id: clip.video_id,\n    niche: clip.niche,\n    drive_file_id: driveFileId,\n    drive_url: driveUrl,\n    file_name: clip.file_name || clip.local_file_name,\n    openai_model: 'gpt-4o-mini',\n    system_message: systemPrompt,\n    user_message: userContent,\n  };\n}\n\nfunction parseTransformationPlan(meta, response) {\n  let plan = {};\n  try {\n    if (response.choices) plan = JSON.parse(response.choices[0].message.content);\n    else if (response.message && response.message.content) plan = JSON.parse(response.message.content);\n    else if (response.text) plan = JSON.parse(response.text);\n    else if (response.content) plan = JSON.parse(response.content);\n    else plan = response.output || response;\n  } catch (error) {\n    plan = { parse_error: String(error) };\n  }\n  return {\n    created_clip_id: meta.created_clip_id,\n    video_id: meta.video_id,\n    niche: meta.niche,\n    local_file_name: meta.file_name || meta.local_file_name,\n    google_drive_file_id: meta.drive_file_id || meta.google_drive_file_id,\n    google_drive_url: meta.drive_url || meta.google_drive_url,\n    suggested_title: String(plan.best_title || ''),\n    suggested_caption: String(plan.caption || '').slice(0, 500),\n    transformation_plan: JSON.stringify(plan).slice(0, 40000),\n    review_status: 'NEEDS_REVIEW',\n  };\n}\n\n\nconst meta = $('Build Planner Request').first().json;\nconst resp = $input.first().json;\nreturn [{ json: parseTransformationPlan(meta, resp), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf8-015",
+      "name": "Update Created Clip",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3080,
+        120
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Created_Clips"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "created_clip_id"
+          ]
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule 30m": {
+      "main": [
+        [
+          {
+            "node": "Read Created_Clips",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Created_Clips": {
+      "main": [
+        [
+          {
+            "node": "Read Ssemble_Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Ssemble_Jobs": {
+      "main": [
+        [
+          {
+            "node": "Read Clip_Moments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Clip_Moments": {
+      "main": [
+        [
+          {
+            "node": "Pick Awaiting Download",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Awaiting Download": {
+      "main": [
+        [
+          {
+            "node": "Clip Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clip Loop": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Already Uploaded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Uploaded?": {
+      "main": [
+        [
+          {
+            "node": "Build Planner Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Download Clip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Clip": {
+      "main": [
+        [
+          {
+            "node": "Upload To Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload To Drive": {
+      "main": [
+        [
+          {
+            "node": "Shape Drive Ids",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Drive Ids": {
+      "main": [
+        [
+          {
+            "node": "Save Drive Ids",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Drive Ids": {
+      "main": [
+        [
+          {
+            "node": "Build Planner Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Planner Request": {
+      "main": [
+        [
+          {
+            "node": "Call OpenAI Planner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call OpenAI Planner": {
+      "main": [
+        [
+          {
+            "node": "Parse Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Plan": {
+      "main": [
+        [
+          {
+            "node": "Update Created Clip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Created Clip": {
+      "main": [
+        [
+          {
+            "node": "Clip Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}

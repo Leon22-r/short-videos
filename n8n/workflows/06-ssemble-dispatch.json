@@ -1,0 +1,634 @@
+{
+  "name": "WF6 Ssemble Dispatch",
+  "nodes": [
+    {
+      "id": "wf6-001",
+      "name": "Schedule 2h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf6-002",
+      "name": "Read Clip_Moments",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Clip_Moments"
+        },
+        "options": {}
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "wf6-003",
+      "name": "Read Ssemble_Jobs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ssemble_Jobs"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "wf6-004",
+      "name": "Plan Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function nairobiDay(value) {\n  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi' }).format(new Date(value));\n}\n\nfunction isRealJob(job) {\n  return job.clip_moment_id && String(job.job_status) !== 'SUBMIT_FAILED';\n}\n\nfunction spentToday(jobs, now = new Date().toISOString()) {\n  const today = nairobiDay(now);\n  return jobs.filter((job) => job.created_at && nairobiDay(job.created_at) === today && isRealJob(job)).length;\n}\n\nfunction planSsembleRequests(moments, jobs, options = {}) {\n  const dailyBudget = Number(options.dailyBudget || 10);\n  const now = options.now || new Date().toISOString();\n  const webhookUrl = options.webhookUrl || 'https://YOUR_N8N_DOMAIN/webhook/ssemble-callback?secret=SSEMBLE_WEBHOOK_SECRET';\n  let remaining = Math.max(0, dailyBudget - spentToday(jobs, now));\n  if (remaining === 0) return [];\n\n  const dispatched = {};\n  for (const job of jobs) {\n    if (isRealJob(job)) dispatched[job.clip_moment_id] = true;\n  }\n\n  const pending = moments\n    .filter((moment) => String(moment.ssemble_status) === 'PENDING')\n    .filter((moment) => !dispatched[moment.clip_moment_id]);\n\n  const byVideo = {};\n  for (const moment of pending) {\n    byVideo[moment.video_id] = byVideo[moment.video_id] || [];\n    byVideo[moment.video_id].push(moment);\n  }\n\n  const requests = [];\n  for (const videoId of Object.keys(byVideo).sort()) {\n    const momentsForVideo = byVideo[videoId].sort((a, b) => Number(b.clip_score || 0) - Number(a.clip_score || 0));\n    for (const moment of momentsForVideo) {\n      if (remaining === 0) break;\n      let start = Math.max(0, Math.floor(Number(moment.start_sec)));\n      let end = Math.floor(Number(moment.end_sec));\n      if (end - start < 60) {\n        const pad = Math.ceil((60 - (end - start)) / 2);\n        start = Math.max(0, start - pad);\n        end = start + 60;\n      }\n      if (end - start > 1200) end = start + 1200;\n      const isWindow = String(moment.strategy) === 'USE_20_MIN_WINDOW';\n      const body = {\n        url: moment.source_video_url,\n        start,\n        end,\n        preferredLength: 'under60sec',\n        language: 'en',\n        music: false,\n        layout: 'auto',\n        ...(isWindow ? {} : { noClipping: true }),\n        webhookUrl,\n      };\n      requests.push({\n        clip_moment_id: moment.clip_moment_id,\n        video_id: moment.video_id,\n        niche: moment.niche,\n        source_video_url: moment.source_video_url,\n        start_sec: start,\n        end_sec: end,\n        ssemble_body: JSON.stringify(body),\n      });\n      remaining -= 1;\n    }\n  }\n  return requests;\n}\n\nfunction buildReservationRow(request, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: `RESERVE-${request.clip_moment_id}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: '',\n    job_status: 'RESERVED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmittedJobUpdate(request, response, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: response.data.requestId,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMITTED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmitFailedJobUpdate(request, response, now = new Date().toISOString()) {\n  const message = (response.error && response.error.message) || response.message || JSON.stringify(response).slice(0, 500);\n  return {\n    ssemble_job_id: `SUBMITFAIL-${request.clip_moment_id}-${Date.parse(now) || Date.now()}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMIT_FAILED',\n    webhook_received: 'FALSE',\n    error_message: String(message),\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildMomentStatus(request, status, ssembleJobId = '') {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: ssembleJobId,\n  };\n}\n\n\nconst requests = planSsembleRequests(\n  $('Read Clip_Moments').all().map(i => i.json),\n  $('Read Ssemble_Jobs').all().map(i => i.json),\n  { dailyBudget: 10, webhookUrl: 'https://YOUR_N8N_DOMAIN/webhook/ssemble-callback?secret=SSEMBLE_WEBHOOK_SECRET' },\n);\nreturn requests.map((request, index) => ({ json: request, pairedItem: { item: index } }));"
+      }
+    },
+    {
+      "id": "wf6-005",
+      "name": "Dispatch Loop",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "wf6-006",
+      "name": "Build Reservation Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function nairobiDay(value) {\n  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi' }).format(new Date(value));\n}\n\nfunction isRealJob(job) {\n  return job.clip_moment_id && String(job.job_status) !== 'SUBMIT_FAILED';\n}\n\nfunction spentToday(jobs, now = new Date().toISOString()) {\n  const today = nairobiDay(now);\n  return jobs.filter((job) => job.created_at && nairobiDay(job.created_at) === today && isRealJob(job)).length;\n}\n\nfunction planSsembleRequests(moments, jobs, options = {}) {\n  const dailyBudget = Number(options.dailyBudget || 10);\n  const now = options.now || new Date().toISOString();\n  const webhookUrl = options.webhookUrl || 'https://YOUR_N8N_DOMAIN/webhook/ssemble-callback?secret=SSEMBLE_WEBHOOK_SECRET';\n  let remaining = Math.max(0, dailyBudget - spentToday(jobs, now));\n  if (remaining === 0) return [];\n\n  const dispatched = {};\n  for (const job of jobs) {\n    if (isRealJob(job)) dispatched[job.clip_moment_id] = true;\n  }\n\n  const pending = moments\n    .filter((moment) => String(moment.ssemble_status) === 'PENDING')\n    .filter((moment) => !dispatched[moment.clip_moment_id]);\n\n  const byVideo = {};\n  for (const moment of pending) {\n    byVideo[moment.video_id] = byVideo[moment.video_id] || [];\n    byVideo[moment.video_id].push(moment);\n  }\n\n  const requests = [];\n  for (const videoId of Object.keys(byVideo).sort()) {\n    const momentsForVideo = byVideo[videoId].sort((a, b) => Number(b.clip_score || 0) - Number(a.clip_score || 0));\n    for (const moment of momentsForVideo) {\n      if (remaining === 0) break;\n      let start = Math.max(0, Math.floor(Number(moment.start_sec)));\n      let end = Math.floor(Number(moment.end_sec));\n      if (end - start < 60) {\n        const pad = Math.ceil((60 - (end - start)) / 2);\n        start = Math.max(0, start - pad);\n        end = start + 60;\n      }\n      if (end - start > 1200) end = start + 1200;\n      const isWindow = String(moment.strategy) === 'USE_20_MIN_WINDOW';\n      const body = {\n        url: moment.source_video_url,\n        start,\n        end,\n        preferredLength: 'under60sec',\n        language: 'en',\n        music: false,\n        layout: 'auto',\n        ...(isWindow ? {} : { noClipping: true }),\n        webhookUrl,\n      };\n      requests.push({\n        clip_moment_id: moment.clip_moment_id,\n        video_id: moment.video_id,\n        niche: moment.niche,\n        source_video_url: moment.source_video_url,\n        start_sec: start,\n        end_sec: end,\n        ssemble_body: JSON.stringify(body),\n      });\n      remaining -= 1;\n    }\n  }\n  return requests;\n}\n\nfunction buildReservationRow(request, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: `RESERVE-${request.clip_moment_id}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: '',\n    job_status: 'RESERVED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmittedJobUpdate(request, response, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: response.data.requestId,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMITTED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmitFailedJobUpdate(request, response, now = new Date().toISOString()) {\n  const message = (response.error && response.error.message) || response.message || JSON.stringify(response).slice(0, 500);\n  return {\n    ssemble_job_id: `SUBMITFAIL-${request.clip_moment_id}-${Date.parse(now) || Date.now()}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMIT_FAILED',\n    webhook_received: 'FALSE',\n    error_message: String(message),\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildMomentStatus(request, status, ssembleJobId = '') {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: ssembleJobId,\n  };\n}\n\n\nconst req = $('Dispatch Loop').first().json;\nreturn [{ json: buildReservationRow(req), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf6-007",
+      "name": "Reserve Ssemble Job",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1320,
+        120
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ssemble_Jobs"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "clip_moment_id"
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf6-008",
+      "name": "Call Ssemble Create",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://aiclipping.ssemble.com/api/v1/shorts/create",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $(\"Dispatch Loop\").first().json.ssemble_body }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "wf6-009",
+      "name": "Route On Created",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.data && $json.data.requestId }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "wf6-010",
+      "name": "Build Submitted Job Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function nairobiDay(value) {\n  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi' }).format(new Date(value));\n}\n\nfunction isRealJob(job) {\n  return job.clip_moment_id && String(job.job_status) !== 'SUBMIT_FAILED';\n}\n\nfunction spentToday(jobs, now = new Date().toISOString()) {\n  const today = nairobiDay(now);\n  return jobs.filter((job) => job.created_at && nairobiDay(job.created_at) === today && isRealJob(job)).length;\n}\n\nfunction planSsembleRequests(moments, jobs, options = {}) {\n  const dailyBudget = Number(options.dailyBudget || 10);\n  const now = options.now || new Date().toISOString();\n  const webhookUrl = options.webhookUrl || 'https://YOUR_N8N_DOMAIN/webhook/ssemble-callback?secret=SSEMBLE_WEBHOOK_SECRET';\n  let remaining = Math.max(0, dailyBudget - spentToday(jobs, now));\n  if (remaining === 0) return [];\n\n  const dispatched = {};\n  for (const job of jobs) {\n    if (isRealJob(job)) dispatched[job.clip_moment_id] = true;\n  }\n\n  const pending = moments\n    .filter((moment) => String(moment.ssemble_status) === 'PENDING')\n    .filter((moment) => !dispatched[moment.clip_moment_id]);\n\n  const byVideo = {};\n  for (const moment of pending) {\n    byVideo[moment.video_id] = byVideo[moment.video_id] || [];\n    byVideo[moment.video_id].push(moment);\n  }\n\n  const requests = [];\n  for (const videoId of Object.keys(byVideo).sort()) {\n    const momentsForVideo = byVideo[videoId].sort((a, b) => Number(b.clip_score || 0) - Number(a.clip_score || 0));\n    for (const moment of momentsForVideo) {\n      if (remaining === 0) break;\n      let start = Math.max(0, Math.floor(Number(moment.start_sec)));\n      let end = Math.floor(Number(moment.end_sec));\n      if (end - start < 60) {\n        const pad = Math.ceil((60 - (end - start)) / 2);\n        start = Math.max(0, start - pad);\n        end = start + 60;\n      }\n      if (end - start > 1200) end = start + 1200;\n      const isWindow = String(moment.strategy) === 'USE_20_MIN_WINDOW';\n      const body = {\n        url: moment.source_video_url,\n        start,\n        end,\n        preferredLength: 'under60sec',\n        language: 'en',\n        music: false,\n        layout: 'auto',\n        ...(isWindow ? {} : { noClipping: true }),\n        webhookUrl,\n      };\n      requests.push({\n        clip_moment_id: moment.clip_moment_id,\n        video_id: moment.video_id,\n        niche: moment.niche,\n        source_video_url: moment.source_video_url,\n        start_sec: start,\n        end_sec: end,\n        ssemble_body: JSON.stringify(body),\n      });\n      remaining -= 1;\n    }\n  }\n  return requests;\n}\n\nfunction buildReservationRow(request, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: `RESERVE-${request.clip_moment_id}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: '',\n    job_status: 'RESERVED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmittedJobUpdate(request, response, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: response.data.requestId,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMITTED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmitFailedJobUpdate(request, response, now = new Date().toISOString()) {\n  const message = (response.error && response.error.message) || response.message || JSON.stringify(response).slice(0, 500);\n  return {\n    ssemble_job_id: `SUBMITFAIL-${request.clip_moment_id}-${Date.parse(now) || Date.now()}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMIT_FAILED',\n    webhook_received: 'FALSE',\n    error_message: String(message),\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildMomentStatus(request, status, ssembleJobId = '') {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: ssembleJobId,\n  };\n}\n\n\nconst req = $('Dispatch Loop').first().json;\nconst resp = $input.first().json;\nreturn [{ json: buildSubmittedJobUpdate(req, resp), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf6-011",
+      "name": "Update Reservation Submitted",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2200,
+        40
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ssemble_Jobs"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "clip_moment_id"
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf6-012",
+      "name": "Mark Moment Submitted",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function nairobiDay(value) {\n  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi' }).format(new Date(value));\n}\n\nfunction isRealJob(job) {\n  return job.clip_moment_id && String(job.job_status) !== 'SUBMIT_FAILED';\n}\n\nfunction spentToday(jobs, now = new Date().toISOString()) {\n  const today = nairobiDay(now);\n  return jobs.filter((job) => job.created_at && nairobiDay(job.created_at) === today && isRealJob(job)).length;\n}\n\nfunction planSsembleRequests(moments, jobs, options = {}) {\n  const dailyBudget = Number(options.dailyBudget || 10);\n  const now = options.now || new Date().toISOString();\n  const webhookUrl = options.webhookUrl || 'https://YOUR_N8N_DOMAIN/webhook/ssemble-callback?secret=SSEMBLE_WEBHOOK_SECRET';\n  let remaining = Math.max(0, dailyBudget - spentToday(jobs, now));\n  if (remaining === 0) return [];\n\n  const dispatched = {};\n  for (const job of jobs) {\n    if (isRealJob(job)) dispatched[job.clip_moment_id] = true;\n  }\n\n  const pending = moments\n    .filter((moment) => String(moment.ssemble_status) === 'PENDING')\n    .filter((moment) => !dispatched[moment.clip_moment_id]);\n\n  const byVideo = {};\n  for (const moment of pending) {\n    byVideo[moment.video_id] = byVideo[moment.video_id] || [];\n    byVideo[moment.video_id].push(moment);\n  }\n\n  const requests = [];\n  for (const videoId of Object.keys(byVideo).sort()) {\n    const momentsForVideo = byVideo[videoId].sort((a, b) => Number(b.clip_score || 0) - Number(a.clip_score || 0));\n    for (const moment of momentsForVideo) {\n      if (remaining === 0) break;\n      let start = Math.max(0, Math.floor(Number(moment.start_sec)));\n      let end = Math.floor(Number(moment.end_sec));\n      if (end - start < 60) {\n        const pad = Math.ceil((60 - (end - start)) / 2);\n        start = Math.max(0, start - pad);\n        end = start + 60;\n      }\n      if (end - start > 1200) end = start + 1200;\n      const isWindow = String(moment.strategy) === 'USE_20_MIN_WINDOW';\n      const body = {\n        url: moment.source_video_url,\n        start,\n        end,\n        preferredLength: 'under60sec',\n        language: 'en',\n        music: false,\n        layout: 'auto',\n        ...(isWindow ? {} : { noClipping: true }),\n        webhookUrl,\n      };\n      requests.push({\n        clip_moment_id: moment.clip_moment_id,\n        video_id: moment.video_id,\n        niche: moment.niche,\n        source_video_url: moment.source_video_url,\n        start_sec: start,\n        end_sec: end,\n        ssemble_body: JSON.stringify(body),\n      });\n      remaining -= 1;\n    }\n  }\n  return requests;\n}\n\nfunction buildReservationRow(request, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: `RESERVE-${request.clip_moment_id}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: '',\n    job_status: 'RESERVED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmittedJobUpdate(request, response, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: response.data.requestId,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMITTED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmitFailedJobUpdate(request, response, now = new Date().toISOString()) {\n  const message = (response.error && response.error.message) || response.message || JSON.stringify(response).slice(0, 500);\n  return {\n    ssemble_job_id: `SUBMITFAIL-${request.clip_moment_id}-${Date.parse(now) || Date.now()}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMIT_FAILED',\n    webhook_received: 'FALSE',\n    error_message: String(message),\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildMomentStatus(request, status, ssembleJobId = '') {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: ssembleJobId,\n  };\n}\n\n\nconst req = $('Dispatch Loop').first().json;\nconst job = $('Build Submitted Job Update').first().json;\nreturn [{ json: buildMomentStatus(req, 'SUBMITTED', job.ssemble_job_id), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf6-013",
+      "name": "Update Moment Submitted",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2640,
+        40
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Clip_Moments"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "clip_moment_id"
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf6-014",
+      "name": "Build Submit Failed Job Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        220
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function nairobiDay(value) {\n  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi' }).format(new Date(value));\n}\n\nfunction isRealJob(job) {\n  return job.clip_moment_id && String(job.job_status) !== 'SUBMIT_FAILED';\n}\n\nfunction spentToday(jobs, now = new Date().toISOString()) {\n  const today = nairobiDay(now);\n  return jobs.filter((job) => job.created_at && nairobiDay(job.created_at) === today && isRealJob(job)).length;\n}\n\nfunction planSsembleRequests(moments, jobs, options = {}) {\n  const dailyBudget = Number(options.dailyBudget || 10);\n  const now = options.now || new Date().toISOString();\n  const webhookUrl = options.webhookUrl || 'https://YOUR_N8N_DOMAIN/webhook/ssemble-callback?secret=SSEMBLE_WEBHOOK_SECRET';\n  let remaining = Math.max(0, dailyBudget - spentToday(jobs, now));\n  if (remaining === 0) return [];\n\n  const dispatched = {};\n  for (const job of jobs) {\n    if (isRealJob(job)) dispatched[job.clip_moment_id] = true;\n  }\n\n  const pending = moments\n    .filter((moment) => String(moment.ssemble_status) === 'PENDING')\n    .filter((moment) => !dispatched[moment.clip_moment_id]);\n\n  const byVideo = {};\n  for (const moment of pending) {\n    byVideo[moment.video_id] = byVideo[moment.video_id] || [];\n    byVideo[moment.video_id].push(moment);\n  }\n\n  const requests = [];\n  for (const videoId of Object.keys(byVideo).sort()) {\n    const momentsForVideo = byVideo[videoId].sort((a, b) => Number(b.clip_score || 0) - Number(a.clip_score || 0));\n    for (const moment of momentsForVideo) {\n      if (remaining === 0) break;\n      let start = Math.max(0, Math.floor(Number(moment.start_sec)));\n      let end = Math.floor(Number(moment.end_sec));\n      if (end - start < 60) {\n        const pad = Math.ceil((60 - (end - start)) / 2);\n        start = Math.max(0, start - pad);\n        end = start + 60;\n      }\n      if (end - start > 1200) end = start + 1200;\n      const isWindow = String(moment.strategy) === 'USE_20_MIN_WINDOW';\n      const body = {\n        url: moment.source_video_url,\n        start,\n        end,\n        preferredLength: 'under60sec',\n        language: 'en',\n        music: false,\n        layout: 'auto',\n        ...(isWindow ? {} : { noClipping: true }),\n        webhookUrl,\n      };\n      requests.push({\n        clip_moment_id: moment.clip_moment_id,\n        video_id: moment.video_id,\n        niche: moment.niche,\n        source_video_url: moment.source_video_url,\n        start_sec: start,\n        end_sec: end,\n        ssemble_body: JSON.stringify(body),\n      });\n      remaining -= 1;\n    }\n  }\n  return requests;\n}\n\nfunction buildReservationRow(request, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: `RESERVE-${request.clip_moment_id}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: '',\n    job_status: 'RESERVED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmittedJobUpdate(request, response, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: response.data.requestId,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMITTED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmitFailedJobUpdate(request, response, now = new Date().toISOString()) {\n  const message = (response.error && response.error.message) || response.message || JSON.stringify(response).slice(0, 500);\n  return {\n    ssemble_job_id: `SUBMITFAIL-${request.clip_moment_id}-${Date.parse(now) || Date.now()}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMIT_FAILED',\n    webhook_received: 'FALSE',\n    error_message: String(message),\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildMomentStatus(request, status, ssembleJobId = '') {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: ssembleJobId,\n  };\n}\n\n\nconst req = $('Dispatch Loop').first().json;\nconst resp = $input.first().json;\nreturn [{ json: buildSubmitFailedJobUpdate(req, resp), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf6-015",
+      "name": "Update Reservation Failed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2200,
+        220
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ssemble_Jobs"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "clip_moment_id"
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf6-016",
+      "name": "Mark Moment Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        220
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function nairobiDay(value) {\n  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi' }).format(new Date(value));\n}\n\nfunction isRealJob(job) {\n  return job.clip_moment_id && String(job.job_status) !== 'SUBMIT_FAILED';\n}\n\nfunction spentToday(jobs, now = new Date().toISOString()) {\n  const today = nairobiDay(now);\n  return jobs.filter((job) => job.created_at && nairobiDay(job.created_at) === today && isRealJob(job)).length;\n}\n\nfunction planSsembleRequests(moments, jobs, options = {}) {\n  const dailyBudget = Number(options.dailyBudget || 10);\n  const now = options.now || new Date().toISOString();\n  const webhookUrl = options.webhookUrl || 'https://YOUR_N8N_DOMAIN/webhook/ssemble-callback?secret=SSEMBLE_WEBHOOK_SECRET';\n  let remaining = Math.max(0, dailyBudget - spentToday(jobs, now));\n  if (remaining === 0) return [];\n\n  const dispatched = {};\n  for (const job of jobs) {\n    if (isRealJob(job)) dispatched[job.clip_moment_id] = true;\n  }\n\n  const pending = moments\n    .filter((moment) => String(moment.ssemble_status) === 'PENDING')\n    .filter((moment) => !dispatched[moment.clip_moment_id]);\n\n  const byVideo = {};\n  for (const moment of pending) {\n    byVideo[moment.video_id] = byVideo[moment.video_id] || [];\n    byVideo[moment.video_id].push(moment);\n  }\n\n  const requests = [];\n  for (const videoId of Object.keys(byVideo).sort()) {\n    const momentsForVideo = byVideo[videoId].sort((a, b) => Number(b.clip_score || 0) - Number(a.clip_score || 0));\n    for (const moment of momentsForVideo) {\n      if (remaining === 0) break;\n      let start = Math.max(0, Math.floor(Number(moment.start_sec)));\n      let end = Math.floor(Number(moment.end_sec));\n      if (end - start < 60) {\n        const pad = Math.ceil((60 - (end - start)) / 2);\n        start = Math.max(0, start - pad);\n        end = start + 60;\n      }\n      if (end - start > 1200) end = start + 1200;\n      const isWindow = String(moment.strategy) === 'USE_20_MIN_WINDOW';\n      const body = {\n        url: moment.source_video_url,\n        start,\n        end,\n        preferredLength: 'under60sec',\n        language: 'en',\n        music: false,\n        layout: 'auto',\n        ...(isWindow ? {} : { noClipping: true }),\n        webhookUrl,\n      };\n      requests.push({\n        clip_moment_id: moment.clip_moment_id,\n        video_id: moment.video_id,\n        niche: moment.niche,\n        source_video_url: moment.source_video_url,\n        start_sec: start,\n        end_sec: end,\n        ssemble_body: JSON.stringify(body),\n      });\n      remaining -= 1;\n    }\n  }\n  return requests;\n}\n\nfunction buildReservationRow(request, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: `RESERVE-${request.clip_moment_id}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: '',\n    job_status: 'RESERVED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmittedJobUpdate(request, response, now = new Date().toISOString()) {\n  return {\n    ssemble_job_id: response.data.requestId,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMITTED',\n    webhook_received: 'FALSE',\n    error_message: '',\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildSubmitFailedJobUpdate(request, response, now = new Date().toISOString()) {\n  const message = (response.error && response.error.message) || response.message || JSON.stringify(response).slice(0, 500);\n  return {\n    ssemble_job_id: `SUBMITFAIL-${request.clip_moment_id}-${Date.parse(now) || Date.now()}`,\n    video_id: request.video_id,\n    clip_moment_id: request.clip_moment_id,\n    niche: request.niche,\n    source_video_url: request.source_video_url,\n    start_sec: request.start_sec,\n    end_sec: request.end_sec,\n    request_payload: request.ssemble_body,\n    response_payload: JSON.stringify(response).slice(0, 40000),\n    job_status: 'SUBMIT_FAILED',\n    webhook_received: 'FALSE',\n    error_message: String(message),\n    created_at: now,\n    completed_at: '',\n  };\n}\n\nfunction buildMomentStatus(request, status, ssembleJobId = '') {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: ssembleJobId,\n  };\n}\n\n\nconst req = $('Dispatch Loop').first().json;\nreturn [{ json: buildMomentStatus(req, 'ERROR'), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf6-017",
+      "name": "Update Moment Error",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2640,
+        220
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Clip_Moments"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "clip_moment_id"
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf6-018",
+      "name": "Wait 5s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2860,
+        40
+      ],
+      "parameters": {
+        "amount": 5
+      }
+    },
+    {
+      "id": "wf6-019",
+      "name": "Wait 5s b",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2860,
+        220
+      ],
+      "parameters": {
+        "amount": 5
+      }
+    }
+  ],
+  "connections": {
+    "Schedule 2h": {
+      "main": [
+        [
+          {
+            "node": "Read Clip_Moments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Clip_Moments": {
+      "main": [
+        [
+          {
+            "node": "Read Ssemble_Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Ssemble_Jobs": {
+      "main": [
+        [
+          {
+            "node": "Plan Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Requests": {
+      "main": [
+        [
+          {
+            "node": "Dispatch Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dispatch Loop": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Build Reservation Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Reservation Row": {
+      "main": [
+        [
+          {
+            "node": "Reserve Ssemble Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve Ssemble Job": {
+      "main": [
+        [
+          {
+            "node": "Call Ssemble Create",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Ssemble Create": {
+      "main": [
+        [
+          {
+            "node": "Route On Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route On Created": {
+      "main": [
+        [
+          {
+            "node": "Build Submitted Job Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Submit Failed Job Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Submitted Job Update": {
+      "main": [
+        [
+          {
+            "node": "Update Reservation Submitted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Reservation Submitted": {
+      "main": [
+        [
+          {
+            "node": "Mark Moment Submitted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Moment Submitted": {
+      "main": [
+        [
+          {
+            "node": "Update Moment Submitted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Moment Submitted": {
+      "main": [
+        [
+          {
+            "node": "Wait 5s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5s": {
+      "main": [
+        [
+          {
+            "node": "Dispatch Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Submit Failed Job Update": {
+      "main": [
+        [
+          {
+            "node": "Update Reservation Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Reservation Failed": {
+      "main": [
+        [
+          {
+            "node": "Mark Moment Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Moment Error": {
+      "main": [
+        [
+          {
+            "node": "Update Moment Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Moment Error": {
+      "main": [
+        [
+          {
+            "node": "Wait 5s b",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5s b": {
+      "main": [
+        [
+          {
+            "node": "Dispatch Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}

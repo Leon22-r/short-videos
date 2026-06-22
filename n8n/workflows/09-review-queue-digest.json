@@ -1,0 +1,125 @@
+{
+  "name": "WF9 Review Queue Digest",
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Africa/Nairobi"
+  },
+  "nodes": [
+    {
+      "id": "wf9-001",
+      "name": "Schedule Daily",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf9-002",
+      "name": "Read Created_Clips",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Created_Clips"
+        },
+        "options": {}
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "wf9-003",
+      "name": "Build Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function escapeHtml(value) {\n  return String(value || '')\n    .replaceAll('&', '&amp;')\n    .replaceAll('<', '&lt;')\n    .replaceAll('>', '&gt;')\n    .replaceAll('\"', '&quot;');\n}\n\nfunction buildReviewDigest(clips) {\n  const pending = clips.filter((clip) => String(clip.review_status) === 'NEEDS_REVIEW');\n  if (pending.length === 0) return null;\n\n  const byNiche = {};\n  for (const clip of pending) {\n    const niche = clip.niche || 'UNKNOWN';\n    byNiche[niche] = byNiche[niche] || [];\n    byNiche[niche].push(clip);\n  }\n\n  let html = `<h2>Clips awaiting review: ${pending.length}</h2>`;\n  for (const niche of Object.keys(byNiche).sort()) {\n    html += `<h3>${escapeHtml(niche)} (${byNiche[niche].length})</h3><ul>`;\n    for (const clip of byNiche[niche]) {\n      const title = escapeHtml(clip.suggested_title || clip.clip_title || clip.created_clip_id);\n      html += `<li><a href=\"${escapeHtml(clip.google_drive_url)}\">${title}</a> - ${escapeHtml(clip.duration_seconds)}s - ${escapeHtml(clip.reviewer_notes)}</li>`;\n    }\n    html += '</ul>';\n  }\n  html += '<p>Approve by setting review_status=APPROVED in Created_Clips, then copy to Approved_For_Posting.</p>';\n\n  return {\n    subject: `Shorts review queue: ${pending.length} clips`,\n    html,\n  };\n}\n\n\nconst digest = buildReviewDigest($input.all().map(i => i.json));\nif (!digest) return [];\nreturn [{ json: digest, pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf9-004",
+      "name": "Send Digest",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "njihialeon00@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Daily": {
+      "main": [
+        [
+          {
+            "node": "Read Created_Clips",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Created_Clips": {
+      "main": [
+        [
+          {
+            "node": "Build Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Digest": {
+      "main": [
+        [
+          {
+            "node": "Send Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}

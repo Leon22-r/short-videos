@@ -1,0 +1,190 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+
+const {
+  buildReservationRow,
+  buildSubmittedJobUpdate,
+  planSsembleRequests,
+} = require('../n8n/workflow-code/ssemble-dispatch');
+const {
+  attachMoment,
+  explodeCreatedClips,
+  verifyAndParseWebhook,
+} = require('../n8n/workflow-code/ssemble-webhook');
+const {
+  buildPlannerRequest,
+  parseTransformationPlan,
+  pickAwaitingDownloads,
+} = require('../n8n/workflow-code/drive-storage-transform');
+const { buildReviewDigest } = require('../n8n/workflow-code/review-queue-digest');
+
+const wf5 = require('../n8n/workflows/05-ai-transcript-analysis.json');
+
+function requireWorkflow(number, name) {
+  return require(`../n8n/workflows/${number}-${name}.json`);
+}
+
+test('WF5 uses OpenAI after provider rollback', () => {
+  const names = wf5.nodes.map((node) => node.name);
+
+  assert(names.includes('Build OpenAI Request'));
+  assert(names.includes('Call OpenAI'));
+  assert(!names.some((name) => name.toLowerCase().includes('gemini')));
+});
+
+test('WF6 plans Ssemble requests with daily budget, dedupe, and 60s padding', () => {
+  const requests = planSsembleRequests(
+    [
+      {
+        clip_moment_id: 'CM-1',
+        video_id: 'VID-1',
+        niche: 'FINANCE_BUSINESS',
+        source_video_url: 'https://www.youtube.com/watch?v=abc',
+        start_sec: 30,
+        end_sec: 45,
+        clip_score: 9,
+        strategy: 'USE_EXACT_CLIPS_ONLY',
+        ssemble_status: 'PENDING',
+      },
+      {
+        clip_moment_id: 'CM-2',
+        video_id: 'VID-2',
+        niche: 'FINANCE_BUSINESS',
+        source_video_url: 'https://www.youtube.com/watch?v=def',
+        start_sec: 0,
+        end_sec: 90,
+        clip_score: 8,
+        strategy: 'USE_EXACT_CLIPS_ONLY',
+        ssemble_status: 'PENDING',
+      },
+    ],
+    [{ clip_moment_id: 'CM-2', job_status: 'RESERVED', created_at: '2026-06-17T06:00:00.000Z' }],
+    {
+      dailyBudget: 3,
+      now: '2026-06-17T10:00:00.000Z',
+      webhookUrl: 'https://example.com/webhook/ssemble-callback?secret=test',
+    },
+  );
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].clip_moment_id, 'CM-1');
+  assert.equal(requests[0].end_sec - requests[0].start_sec, 60);
+  assert.equal(JSON.parse(requests[0].ssemble_body).noClipping, true);
+});
+
+test('WF6 reserves a clip before calling Ssemble and later updates with requestId', () => {
+  const req = planSsembleRequests(
+    [{
+      clip_moment_id: 'CM-1',
+      video_id: 'VID-1',
+      niche: 'FINANCE_BUSINESS',
+      source_video_url: 'https://www.youtube.com/watch?v=abc',
+      start_sec: 0,
+      end_sec: 90,
+      clip_score: 9,
+      strategy: 'USE_EXACT_CLIPS_ONLY',
+      ssemble_status: 'PENDING',
+    }],
+    [],
+    { now: '2026-06-17T10:00:00.000Z', webhookUrl: 'https://example.com/hook' },
+  )[0];
+
+  const reservation = buildReservationRow(req, '2026-06-17T10:00:01.000Z');
+  const submitted = buildSubmittedJobUpdate(req, { data: { requestId: 'REQ-123' } }, '2026-06-17T10:00:02.000Z');
+
+  assert.equal(reservation.ssemble_job_id, 'RESERVE-CM-1');
+  assert.equal(reservation.job_status, 'RESERVED');
+  assert.equal(submitted.clip_moment_id, 'CM-1');
+  assert.equal(submitted.ssemble_job_id, 'REQ-123');
+  assert.equal(submitted.job_status, 'SUBMITTED');
+});
+
+test('WF6 workflow writes reservation before Ssemble API call', () => {
+  const workflow = requireWorkflow('06', 'ssemble-dispatch');
+
+  assert.equal(workflow.connections['Plan Requests'].main[0][0].node, 'Dispatch Loop');
+  assert.equal(workflow.connections['Build Reservation Row'].main[0][0].node, 'Reserve Ssemble Job');
+  assert.equal(workflow.connections['Reserve Ssemble Job'].main[0][0].node, 'Call Ssemble Create');
+});
+
+test('WF7 verifies webhook secret, joins job lineage, and explodes shorts', () => {
+  const parsed = verifyAndParseWebhook(
+    {
+      query: { secret: 'good' },
+      body: {
+        event: 'shorts.completed',
+        requestId: 'REQ-123',
+        timestamp: '2026-06-17T10:05:00.000Z',
+        data: { shorts: [{ id: 'short1', title: 'Clip', video_url: 'https://cdn/clip.mp4', duration: 42, viral_score: 88 }] },
+      },
+    },
+    'good',
+  );
+  const attached = attachMoment(parsed, [{ ssemble_job_id: 'REQ-123', clip_moment_id: 'CM-1', video_id: 'VID-1', niche: 'FINANCE_BUSINESS' }]);
+  const clips = explodeCreatedClips(attached, '2026-06-17T10:06:00.000Z');
+
+  assert.equal(attached.clip_moment_id, 'CM-1');
+  assert.equal(clips.length, 1);
+  assert.equal(clips[0].created_clip_id, 'CC-short1');
+  assert.equal(clips[0].review_status, 'AWAITING_DOWNLOAD');
+});
+
+test('WF8 reuses uploaded Drive files and builds OpenAI planner requests', () => {
+  const selected = pickAwaitingDownloads(
+    [{ created_clip_id: 'CC-1', ssemble_job_id: 'REQ-1', review_status: 'AWAITING_DOWNLOAD', google_drive_file_id: 'DRIVE-1', google_drive_url: 'https://drive/file' }],
+    [{ ssemble_job_id: 'REQ-1', clip_moment_id: 'CM-1', video_id: 'VID-1', niche: 'FINANCE_BUSINESS' }],
+    [{ clip_moment_id: 'CM-1', core_idea: 'Budgeting', commentary_angle: 'Kenyan angle', suggested_title: 'Budget' }],
+    { FINANCE_BUSINESS: 'FOLDER-1' },
+  );
+  const planner = buildPlannerRequest(selected[0]);
+  const parsed = parseTransformationPlan(
+    selected[0],
+    { choices: [{ message: { content: JSON.stringify({ best_title: 'Use M-Pesa Better', caption: 'Caption' }) } }] },
+  );
+
+  assert.equal(selected[0].drive_folder_id, 'FOLDER-1');
+  assert.equal(planner.openai_model, 'gpt-4o-mini');
+  assert.match(planner.user_message, /Budgeting/);
+  assert.equal(parsed.suggested_title, 'Use M-Pesa Better');
+  assert.equal(parsed.review_status, 'NEEDS_REVIEW');
+});
+
+test('WF8 uses official OpenAI node for planner', () => {
+  const workflow = requireWorkflow('08', 'drive-storage-transform');
+  const nodeTypes = Object.fromEntries(workflow.nodes.map((node) => [node.name, node.type]));
+  const openAi = workflow.nodes.find((node) => node.name === 'Call OpenAI Planner');
+
+  assert.equal(nodeTypes['Call OpenAI Planner'], '@n8n/n8n-nodes-langchain.openAi');
+  assert.equal(openAi.parameters.operation, undefined);
+  assert.equal(openAi.parameters.modelId.value, 'gpt-4o-mini');
+  assert.equal(openAi.parameters.responses.values[0].role, 'system');
+  assert.equal(openAi.parameters.responses.values[0].content, '={{ $json.system_message }}');
+  assert.equal(openAi.parameters.responses.values[1].content, '={{ $json.user_message }}');
+  assert.deepEqual(openAi.parameters.builtInTools, {});
+  assert(!workflow.nodes.some((node) => node.name === 'Call OpenAI Planner' && node.type === 'n8n-nodes-base.httpRequest'));
+});
+
+test('WF9 digest skips empty queue and groups review links', () => {
+  assert.equal(buildReviewDigest([]), null);
+
+  const digest = buildReviewDigest([
+    {
+      niche: 'FINANCE_BUSINESS',
+      review_status: 'NEEDS_REVIEW',
+      google_drive_url: 'https://drive/clip',
+      suggested_title: 'Budget clip',
+      duration_seconds: 40,
+      reviewer_notes: 'viral_score=80',
+    },
+  ]);
+
+  assert.match(digest.subject, /1 clips/);
+  assert.match(digest.html, /FINANCE_BUSINESS/);
+  assert.match(digest.html, /https:\/\/drive\/clip/);
+});
+
+test('WF7, WF8, and WF9 workflow files exist with expected entry nodes', () => {
+  assert.equal(requireWorkflow('07', 'ssemble-webhook-receiver').nodes[0].name, 'Webhook');
+  assert.equal(requireWorkflow('08', 'drive-storage-transform').nodes[0].name, 'Schedule 30m');
+  assert.equal(requireWorkflow('09', 'review-queue-digest').nodes[0].name, 'Schedule Daily');
+});
