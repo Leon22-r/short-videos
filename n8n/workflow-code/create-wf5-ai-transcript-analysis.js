@@ -4,6 +4,8 @@ const { readFileSync } = require('node:fs');
 const workflowPath = process.argv[2] || 'n8n/workflows/05-ai-transcript-analysis.json';
 const helperSource = readFileSync('n8n/workflow-code/ai-transcript-analysis.js', 'utf8');
 const embeddedHelper = helperSource.replace(/module\.exports = \{[\s\S]*?\};\n?/, '');
+const healthHelperSource = readFileSync('n8n/workflow-code/channel-health-check.js', 'utf8');
+const embeddedHealthHelper = healthHelperSource.replace(/module\.exports = \{[\s\S]*?\};\n?/, '');
 
 const sheet = (operation, sheetName, extra = {}) => ({
   operation,
@@ -141,7 +143,9 @@ try {
   throw new Error(\`AI returned unparseable JSON for \${row.video_id}: \${String(err)}\`);
 }
 return [{ json: result, pairedItem: { item: 0 } }];`),
-    codeNode('a1b2c3d4-0005-4000-8000-000000000010', 'Shape Analysis Update', [1980, 120], `return [{ json: $input.first().json.analysisUpdate, pairedItem: { item: 0 } }];`),
+    codeNode('a1b2c3d4-0005-4000-8000-000000000010', 'Shape Analysis Update', [1980, 120], `const parseResult = $input.first().json;
+const sourceId = $('Build OpenAI Request').first().json.source_id || '';
+return [{ json: { ...parseResult.analysisUpdate, source_id: sourceId }, pairedItem: { item: 0 } }];`),
     sheetsNode(
       'a1b2c3d4-0005-4000-8000-000000000011',
       'Update Analysis Row',
@@ -169,6 +173,120 @@ return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`)
         columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] },
       }),
     ),
+    codeNode('a1b2c3d4-0005-4000-8000-000000000019', 'Channel Health Check', [2860, 320], `${embeddedHealthHelper}
+
+const sourceId = $('Shape Analysis Update').first().json.source_id || '';
+if (!sourceId) {
+  return [{ json: { shouldPause: false, source_id: '', skipped: true } }];
+}
+
+const channels = $('Read Source_Channels').all().map(r => r.json);
+const channelRow = channels.find(c => c.source_id === sourceId) || {};
+
+const candidates = $('Read Candidate_Videos').all().map(r => r.json);
+const sourceByVideo = {};
+for (const c of candidates) {
+  if (c.video_id && c.source_id) sourceByVideo[c.video_id] = c.source_id;
+}
+
+const videoId = $('Build OpenAI Request').first().json.video_id || '';
+const taRows = $('Read Transcript_Analysis').all().map(r => ({
+  ...r.json,
+  source_id: r.json.source_id || sourceByVideo[r.json.video_id] || ''
+}));
+
+const now = new Date().toISOString();
+const currentAnalysis = $('Shape Analysis Update').first().json;
+const currentTARow = {
+  source_id: sourceId,
+  video_id: videoId,
+  ai_episode_score: currentAnalysis.ai_episode_score,
+  recommended_strategy: currentAnalysis.recommended_strategy,
+  created_at: now,
+};
+const allTARows = taRows.filter(r => r.video_id !== videoId).concat([currentTARow]);
+
+const isReEnable = detectReEnable(channelRow);
+const healthResetAt = isReEnable ? now : (channelRow.health_reset_at || '');
+const health = evaluateChannelHealth(sourceId, allTARows, healthResetAt);
+
+const update = {
+  source_id: sourceId,
+  total_analyzed_count: health.total,
+  channel_skip_rate: health.skipRate !== null ? health.skipRate : '',
+};
+
+if (isReEnable) {
+  update.auto_paused_at = '';
+  update.auto_paused_reason = '';
+  update.health_reset_at = now;
+}
+
+if (health.shouldPause) {
+  update.active_status = 'FALSE';
+  update.auto_paused_at = now;
+  update.auto_paused_reason = health.reason;
+}
+
+return [{ json: { ...update, shouldPause: health.shouldPause } }];`),
+    sheetsNode(
+      'a1b2c3d4-0005-4000-8000-000000000020',
+      'Update Channel Health',
+      [3080, 320],
+      sheet('appendOrUpdate', 'Source_Channels', {
+        columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['source_id'] },
+      }),
+    ),
+    {
+      parameters: {
+        conditions: {
+          options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+          conditions: [{
+            id: 'cond-pause-check',
+            leftValue: "={{ $('Channel Health Check').first().json.shouldPause }}",
+            rightValue: true,
+            operator: { type: 'boolean', operation: 'true' },
+          }],
+          combinator: 'and',
+        },
+        options: {},
+      },
+      id: 'a1b2c3d4-0005-4000-8000-000000000021',
+      name: 'IF Should Pause Channel',
+      type: 'n8n-nodes-base.if',
+      typeVersion: 2.2,
+      position: [3300, 320],
+    },
+    codeNode('a1b2c3d4-0005-4000-8000-000000000022', 'Shape Candidates To Skip', [3520, 220], `
+const result = $('Channel Health Check').first().json;
+const sourceId = result.source_id || '';
+const reason = result.auto_paused_reason || 'Channel auto-paused';
+
+const candidates = $('Read Candidate_Videos').all().map(r => r.json);
+const toSkip = candidates.filter(c =>
+  c.source_id === sourceId &&
+  !['DONE', 'ANALYZED', 'SKIPPED'].includes(String(c.processing_status || ''))
+);
+
+if (toSkip.length === 0) return [];
+
+return toSkip.map((c, i) => ({
+  json: {
+    video_id: c.video_id,
+    processing_status: 'SKIPPED',
+    validity_status: 'REJECTED',
+    rejection_reason: \`Channel auto-paused: \${reason}\`,
+  },
+  pairedItem: { item: i },
+}));`),
+    sheetsNode(
+      'a1b2c3d4-0005-4000-8000-000000000023',
+      'Bulk Skip Candidates',
+      [3740, 220],
+      sheet('appendOrUpdate', 'Candidate_Videos', {
+        columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['video_id'] },
+      }),
+    ),
   ],
   connections: {
     'Schedule Hourly': { main: [[{ node: 'Read Transcript_Analysis', type: 'main', index: 0 }]] },
@@ -194,9 +312,19 @@ return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`)
       main: [[
         { node: 'Explode Clip Moments', type: 'main', index: 0 },
         { node: 'Analysis Loop', type: 'main', index: 0 },
+        { node: 'Channel Health Check', type: 'main', index: 0 },
       ]],
     },
     'Explode Clip Moments': { main: [[{ node: 'Append Clip_Moments', type: 'main', index: 0 }]] },
+    'Channel Health Check': { main: [[{ node: 'Update Channel Health', type: 'main', index: 0 }]] },
+    'Update Channel Health': { main: [[{ node: 'IF Should Pause Channel', type: 'main', index: 0 }]] },
+    'IF Should Pause Channel': {
+      main: [
+        [{ node: 'Shape Candidates To Skip', type: 'main', index: 0 }],
+        [],
+      ],
+    },
+    'Shape Candidates To Skip': { main: [[{ node: 'Bulk Skip Candidates', type: 'main', index: 0 }]] },
   },
   settings: { executionOrder: 'v1' },
   pinData: {},

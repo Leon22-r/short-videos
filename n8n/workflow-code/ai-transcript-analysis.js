@@ -152,6 +152,7 @@ function pickUnanalyzed(analysisRows, sourceRows, candidateRows, limit = 5) {
         ...row,
         processing_status: candidate.processing_status || row.processing_status || 'NEW',
         source_risk: riskBySource[candidate.source_id] || 'low',
+        source_id: candidate.source_id || '',
       };
     });
 }
