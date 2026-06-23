@@ -183,6 +183,49 @@ test('WF9 digest skips empty queue and groups review links', () => {
   assert.match(digest.html, /https:\/\/drive\/clip/);
 });
 
+test('WF9 digest includes auto-paused channels section', () => {
+  const now = new Date().toISOString();
+  const channels = [
+    { source_name: 'Finance Guru KE', niche: 'FINANCE_BUSINESS', auto_paused_at: now, auto_paused_reason: 'skip_rate=80% (8/10 videos)' },
+  ];
+  const digest = buildReviewDigest([], channels);
+  assert.ok(digest !== null);
+  assert.match(digest.subject, /channels auto-paused/);
+  assert.match(digest.html, /Finance Guru KE/);
+  assert.match(digest.html, /skip_rate=80%/);
+  assert.match(digest.html, /active_status=TRUE/);
+});
+
+test('WF9 digest returns null when no clips and no recently paused channels', () => {
+  const oldTimestamp = new Date(Date.now() - 90000000).toISOString(); // 25h ago
+  const channels = [
+    { source_name: 'Old Channel', niche: 'FINANCE_BUSINESS', auto_paused_at: oldTimestamp, auto_paused_reason: 'skip_rate=70%' },
+  ];
+  assert.equal(buildReviewDigest([], channels), null);
+});
+
+test('WF9 digest includes both clips and channels when both present', () => {
+  const now = new Date().toISOString();
+  const clips = [{ review_status: 'NEEDS_REVIEW', niche: 'MOTIVATION_DISCIPLINE', created_clip_id: 'clip-1', google_drive_url: 'https://drive/1', duration_seconds: 60, reviewer_notes: '', suggested_title: 'Test' }];
+  const channels = [{ source_name: 'Finance Guru KE', niche: 'FINANCE_BUSINESS', auto_paused_at: now, auto_paused_reason: 'skip_rate=80%' }];
+  const digest = buildReviewDigest(clips, channels);
+  assert.match(digest.subject, /1 clips, 1 channels paused/);
+  assert.match(digest.html, /Finance Guru KE/);
+  assert.match(digest.html, /MOTIVATION_DISCIPLINE/);
+});
+
+test('WF9 digest channels older than 24h are excluded', () => {
+  const recent = new Date().toISOString();
+  const old = new Date(Date.now() - 90000000).toISOString(); // 25h ago
+  const channels = [
+    { source_name: 'Recent', niche: 'FINANCE_BUSINESS', auto_paused_at: recent, auto_paused_reason: 'skip_rate=80%' },
+    { source_name: 'Old', niche: 'FINANCE_BUSINESS', auto_paused_at: old, auto_paused_reason: 'skip_rate=70%' },
+  ];
+  const digest = buildReviewDigest([], channels);
+  assert.match(digest.html, /Recent/);
+  assert.doesNotMatch(digest.html, /Old.*auto-paused/);
+});
+
 test('WF7, WF8, and WF9 workflow files exist with expected entry nodes', () => {
   assert.equal(requireWorkflow('07', 'ssemble-webhook-receiver').nodes[0].name, 'Webhook');
   assert.equal(requireWorkflow('08', 'drive-storage-transform').nodes[0].name, 'Schedule 30m');

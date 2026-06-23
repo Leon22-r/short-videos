@@ -298,15 +298,18 @@ function wf9() {
     settings: { timezone: 'Africa/Nairobi' },
     nodes: [
       node('wf9-001', 'Schedule Daily', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'cronExpression', expression: '0 8 * * *' }] } }),
-      sheetsNode('wf9-002', 'Read Created_Clips', [220, 0], sheet('read', 'Created_Clips')),
-      codeNode('wf9-003', 'Build Digest', [440, 0], `${h}
-const digest = buildReviewDigest($input.all().map(i => i.json));
+      sheetsNode('wf9-005', 'Read Source_Channels', [220, 0], sheet('read', 'Source_Channels')),
+      sheetsNode('wf9-002', 'Read Created_Clips', [440, 0], sheet('read', 'Created_Clips')),
+      codeNode('wf9-003', 'Build Digest', [660, 0], `${h}
+const channels = $('Read Source_Channels').all().map(i => i.json);
+const digest = buildReviewDigest($input.all().map(i => i.json), channels);
 if (!digest) return [];
 return [{ json: digest, pairedItem: { item: 0 } }];`),
-      node('wf9-004', 'Send Digest', 'n8n-nodes-base.gmail', 2.1, [660, 0], { resource: 'message', operation: 'send', sendTo: 'njihialeon00@gmail.com', subject: '={{ $json.subject }}', message: '={{ $json.html }}', options: {} }),
+      node('wf9-004', 'Send Digest', 'n8n-nodes-base.gmail', 2.1, [880, 0], { resource: 'message', operation: 'send', sendTo: 'njihialeon00@gmail.com', subject: '={{ $json.subject }}', message: '={{ $json.html }}', options: {} }),
     ],
     connections: {
-      'Schedule Daily': { main: [[{ node: 'Read Created_Clips', type: 'main', index: 0 }]] },
+      'Schedule Daily': { main: [[{ node: 'Read Source_Channels', type: 'main', index: 0 }]] },
+      'Read Source_Channels': { main: [[{ node: 'Read Created_Clips', type: 'main', index: 0 }]] },
       'Read Created_Clips': { main: [[{ node: 'Build Digest', type: 'main', index: 0 }]] },
       'Build Digest': { main: [[{ node: 'Send Digest', type: 'main', index: 0 }]] },
     },
