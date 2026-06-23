@@ -1,10 +1,9 @@
-# SDD Progress — n8n video pipeline bug fixes
+# SDD Progress — Channel Health Ranking Feature
+
+## Starting commit: eee494c
 
 ## Tasks
-- [ ] Task 1: Fix JS utility modules (validity-check.js, transcript-fetch.js, ssemble-dispatch.js)
-- [ ] Task 2: Fix ai-transcript-analysis.js (schema + gate + prompt)
-- [ ] Task 3: Fix handler.py (empty key check)
-- [ ] Task 4: Fix WF5 JSON (Call OpenAI empty msg, onError, sync embedded code)
-- [ ] Task 5: Fix WF4 JSON (hardcoded URL/key)
-- [ ] Task 6: Fix WF6 JSON (hardcoded webhook URL, expose dailyBudget)
-- [ ] Task 7: Fix WF8 JSON (Download Clip onError, Build Planner silent catch)
+- [x] Task 1: Schema docs — new columns for Source_Channels (5) and Transcript_Analysis (1) (commit 7d30173, review clean)
+- [x] Task 2: Create channel-health-check.js + tests (commit 2284260, review clean)
+- [x] Task 3: Extend WF5 (write source_id, re-enable detect, health check nodes) (commit 6ec6242, review clean — 2 minor notes: duplicate require, doubled rejection_reason fallback)
+- [x] Task 4: Extend WF9 digest (auto-paused channels section) (commit 806fa55, review clean)

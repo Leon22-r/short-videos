@@ -145,7 +145,8 @@ try {
 return [{ json: result, pairedItem: { item: 0 } }];`),
     codeNode('a1b2c3d4-0005-4000-8000-000000000010', 'Shape Analysis Update', [1980, 120], `const parseResult = $input.first().json;
 const sourceId = $('Build OpenAI Request').first().json.source_id || '';
-return [{ json: { ...parseResult.analysisUpdate, source_id: sourceId }, pairedItem: { item: 0 } }];`),
+const videoId = $('Build OpenAI Request').first().json.video_id || '';
+return [{ json: { ...parseResult.analysisUpdate, source_id: sourceId, video_id: videoId }, pairedItem: { item: 0 } }];`),
     sheetsNode(
       'a1b2c3d4-0005-4000-8000-000000000011',
       'Update Analysis Row',
@@ -154,7 +155,8 @@ return [{ json: { ...parseResult.analysisUpdate, source_id: sourceId }, pairedIt
         columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['analysis_id'] },
       }),
     ),
-    codeNode('a1b2c3d4-0005-4000-8000-000000000012', 'Shape Candidate Update', [2420, 120], `return [{ json: $('Parse And Gate').first().json.candidateUpdate, pairedItem: { item: 0 } }];`),
+    codeNode('a1b2c3d4-0005-4000-8000-000000000012', 'Shape Candidate Update', [2420, 120], `const parseResult = $input.first().json;
+return [{ json: parseResult.candidateUpdate, pairedItem: { item: 0 } }];`),
     sheetsNode(
       'a1b2c3d4-0005-4000-8000-000000000013',
       'Update Candidate Status',
@@ -163,7 +165,7 @@ return [{ json: { ...parseResult.analysisUpdate, source_id: sourceId }, pairedIt
         columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['video_id'] },
       }),
     ),
-    codeNode('a1b2c3d4-0005-4000-8000-000000000014', 'Explode Clip Moments', [2860, 20], `const rows = $('Parse And Gate').first().json.momentRows || [];
+    codeNode('a1b2c3d4-0005-4000-8000-000000000014', 'Explode Clip Moments', [2860, 20], `const rows = $input.first().json.momentRows || [];
 return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
     sheetsNode(
       'a1b2c3d4-0005-4000-8000-000000000015',
@@ -175,7 +177,8 @@ return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`)
     ),
     codeNode('a1b2c3d4-0005-4000-8000-000000000019', 'Channel Health Check', [2860, 320], `${embeddedHealthHelper}
 
-const sourceId = $('Shape Analysis Update').first().json.source_id || '';
+const currentAnalysis = $input.first().json;
+const sourceId = currentAnalysis.source_id || '';
 if (!sourceId) {
   return [{ json: { shouldPause: false, source_id: '', skipped: true } }];
 }
@@ -189,14 +192,13 @@ for (const c of candidates) {
   if (c.video_id && c.source_id) sourceByVideo[c.video_id] = c.source_id;
 }
 
-const videoId = $('Build OpenAI Request').first().json.video_id || '';
+const videoId = currentAnalysis.video_id || '';
 const taRows = $('Read Transcript_Analysis').all().map(r => ({
   ...r.json,
   source_id: r.json.source_id || sourceByVideo[r.json.video_id] || ''
 }));
 
 const now = new Date().toISOString();
-const currentAnalysis = $('Shape Analysis Update').first().json;
 const currentTARow = {
   source_id: sourceId,
   video_id: videoId,
@@ -263,8 +265,15 @@ const sourceId = result.source_id || '';
 const reason = result.auto_paused_reason || 'Channel auto-paused';
 
 const candidates = $('Read Candidate_Videos').all().map(r => r.json);
+
+// Exclude all videos being processed in this WF5 run (stale snapshot fix)
+const runVideoIds = new Set(
+  $('Pick Unanalyzed').all().map(i => String(i.json.video_id || ''))
+);
+
 const toSkip = candidates.filter(c =>
   c.source_id === sourceId &&
+  !runVideoIds.has(String(c.video_id || '')) &&
   !['DONE', 'ANALYZED', 'SKIPPED'].includes(String(c.processing_status || ''))
 );
 
@@ -304,16 +313,18 @@ return toSkip.map((c, i) => ({
     'Analysis Loop': { main: [[], [{ node: 'Build OpenAI Request', type: 'main', index: 0 }]] },
     'Build OpenAI Request': { main: [[{ node: 'Call OpenAI', type: 'main', index: 0 }]] },
     'Call OpenAI': { main: [[{ node: 'Parse And Gate', type: 'main', index: 0 }]] },
-    'Parse And Gate': { main: [[{ node: 'Shape Analysis Update', type: 'main', index: 0 }]] },
+    'Parse And Gate': {
+      main: [[
+        { node: 'Shape Analysis Update', type: 'main', index: 0 },
+        { node: 'Shape Candidate Update', type: 'main', index: 0 },
+        { node: 'Explode Clip Moments', type: 'main', index: 0 },
+      ]],
+    },
     'Shape Analysis Update': { main: [[{ node: 'Update Analysis Row', type: 'main', index: 0 }]] },
-    'Update Analysis Row': { main: [[{ node: 'Shape Candidate Update', type: 'main', index: 0 }]] },
+    'Update Analysis Row': { main: [[{ node: 'Channel Health Check', type: 'main', index: 0 }]] },
     'Shape Candidate Update': { main: [[{ node: 'Update Candidate Status', type: 'main', index: 0 }]] },
     'Update Candidate Status': {
-      main: [[
-        { node: 'Explode Clip Moments', type: 'main', index: 0 },
-        { node: 'Analysis Loop', type: 'main', index: 0 },
-        { node: 'Channel Health Check', type: 'main', index: 0 },
-      ]],
+      main: [[{ node: 'Analysis Loop', type: 'main', index: 0 }]],
     },
     'Explode Clip Moments': { main: [[{ node: 'Append Clip_Moments', type: 'main', index: 0 }]] },
     'Channel Health Check': { main: [[{ node: 'Update Channel Health', type: 'main', index: 0 }]] },

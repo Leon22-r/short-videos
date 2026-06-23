@@ -8,7 +8,11 @@ const NICHE_RULES = {
 
 const SYSTEM_PROMPT = `You are a short-form video content strategist for a Kenya-based commentary brand.
 
-Find valuable, transformable short-form moments. Save Ssemble credits by recommending SKIP_THIS_VIDEO unless the transcript contains strong, brand-safe, original-commentary opportunities.
+Find valuable, transformable short-form moments.
+
+Prioritize USE_20_MIN_WINDOW when a transcript contains at least 3 strong clips within a single 60-1200 second window. Use USE_EXACT_CLIPS_ONLY only when the good moments are scattered far apart or when there are only 1-2 strong clips. Use SKIP_THIS_VIDEO only when the transcript lacks strong, brand-safe, transformable opportunities.
+
+Because Ssemble credits are spent more efficiently on one high-density window, prefer a 20-minute window whenever it can produce multiple usable shorts.
 
 Return valid JSON matching the requested schema.`;
 

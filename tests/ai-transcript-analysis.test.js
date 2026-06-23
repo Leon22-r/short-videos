@@ -96,6 +96,10 @@ test('builds OpenAI app node analysis inputs', () => {
   assert.equal(result.openai_model, 'gpt-4o-mini');
   assert.deepEqual(JSON.parse(result.analysis_schema), ANALYSIS_SCHEMA);
   assert.match(result.system_message, /content strategist/);
+  assert.match(result.system_message, /Prioritize USE_20_MIN_WINDOW/);
+  assert.match(result.system_message, /at least 3 strong clips within a single 60-1200 second window/);
+  assert.match(result.system_message, /USE_EXACT_CLIPS_ONLY only when the good moments are scattered far apart/);
+  assert.match(result.system_message, /Ssemble credits are spent more efficiently on one high-density window/);
   assert.match(result.user_message, /FINANCE_BUSINESS/);
   assert.match(result.user_message, /"overall_episode_score"/);
   assert.match(result.user_message, /Return the bare analysis object/);
@@ -288,6 +292,33 @@ test('WF5 independently backfills missing window moments from sheet state', () =
   assert.equal(
     workflow.connections['Build Missing Window Moments'].main[0][0].node,
     'Backfill Clip_Moments',
+  );
+});
+
+test('WF5 loop branches use the current parse result for each analyzed video', () => {
+  const shapeCandidate = workflow.nodes.find((node) => node.name === 'Shape Candidate Update');
+  const explodeMoments = workflow.nodes.find((node) => node.name === 'Explode Clip Moments');
+  const channelHealth = workflow.nodes.find((node) => node.name === 'Channel Health Check');
+  const parseOutputs = workflow.connections['Parse And Gate'].main[0].map((connection) => connection.node).sort();
+
+  assert.match(shapeCandidate.parameters.jsCode, /parseResult = \$input\.first\(\)\.json/);
+  assert.match(shapeCandidate.parameters.jsCode, /parseResult\.candidateUpdate/);
+  assert.doesNotMatch(shapeCandidate.parameters.jsCode, /\$\('Parse And Gate'\)\.first\(\)/);
+  assert.match(explodeMoments.parameters.jsCode, /\$input\.first\(\)\.json\.momentRows/);
+  assert.doesNotMatch(explodeMoments.parameters.jsCode, /\$\('Parse And Gate'\)\.first\(\)/);
+  assert.doesNotMatch(channelHealth.parameters.jsCode, /\$\('Shape Analysis Update'\)\.first\(\)/);
+  assert.deepEqual(parseOutputs, [
+    'Explode Clip Moments',
+    'Shape Analysis Update',
+    'Shape Candidate Update',
+  ]);
+  assert.equal(
+    workflow.connections['Update Analysis Row'].main[0][0].node,
+    'Channel Health Check',
+  );
+  assert.deepEqual(
+    workflow.connections['Update Candidate Status'].main[0].map((connection) => connection.node),
+    ['Analysis Loop'],
   );
 });
 
