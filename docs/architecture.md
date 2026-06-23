@@ -65,6 +65,43 @@ WF6 is the only workflow that spends Ssemble credits:
 - WF7 writes created clips by deterministic `created_clip_id`.
 - WF8 saves Drive IDs immediately after upload and reuses them on retries.
 
+## Channel Health
+
+WF5 tracks channel quality after every analysis and auto-pauses poor-performing channels to stop wasting AI credits.
+
+**Trigger:** after each WF5 analysis completes.
+
+**Rule:** if a channel has ≥ 10 analyzed videos and its all-time `SKIP_THIS_VIDEO` rate ≥ 70%, it is auto-paused.
+
+**Pause action:**
+- `Source_Channels.active_status` → `FALSE` (stops WF2 from fetching new videos)
+- `Source_Channels.auto_paused_at` and `auto_paused_reason` set for audit trail
+- All `Candidate_Videos` rows for the channel with `processing_status` not in `[DONE, ANALYZED, SKIPPED]` are bulk-set to `processing_status=SKIPPED`, `validity_status=REJECTED`, `rejection_reason="Channel auto-paused: ..."`.
+
+**Re-enable:** Set `active_status=TRUE` in Source_Channels (one cell). WF5 detects this on the next analysis from that channel and automatically resets the health window (`health_reset_at=NOW`, counters cleared). The channel then needs to accumulate 10 new videos before it can be judged again — preventing an immediate re-pause from stale historical data.
+
+**Notification:** WF9 daily digest includes a "Channels Auto-Paused Today" section listing any channels paused in the last 24 hours.
+
+### New Google Sheet Columns Required
+
+**Source_Channels** (add 5 columns):
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `total_analyzed_count` | integer | Analyzed videos since last `health_reset_at` |
+| `channel_skip_rate` | decimal (0.0–1.0) | All-time skip rate since last reset; empty until ≥ 10 analyzed |
+| `auto_paused_at` | ISO timestamp | Set on auto-pause; cleared by WF5 on re-enable |
+| `auto_paused_reason` | string | e.g. `"skip_rate=73% (22/30 videos)"` |
+| `health_reset_at` | ISO timestamp | Set by WF5 on re-enable; health check ignores TA rows older than this |
+
+**Transcript_Analysis** (add 1 column):
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `source_id` | string | Denormalized from Candidate_Videos so health check can filter by channel without a join |
+
+> These columns must be added to the actual Google Sheet before deploying the updated WF5.
+
 ## Human Boundary
 
 Automated:
