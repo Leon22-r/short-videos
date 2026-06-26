@@ -175,7 +175,7 @@ test('WF7b picks only stale submitted jobs that still need polling', () => {
 });
 
 test('WF7b recheck skips jobs already closed by webhook', () => {
-  assert.equal(shouldPollCurrentJob({ job_status: 'SUBMITTED', webhook_received: 'FALSE' }), true);
+  assert.equal(shouldPollCurrentJob({ ssemble_job_id: 'REQ-1', job_status: 'SUBMITTED', webhook_received: 'FALSE' }), true);
   assert.equal(shouldPollCurrentJob({ job_status: 'COMPLETED', webhook_received: 'TRUE' }), false);
   assert.equal(shouldPollCurrentJob({ job_status: 'FAILED', webhook_received: 'TRUE' }), false);
   assert.equal(shouldPollCurrentJob({ job_status: 'SUBMITTED', webhook_received: 'TRUE' }), false);
