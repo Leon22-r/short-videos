@@ -369,8 +369,48 @@ test('WF9 digest channels older than 24h are excluded', () => {
   assert.doesNotMatch(digest.html, /Old.*auto-paused/);
 });
 
-test('WF7, WF8, and WF9 workflow files exist with expected entry nodes', () => {
+test('WF7b polling fallback checks stale Ssemble jobs and only fetches shorts after completed status', () => {
+  const workflow = requireWorkflow('07b', 'ssemble-polling-fallback');
+  const names = workflow.nodes.map((node) => node.name);
+  const statusNode = workflow.nodes.find((node) => node.name === 'Check Ssemble Status');
+  const shortsNode = workflow.nodes.find((node) => node.name === 'Get Ssemble Shorts');
+  const shortsInbound = Object.entries(workflow.connections)
+    .flatMap(([source, connection]) => (connection.main || [])
+      .flatMap((branch) => branch.map((target) => ({ source, target: target.node }))))
+    .filter((connection) => connection.target === 'Get Ssemble Shorts');
+
+  assert.equal(workflow.nodes[0].name, 'Schedule 15m');
+  assert(names.includes('Pick Stale Submitted Jobs'));
+  assert(names.includes('Confirm Still Submitted'));
+  assert(names.includes('Still Needs Poll?'));
+  assert(names.includes('Check Ssemble Status'));
+  assert(names.includes('Get Ssemble Shorts'));
+  assert(names.includes('Normalize Completed Poll'));
+  assert(names.includes('Completed Has Shorts?'));
+  assert(names.includes('Append Created_Clips'));
+  assert.match(statusNode.parameters.url, /\/status/);
+  assert.doesNotMatch(shortsNode.parameters.url, /\/status/);
+  assert.equal(statusNode.parameters.authentication, 'genericCredentialType');
+  assert.equal(statusNode.parameters.genericAuthType, 'httpHeaderAuth');
+  assert.equal(shortsNode.parameters.authentication, 'genericCredentialType');
+  assert.equal(shortsNode.parameters.genericAuthType, 'httpHeaderAuth');
+  assert.equal(workflow.connections['Confirm Still Submitted'].main[0][0].node, 'Still Needs Poll?');
+  assert.equal(workflow.connections['Still Needs Poll?'].main[0][0].node, 'Check Ssemble Status');
+  assert.equal(workflow.connections['Still Needs Poll?'].main[1][0].node, 'Wait 2s Pending');
+  assert.deepEqual(shortsInbound, [{ source: 'Status Completed?', target: 'Get Ssemble Shorts' }]);
+  assert.equal(workflow.connections['Status Completed?'].main[0][0].node, 'Get Ssemble Shorts');
+  assert.equal(workflow.connections['Status Completed?'].main[1][0].node, 'Status Failed?');
+  assert.equal(workflow.connections['Status Failed?'].main[1][0].node, 'Wait 2s Pending');
+  assert.equal(workflow.connections['Get Ssemble Shorts'].main[0][0].node, 'Normalize Completed Poll');
+  assert.equal(workflow.connections['Normalize Completed Poll'].main[0][0].node, 'Completed Has Shorts?');
+  assert.equal(workflow.connections['Completed Has Shorts?'].main[0][0].node, 'Shape Job Completed');
+  assert.equal(workflow.connections['Completed Has Shorts?'].main[1][0].node, 'Wait 2s Pending');
+  assert.equal(workflow.connections['Append Created_Clips'].main[0][0].node, 'Wait 2s Completed');
+});
+
+test('WF7, WF7b, WF8, and WF9 workflow files exist with expected entry nodes', () => {
   assert.equal(requireWorkflow('07', 'ssemble-webhook-receiver').nodes[0].name, 'Webhook');
+  assert.equal(requireWorkflow('07b', 'ssemble-polling-fallback').nodes[0].name, 'Schedule 15m');
   assert.equal(requireWorkflow('08', 'drive-storage-transform').nodes[0].name, 'Schedule 30m');
   assert.equal(requireWorkflow('09', 'review-queue-digest').nodes[0].name, 'Schedule Daily');
 });
