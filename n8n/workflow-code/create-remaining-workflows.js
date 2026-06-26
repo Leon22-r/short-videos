@@ -92,6 +92,8 @@ const ifNode = (id, name, position, leftValue, rightValue, type, operation) => n
   },
 );
 
+const routeIfNode = (id, name, position, route) => ifNode(id, name, position, '={{ $json.route }}', route, 'string', 'equals');
+
 function writeWorkflow(file, workflow) {
   fs.writeFileSync(file, `${JSON.stringify({
     ...workflow,
@@ -249,8 +251,11 @@ return picked.map((job, index) => ({ json: job, pairedItem: { item: index } }));
 const candidate = $('Poll Loop').first().json;
 const jobs = $('Re-read Ssemble_Jobs').all().map(i => i.json);
 const latest = findLatestJob(candidate, jobs);
-if (!shouldPollCurrentJob(latest)) return [];
-return [{ json: latest, pairedItem: { item: 0 } }];`),
+if (!shouldPollCurrentJob(latest)) {
+  return [{ json: buildNoopPollResult(latest, { status: 'already_closed' }), pairedItem: { item: 0 } }];
+}
+return [{ json: { ...latest, route: 'poll' }, pairedItem: { item: 0 } }];`),
+      routeIfNode('wf7b-027', 'Still Needs Poll?', [1320, 120], 'poll'),
       httpNode('wf7b-007', 'Check Ssemble Status', [1320, 120], {
         method: 'GET',
         url: "={{ 'https://aiclipping.ssemble.com/api/v1/shorts/' + $json.ssemble_job_id + '/status' }}",
@@ -276,8 +281,11 @@ const job = $('Confirm Still Submitted').first().json;
 const status = $('Normalize Status').first().json;
 const result = $input.first().json;
 const normalized = normalizeCompletedPollResult(job, status, result);
-if (!normalized.shorts.length) return [];
-return [{ json: attachMoment(normalized, [job]), pairedItem: { item: 0 } }];`),
+if (!normalized.shorts.length) {
+  return [{ json: buildNoopPollResult(job, result), pairedItem: { item: 0 } }];
+}
+return [{ json: attachMoment({ ...normalized, route: 'completed' }, [job]), pairedItem: { item: 0 } }];`),
+      routeIfNode('wf7b-028', 'Completed Has Shorts?', [2420, 0], 'completed'),
       codeNode('wf7b-013', 'Shape Job Completed', [2420, 0], `${helpers}
 return [{ json: shapeJobCompleted($input.first().json), pairedItem: { item: 0 } }];`),
       sheetsNode('wf7b-014', 'Update Job Completed', [2640, 0], sheet('appendOrUpdate', 'Ssemble_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['ssemble_job_id'] } })),
@@ -311,13 +319,15 @@ return [{ json: shapeMomentStatus(data, 'ERROR'), pairedItem: { item: 0 } }];`),
       'Pick Stale Submitted Jobs': { main: [[{ node: 'Poll Loop', type: 'main', index: 0 }]] },
       'Poll Loop': { main: [[], [{ node: 'Re-read Ssemble_Jobs', type: 'main', index: 0 }]] },
       'Re-read Ssemble_Jobs': { main: [[{ node: 'Confirm Still Submitted', type: 'main', index: 0 }]] },
-      'Confirm Still Submitted': { main: [[{ node: 'Check Ssemble Status', type: 'main', index: 0 }]] },
+      'Confirm Still Submitted': { main: [[{ node: 'Still Needs Poll?', type: 'main', index: 0 }]] },
+      'Still Needs Poll?': { main: [[{ node: 'Check Ssemble Status', type: 'main', index: 0 }], [{ node: 'Wait 2s Pending', type: 'main', index: 0 }]] },
       'Check Ssemble Status': { main: [[{ node: 'Normalize Status', type: 'main', index: 0 }]] },
       'Normalize Status': { main: [[{ node: 'Status Completed?', type: 'main', index: 0 }]] },
       'Status Completed?': { main: [[{ node: 'Get Ssemble Shorts', type: 'main', index: 0 }], [{ node: 'Status Failed?', type: 'main', index: 0 }]] },
       'Status Failed?': { main: [[{ node: 'Normalize Failed Poll', type: 'main', index: 0 }], [{ node: 'Wait 2s Pending', type: 'main', index: 0 }]] },
       'Get Ssemble Shorts': { main: [[{ node: 'Normalize Completed Poll', type: 'main', index: 0 }]] },
-      'Normalize Completed Poll': { main: [[{ node: 'Shape Job Completed', type: 'main', index: 0 }]] },
+      'Normalize Completed Poll': { main: [[{ node: 'Completed Has Shorts?', type: 'main', index: 0 }]] },
+      'Completed Has Shorts?': { main: [[{ node: 'Shape Job Completed', type: 'main', index: 0 }], [{ node: 'Wait 2s Pending', type: 'main', index: 0 }]] },
       'Shape Job Completed': { main: [[{ node: 'Update Job Completed', type: 'main', index: 0 }]] },
       'Update Job Completed': { main: [[{ node: 'Shape Moment Completed', type: 'main', index: 0 }]] },
       'Shape Moment Completed': { main: [[{ node: 'Update Moment Completed', type: 'main', index: 0 }]] },
