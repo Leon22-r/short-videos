@@ -12,6 +12,14 @@ const {
   verifyAndParseWebhook,
 } = require('../n8n/workflow-code/ssemble-webhook');
 const {
+  buildNoopPollResult,
+  pickStaleSubmittedJobs,
+  shouldPollCurrentJob,
+  normalizeCompletedPollResult,
+  normalizeFailedPollStatus,
+  normalizeStatusResponse,
+} = require('../n8n/workflow-code/ssemble-polling');
+const {
   buildPlannerRequest,
   parseTransformationPlan,
   pickAwaitingDownloads,
@@ -127,6 +135,141 @@ test('WF7 verifies webhook secret, joins job lineage, and explodes shorts', () =
   assert.equal(clips.length, 1);
   assert.equal(clips[0].created_clip_id, 'CC-short1');
   assert.equal(clips[0].review_status, 'AWAITING_DOWNLOAD');
+});
+
+test('WF7b picks only stale submitted jobs that still need polling', () => {
+  const jobs = [
+    {
+      ssemble_job_id: 'REQ-old',
+      clip_moment_id: 'CM-old',
+      job_status: 'SUBMITTED',
+      webhook_received: 'FALSE',
+      created_at: '2026-06-26T09:00:00.000Z',
+    },
+    {
+      ssemble_job_id: 'REQ-fresh',
+      clip_moment_id: 'CM-fresh',
+      job_status: 'SUBMITTED',
+      webhook_received: 'FALSE',
+      created_at: '2026-06-26T09:45:00.000Z',
+    },
+    {
+      ssemble_job_id: 'REQ-webhook',
+      clip_moment_id: 'CM-webhook',
+      job_status: 'COMPLETED',
+      webhook_received: 'TRUE',
+      created_at: '2026-06-26T08:00:00.000Z',
+    },
+    {
+      ssemble_job_id: '',
+      clip_moment_id: 'CM-missing',
+      job_status: 'SUBMITTED',
+      webhook_received: 'FALSE',
+      created_at: '2026-06-26T08:00:00.000Z',
+    },
+  ];
+
+  const picked = pickStaleSubmittedJobs(jobs, '2026-06-26T09:31:00.000Z', 30);
+
+  assert.deepEqual(picked.map((job) => job.ssemble_job_id), ['REQ-old']);
+});
+
+test('WF7b recheck skips jobs already closed by webhook', () => {
+  assert.equal(shouldPollCurrentJob({ job_status: 'SUBMITTED', webhook_received: 'FALSE' }), true);
+  assert.equal(shouldPollCurrentJob({ job_status: 'COMPLETED', webhook_received: 'TRUE' }), false);
+  assert.equal(shouldPollCurrentJob({ job_status: 'FAILED', webhook_received: 'TRUE' }), false);
+  assert.equal(shouldPollCurrentJob({ job_status: 'SUBMITTED', webhook_received: 'TRUE' }), false);
+});
+
+test('WF7b normalizes Ssemble status responses into routeable states', () => {
+  const completed = normalizeStatusResponse(
+    { status: 'completed', data: { status: 'completed' } },
+    { ssemble_job_id: 'REQ-1' },
+    '2026-06-26T10:00:00.000Z',
+  );
+  const processing = normalizeStatusResponse(
+    { data: { status: 'processing' } },
+    { ssemble_job_id: 'REQ-2' },
+    '2026-06-26T10:00:00.000Z',
+  );
+  const failed = normalizeStatusResponse(
+    { status: 'failed', failureReason: 'render failed' },
+    { ssemble_job_id: 'REQ-3' },
+    '2026-06-26T10:00:00.000Z',
+  );
+
+  assert.equal(completed.requestId, 'REQ-1');
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.route, 'completed');
+  assert.equal(processing.route, 'pending');
+  assert.equal(failed.route, 'failed');
+  assert.equal(failed.failureReason, 'render failed');
+});
+
+test('WF7b leaves transient polling errors as no-op retries', () => {
+  const noop = buildNoopPollResult(
+    { ssemble_job_id: 'REQ-429', clip_moment_id: 'CM-1' },
+    { statusCode: 429, message: 'rate limit' },
+    '2026-06-26T10:00:00.000Z',
+  );
+
+  assert.equal(noop.requestId, 'REQ-429');
+  assert.equal(noop.route, 'pending');
+  assert.match(noop.failureReason, /rate limit/);
+});
+
+test('WF7b completed poll result reuses WF7 clip shaping path', () => {
+  const job = {
+    ssemble_job_id: 'REQ-123',
+    clip_moment_id: 'CM-1',
+    video_id: 'VID-1',
+    niche: 'FINANCE_BUSINESS',
+  };
+  const normalized = normalizeCompletedPollResult(
+    job,
+    { status: 'completed' },
+    {
+      data: {
+        shorts: [
+          {
+            id: 'short1',
+            title: 'Clip',
+            video_url: 'https://cdn/clip.mp4',
+            duration: 42,
+            viral_score: 88,
+          },
+        ],
+      },
+    },
+    '2026-06-26T10:05:00.000Z',
+  );
+  const attached = attachMoment(normalized, [job]);
+  const clips = explodeCreatedClips(attached, '2026-06-26T10:06:00.000Z');
+
+  assert.equal(normalized.completed, true);
+  assert.equal(normalized.requestId, 'REQ-123');
+  assert.equal(attached.clip_moment_id, 'CM-1');
+  assert.equal(clips.length, 1);
+  assert.equal(clips[0].created_clip_id, 'CC-short1');
+  assert.equal(clips[0].review_status, 'AWAITING_DOWNLOAD');
+});
+
+test('WF7b failed and cancelled statuses close the moment as error', () => {
+  const failed = normalizeFailedPollStatus(
+    { ssemble_job_id: 'REQ-failed' },
+    { status: 'failed', failureReason: 'render failed' },
+    '2026-06-26T10:05:00.000Z',
+  );
+  const cancelled = normalizeFailedPollStatus(
+    { ssemble_job_id: 'REQ-cancelled' },
+    { status: 'cancelled' },
+    '2026-06-26T10:06:00.000Z',
+  );
+
+  assert.equal(failed.completed, false);
+  assert.equal(failed.requestId, 'REQ-failed');
+  assert.equal(failed.failureReason, 'render failed');
+  assert.equal(cancelled.failureReason, 'Ssemble returned cancelled');
 });
 
 test('WF8 reuses uploaded Drive files and builds OpenAI planner requests', () => {
