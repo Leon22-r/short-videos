@@ -378,6 +378,13 @@ test('WF7b polling fallback checks stale Ssemble jobs and only fetches shorts af
     .flatMap(([source, connection]) => (connection.main || [])
       .flatMap((branch) => branch.map((target) => ({ source, target: target.node }))))
     .filter((connection) => connection.target === 'Get Ssemble Shorts');
+  const sheetWriteNodes = new Set([
+    'Append Created_Clips',
+    'Update Error Status',
+    'Update Processing Status',
+  ]);
+  const skipNoOpTarget = workflow.connections['Still Needs Poll?'].main[1][0].node;
+  const emptyShortsTarget = workflow.connections['Completed Has Shorts?'].main[1][0].node;
 
   assert.equal(workflow.nodes[0].name, 'Schedule 15m');
   assert(names.includes('Pick Stale Submitted Jobs'));
@@ -396,7 +403,8 @@ test('WF7b polling fallback checks stale Ssemble jobs and only fetches shorts af
   assert.equal(shortsNode.parameters.genericAuthType, 'httpHeaderAuth');
   assert.equal(workflow.connections['Confirm Still Submitted'].main[0][0].node, 'Still Needs Poll?');
   assert.equal(workflow.connections['Still Needs Poll?'].main[0][0].node, 'Check Ssemble Status');
-  assert.equal(workflow.connections['Still Needs Poll?'].main[1][0].node, 'Wait 2s Pending');
+  assert.equal(skipNoOpTarget, 'Wait 2s Pending');
+  assert(!sheetWriteNodes.has(skipNoOpTarget));
   assert.deepEqual(shortsInbound, [{ source: 'Status Completed?', target: 'Get Ssemble Shorts' }]);
   assert.equal(workflow.connections['Status Completed?'].main[0][0].node, 'Get Ssemble Shorts');
   assert.equal(workflow.connections['Status Completed?'].main[1][0].node, 'Status Failed?');
@@ -404,8 +412,10 @@ test('WF7b polling fallback checks stale Ssemble jobs and only fetches shorts af
   assert.equal(workflow.connections['Get Ssemble Shorts'].main[0][0].node, 'Normalize Completed Poll');
   assert.equal(workflow.connections['Normalize Completed Poll'].main[0][0].node, 'Completed Has Shorts?');
   assert.equal(workflow.connections['Completed Has Shorts?'].main[0][0].node, 'Shape Job Completed');
-  assert.equal(workflow.connections['Completed Has Shorts?'].main[1][0].node, 'Wait 2s Pending');
+  assert.equal(emptyShortsTarget, 'Wait 2s Pending');
+  assert(!sheetWriteNodes.has(emptyShortsTarget));
   assert.equal(workflow.connections['Append Created_Clips'].main[0][0].node, 'Wait 2s Completed');
+  assert.equal(workflow.connections['Wait 2s Pending'].main[0][0].node, 'Poll Loop');
 });
 
 test('WF7, WF7b, WF8, and WF9 workflow files exist with expected entry nodes', () => {
