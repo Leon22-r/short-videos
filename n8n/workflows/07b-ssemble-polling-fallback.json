@@ -1,0 +1,841 @@
+{
+  "name": "WF7b Ssemble Polling Fallback",
+  "nodes": [
+    {
+      "id": "wf7b-001",
+      "name": "Schedule 15m",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf7b-002",
+      "name": "Read Ssemble_Jobs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ssemble_Jobs"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "wf7b-003",
+      "name": "Pick Stale Submitted Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function isTrue(value) {\n  return String(value || '').toUpperCase() === 'TRUE';\n}\n\nfunction isSubmitted(job) {\n  return String(job.job_status || '').toUpperCase() === 'SUBMITTED';\n}\n\nfunction ageMinutes(createdAt, now) {\n  const created = Date.parse(createdAt || '');\n  const current = Date.parse(now || new Date().toISOString());\n  if (!Number.isFinite(created) || !Number.isFinite(current)) return 0;\n  return Math.floor((current - created) / 60000);\n}\n\nfunction shouldPollCurrentJob(job) {\n  return Boolean(job && job.ssemble_job_id && isSubmitted(job) && !isTrue(job.webhook_received));\n}\n\nfunction pickStaleSubmittedJobs(jobs, now = new Date().toISOString(), minAgeMinutes = 30, limit = 10) {\n  return (jobs || [])\n    .filter((job) => shouldPollCurrentJob(job))\n    .filter((job) => ageMinutes(job.created_at, now) >= minAgeMinutes)\n    .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))\n    .slice(0, limit);\n}\n\nfunction findLatestJob(candidate, jobs) {\n  return (jobs || []).find((job) => String(job.ssemble_job_id) === String(candidate.ssemble_job_id)) || candidate;\n}\n\nfunction readStatus(response) {\n  return String(\n    response?.data?.status ||\n    response?.status ||\n    response?.state ||\n    '',\n  ).toLowerCase();\n}\n\nfunction readFailureReason(response, fallback = '') {\n  return String(\n    response?.data?.failureReason ||\n    response?.failureReason ||\n    response?.error?.message ||\n    response?.message ||\n    fallback ||\n    '',\n  );\n}\n\nfunction normalizeStatusResponse(response, job, now = new Date().toISOString()) {\n  const status = readStatus(response);\n  let route = 'pending';\n  if (status === 'completed') route = 'completed';\n  if (status === 'failed' || status === 'cancelled') route = 'failed';\n\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status,\n    route,\n    timestamp: response?.timestamp || response?.data?.timestamp || now,\n    failureReason: route === 'failed'\n      ? readFailureReason(response, status === 'cancelled' ? 'Ssemble returned cancelled' : 'Ssemble processing failed')\n      : '',\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\nfunction extractShorts(response) {\n  const shorts = response?.data?.shorts || response?.shorts || response?.data?.data?.shorts || [];\n  return Array.isArray(shorts) ? shorts : [];\n}\n\nfunction normalizeCompletedPollResult(job, statusResponse, resultResponse, now = new Date().toISOString()) {\n  return {\n    completed: true,\n    requestId: job.ssemble_job_id,\n    timestamp: resultResponse?.timestamp || statusResponse?.timestamp || now,\n    shorts: extractShorts(resultResponse),\n    failureReason: '',\n    raw: JSON.stringify({ status: statusResponse || {}, result: resultResponse || {} }).slice(0, 40000),\n  };\n}\n\nfunction normalizeFailedPollStatus(job, statusResponse, now = new Date().toISOString()) {\n  const normalized = normalizeStatusResponse(statusResponse, job, now);\n  return {\n    completed: false,\n    requestId: job.ssemble_job_id,\n    timestamp: normalized.timestamp,\n    shorts: [],\n    failureReason: normalized.failureReason || 'Ssemble processing failed',\n    raw: normalized.raw,\n  };\n}\n\nfunction buildNoopPollResult(job, response, now = new Date().toISOString()) {\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status: readStatus(response) || 'pending',\n    route: 'pending',\n    timestamp: response?.timestamp || now,\n    failureReason: readFailureReason(response),\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\n\nconst jobs = $('Read Ssemble_Jobs').all().map(i => i.json);\nconst picked = pickStaleSubmittedJobs(jobs, new Date().toISOString(), 30, 10);\nreturn picked.map((job, index) => ({ json: job, pairedItem: { item: index } }));"
+      }
+    },
+    {
+      "id": "wf7b-004",
+      "name": "Poll Loop",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "wf7b-005",
+      "name": "Re-read Ssemble_Jobs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        880,
+        120
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ssemble_Jobs"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "wf7b-006",
+      "name": "Confirm Still Submitted",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function isTrue(value) {\n  return String(value || '').toUpperCase() === 'TRUE';\n}\n\nfunction isSubmitted(job) {\n  return String(job.job_status || '').toUpperCase() === 'SUBMITTED';\n}\n\nfunction ageMinutes(createdAt, now) {\n  const created = Date.parse(createdAt || '');\n  const current = Date.parse(now || new Date().toISOString());\n  if (!Number.isFinite(created) || !Number.isFinite(current)) return 0;\n  return Math.floor((current - created) / 60000);\n}\n\nfunction shouldPollCurrentJob(job) {\n  return Boolean(job && job.ssemble_job_id && isSubmitted(job) && !isTrue(job.webhook_received));\n}\n\nfunction pickStaleSubmittedJobs(jobs, now = new Date().toISOString(), minAgeMinutes = 30, limit = 10) {\n  return (jobs || [])\n    .filter((job) => shouldPollCurrentJob(job))\n    .filter((job) => ageMinutes(job.created_at, now) >= minAgeMinutes)\n    .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))\n    .slice(0, limit);\n}\n\nfunction findLatestJob(candidate, jobs) {\n  return (jobs || []).find((job) => String(job.ssemble_job_id) === String(candidate.ssemble_job_id)) || candidate;\n}\n\nfunction readStatus(response) {\n  return String(\n    response?.data?.status ||\n    response?.status ||\n    response?.state ||\n    '',\n  ).toLowerCase();\n}\n\nfunction readFailureReason(response, fallback = '') {\n  return String(\n    response?.data?.failureReason ||\n    response?.failureReason ||\n    response?.error?.message ||\n    response?.message ||\n    fallback ||\n    '',\n  );\n}\n\nfunction normalizeStatusResponse(response, job, now = new Date().toISOString()) {\n  const status = readStatus(response);\n  let route = 'pending';\n  if (status === 'completed') route = 'completed';\n  if (status === 'failed' || status === 'cancelled') route = 'failed';\n\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status,\n    route,\n    timestamp: response?.timestamp || response?.data?.timestamp || now,\n    failureReason: route === 'failed'\n      ? readFailureReason(response, status === 'cancelled' ? 'Ssemble returned cancelled' : 'Ssemble processing failed')\n      : '',\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\nfunction extractShorts(response) {\n  const shorts = response?.data?.shorts || response?.shorts || response?.data?.data?.shorts || [];\n  return Array.isArray(shorts) ? shorts : [];\n}\n\nfunction normalizeCompletedPollResult(job, statusResponse, resultResponse, now = new Date().toISOString()) {\n  return {\n    completed: true,\n    requestId: job.ssemble_job_id,\n    timestamp: resultResponse?.timestamp || statusResponse?.timestamp || now,\n    shorts: extractShorts(resultResponse),\n    failureReason: '',\n    raw: JSON.stringify({ status: statusResponse || {}, result: resultResponse || {} }).slice(0, 40000),\n  };\n}\n\nfunction normalizeFailedPollStatus(job, statusResponse, now = new Date().toISOString()) {\n  const normalized = normalizeStatusResponse(statusResponse, job, now);\n  return {\n    completed: false,\n    requestId: job.ssemble_job_id,\n    timestamp: normalized.timestamp,\n    shorts: [],\n    failureReason: normalized.failureReason || 'Ssemble processing failed',\n    raw: normalized.raw,\n  };\n}\n\nfunction buildNoopPollResult(job, response, now = new Date().toISOString()) {\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status: readStatus(response) || 'pending',\n    route: 'pending',\n    timestamp: response?.timestamp || now,\n    failureReason: readFailureReason(response),\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\n\nconst candidate = $('Poll Loop').first().json;\nconst jobs = $('Re-read Ssemble_Jobs').all().map(i => i.json);\nconst latest = findLatestJob(candidate, jobs);\nif (!shouldPollCurrentJob(latest)) return [];\nreturn [{ json: latest, pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf7b-007",
+      "name": "Check Ssemble Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        120
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://aiclipping.ssemble.com/api/v1/shorts/' + $json.ssemble_job_id + '/status' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "wf7b-008",
+      "name": "Normalize Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function isTrue(value) {\n  return String(value || '').toUpperCase() === 'TRUE';\n}\n\nfunction isSubmitted(job) {\n  return String(job.job_status || '').toUpperCase() === 'SUBMITTED';\n}\n\nfunction ageMinutes(createdAt, now) {\n  const created = Date.parse(createdAt || '');\n  const current = Date.parse(now || new Date().toISOString());\n  if (!Number.isFinite(created) || !Number.isFinite(current)) return 0;\n  return Math.floor((current - created) / 60000);\n}\n\nfunction shouldPollCurrentJob(job) {\n  return Boolean(job && job.ssemble_job_id && isSubmitted(job) && !isTrue(job.webhook_received));\n}\n\nfunction pickStaleSubmittedJobs(jobs, now = new Date().toISOString(), minAgeMinutes = 30, limit = 10) {\n  return (jobs || [])\n    .filter((job) => shouldPollCurrentJob(job))\n    .filter((job) => ageMinutes(job.created_at, now) >= minAgeMinutes)\n    .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))\n    .slice(0, limit);\n}\n\nfunction findLatestJob(candidate, jobs) {\n  return (jobs || []).find((job) => String(job.ssemble_job_id) === String(candidate.ssemble_job_id)) || candidate;\n}\n\nfunction readStatus(response) {\n  return String(\n    response?.data?.status ||\n    response?.status ||\n    response?.state ||\n    '',\n  ).toLowerCase();\n}\n\nfunction readFailureReason(response, fallback = '') {\n  return String(\n    response?.data?.failureReason ||\n    response?.failureReason ||\n    response?.error?.message ||\n    response?.message ||\n    fallback ||\n    '',\n  );\n}\n\nfunction normalizeStatusResponse(response, job, now = new Date().toISOString()) {\n  const status = readStatus(response);\n  let route = 'pending';\n  if (status === 'completed') route = 'completed';\n  if (status === 'failed' || status === 'cancelled') route = 'failed';\n\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status,\n    route,\n    timestamp: response?.timestamp || response?.data?.timestamp || now,\n    failureReason: route === 'failed'\n      ? readFailureReason(response, status === 'cancelled' ? 'Ssemble returned cancelled' : 'Ssemble processing failed')\n      : '',\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\nfunction extractShorts(response) {\n  const shorts = response?.data?.shorts || response?.shorts || response?.data?.data?.shorts || [];\n  return Array.isArray(shorts) ? shorts : [];\n}\n\nfunction normalizeCompletedPollResult(job, statusResponse, resultResponse, now = new Date().toISOString()) {\n  return {\n    completed: true,\n    requestId: job.ssemble_job_id,\n    timestamp: resultResponse?.timestamp || statusResponse?.timestamp || now,\n    shorts: extractShorts(resultResponse),\n    failureReason: '',\n    raw: JSON.stringify({ status: statusResponse || {}, result: resultResponse || {} }).slice(0, 40000),\n  };\n}\n\nfunction normalizeFailedPollStatus(job, statusResponse, now = new Date().toISOString()) {\n  const normalized = normalizeStatusResponse(statusResponse, job, now);\n  return {\n    completed: false,\n    requestId: job.ssemble_job_id,\n    timestamp: normalized.timestamp,\n    shorts: [],\n    failureReason: normalized.failureReason || 'Ssemble processing failed',\n    raw: normalized.raw,\n  };\n}\n\nfunction buildNoopPollResult(job, response, now = new Date().toISOString()) {\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status: readStatus(response) || 'pending',\n    route: 'pending',\n    timestamp: response?.timestamp || now,\n    failureReason: readFailureReason(response),\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\n\nconst job = $('Confirm Still Submitted').first().json;\nconst status = normalizeStatusResponse($input.first().json, job);\nreturn [{ json: status, pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf7b-009",
+      "name": "Status Completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.route }}",
+              "rightValue": "completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "wf7b-010",
+      "name": "Status Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.route }}",
+              "rightValue": "failed",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "wf7b-011",
+      "name": "Get Ssemble Shorts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://aiclipping.ssemble.com/api/v1/shorts/' + $('Confirm Still Submitted').first().json.ssemble_job_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "wf7b-012",
+      "name": "Normalize Completed Poll",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function verifyAndParseWebhook(input, secret = 'SSEMBLE_WEBHOOK_SECRET') {\n  const query = input.query || {};\n  if (query.secret !== secret) {\n    throw new Error('Webhook secret mismatch - dropping payload');\n  }\n  const payload = input.body || {};\n  const completed = payload.event === 'shorts.completed';\n  return {\n    completed,\n    requestId: payload.requestId || '',\n    timestamp: payload.timestamp || new Date().toISOString(),\n    shorts: (completed && payload.data && payload.data.shorts) || [],\n    failureReason: (!completed && payload.data && payload.data.failureReason) || '',\n    raw: JSON.stringify(payload).slice(0, 40000),\n  };\n}\n\nfunction attachMoment(parsed, jobs) {\n  const job = jobs.find((row) => String(row.ssemble_job_id) === String(parsed.requestId)) || {};\n  return {\n    ...parsed,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n  };\n}\n\nfunction shapeJobCompleted(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'COMPLETED',\n    webhook_received: 'TRUE',\n    response_payload: data.raw,\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeJobFailed(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'FAILED',\n    webhook_received: 'TRUE',\n    error_message: String(data.failureReason || '').slice(0, 1000),\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeMomentStatus(data, status) {\n  return {\n    clip_moment_id: data.clip_moment_id || 'NOOP-ORPHAN',\n    ssemble_status: status,\n  };\n}\n\nfunction explodeCreatedClips(data, now = new Date().toISOString()) {\n  return (data.shorts || []).map((short, index) => ({\n    created_clip_id: `CC-${short.id}`,\n    ssemble_job_id: data.requestId,\n    video_id: data.video_id || '',\n    niche: data.niche || '',\n    clip_title: String(short.title || ''),\n    clip_url: String(short.video_url || ''),\n    local_file_name: '',\n    google_drive_file_id: '',\n    google_drive_url: '',\n    duration_seconds: Number(short.duration || 0),\n    transcript_excerpt: '',\n    suggested_title: '',\n    suggested_caption: '',\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: `viral_score=${short.viral_score || ''}`,\n    created_at: now,\n    rank: index + 1,\n  }));\n}\n\n\nfunction isTrue(value) {\n  return String(value || '').toUpperCase() === 'TRUE';\n}\n\nfunction isSubmitted(job) {\n  return String(job.job_status || '').toUpperCase() === 'SUBMITTED';\n}\n\nfunction ageMinutes(createdAt, now) {\n  const created = Date.parse(createdAt || '');\n  const current = Date.parse(now || new Date().toISOString());\n  if (!Number.isFinite(created) || !Number.isFinite(current)) return 0;\n  return Math.floor((current - created) / 60000);\n}\n\nfunction shouldPollCurrentJob(job) {\n  return Boolean(job && job.ssemble_job_id && isSubmitted(job) && !isTrue(job.webhook_received));\n}\n\nfunction pickStaleSubmittedJobs(jobs, now = new Date().toISOString(), minAgeMinutes = 30, limit = 10) {\n  return (jobs || [])\n    .filter((job) => shouldPollCurrentJob(job))\n    .filter((job) => ageMinutes(job.created_at, now) >= minAgeMinutes)\n    .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))\n    .slice(0, limit);\n}\n\nfunction findLatestJob(candidate, jobs) {\n  return (jobs || []).find((job) => String(job.ssemble_job_id) === String(candidate.ssemble_job_id)) || candidate;\n}\n\nfunction readStatus(response) {\n  return String(\n    response?.data?.status ||\n    response?.status ||\n    response?.state ||\n    '',\n  ).toLowerCase();\n}\n\nfunction readFailureReason(response, fallback = '') {\n  return String(\n    response?.data?.failureReason ||\n    response?.failureReason ||\n    response?.error?.message ||\n    response?.message ||\n    fallback ||\n    '',\n  );\n}\n\nfunction normalizeStatusResponse(response, job, now = new Date().toISOString()) {\n  const status = readStatus(response);\n  let route = 'pending';\n  if (status === 'completed') route = 'completed';\n  if (status === 'failed' || status === 'cancelled') route = 'failed';\n\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status,\n    route,\n    timestamp: response?.timestamp || response?.data?.timestamp || now,\n    failureReason: route === 'failed'\n      ? readFailureReason(response, status === 'cancelled' ? 'Ssemble returned cancelled' : 'Ssemble processing failed')\n      : '',\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\nfunction extractShorts(response) {\n  const shorts = response?.data?.shorts || response?.shorts || response?.data?.data?.shorts || [];\n  return Array.isArray(shorts) ? shorts : [];\n}\n\nfunction normalizeCompletedPollResult(job, statusResponse, resultResponse, now = new Date().toISOString()) {\n  return {\n    completed: true,\n    requestId: job.ssemble_job_id,\n    timestamp: resultResponse?.timestamp || statusResponse?.timestamp || now,\n    shorts: extractShorts(resultResponse),\n    failureReason: '',\n    raw: JSON.stringify({ status: statusResponse || {}, result: resultResponse || {} }).slice(0, 40000),\n  };\n}\n\nfunction normalizeFailedPollStatus(job, statusResponse, now = new Date().toISOString()) {\n  const normalized = normalizeStatusResponse(statusResponse, job, now);\n  return {\n    completed: false,\n    requestId: job.ssemble_job_id,\n    timestamp: normalized.timestamp,\n    shorts: [],\n    failureReason: normalized.failureReason || 'Ssemble processing failed',\n    raw: normalized.raw,\n  };\n}\n\nfunction buildNoopPollResult(job, response, now = new Date().toISOString()) {\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status: readStatus(response) || 'pending',\n    route: 'pending',\n    timestamp: response?.timestamp || now,\n    failureReason: readFailureReason(response),\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\n\nconst job = $('Confirm Still Submitted').first().json;\nconst status = $('Normalize Status').first().json;\nconst result = $input.first().json;\nconst normalized = normalizeCompletedPollResult(job, status, result);\nif (!normalized.shorts.length) return [];\nreturn [{ json: attachMoment(normalized, [job]), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf7b-013",
+      "name": "Shape Job Completed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function verifyAndParseWebhook(input, secret = 'SSEMBLE_WEBHOOK_SECRET') {\n  const query = input.query || {};\n  if (query.secret !== secret) {\n    throw new Error('Webhook secret mismatch - dropping payload');\n  }\n  const payload = input.body || {};\n  const completed = payload.event === 'shorts.completed';\n  return {\n    completed,\n    requestId: payload.requestId || '',\n    timestamp: payload.timestamp || new Date().toISOString(),\n    shorts: (completed && payload.data && payload.data.shorts) || [],\n    failureReason: (!completed && payload.data && payload.data.failureReason) || '',\n    raw: JSON.stringify(payload).slice(0, 40000),\n  };\n}\n\nfunction attachMoment(parsed, jobs) {\n  const job = jobs.find((row) => String(row.ssemble_job_id) === String(parsed.requestId)) || {};\n  return {\n    ...parsed,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n  };\n}\n\nfunction shapeJobCompleted(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'COMPLETED',\n    webhook_received: 'TRUE',\n    response_payload: data.raw,\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeJobFailed(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'FAILED',\n    webhook_received: 'TRUE',\n    error_message: String(data.failureReason || '').slice(0, 1000),\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeMomentStatus(data, status) {\n  return {\n    clip_moment_id: data.clip_moment_id || 'NOOP-ORPHAN',\n    ssemble_status: status,\n  };\n}\n\nfunction explodeCreatedClips(data, now = new Date().toISOString()) {\n  return (data.shorts || []).map((short, index) => ({\n    created_clip_id: `CC-${short.id}`,\n    ssemble_job_id: data.requestId,\n    video_id: data.video_id || '',\n    niche: data.niche || '',\n    clip_title: String(short.title || ''),\n    clip_url: String(short.video_url || ''),\n    local_file_name: '',\n    google_drive_file_id: '',\n    google_drive_url: '',\n    duration_seconds: Number(short.duration || 0),\n    transcript_excerpt: '',\n    suggested_title: '',\n    suggested_caption: '',\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: `viral_score=${short.viral_score || ''}`,\n    created_at: now,\n    rank: index + 1,\n  }));\n}\n\n\nfunction isTrue(value) {\n  return String(value || '').toUpperCase() === 'TRUE';\n}\n\nfunction isSubmitted(job) {\n  return String(job.job_status || '').toUpperCase() === 'SUBMITTED';\n}\n\nfunction ageMinutes(createdAt, now) {\n  const created = Date.parse(createdAt || '');\n  const current = Date.parse(now || new Date().toISOString());\n  if (!Number.isFinite(created) || !Number.isFinite(current)) return 0;\n  return Math.floor((current - created) / 60000);\n}\n\nfunction shouldPollCurrentJob(job) {\n  return Boolean(job && job.ssemble_job_id && isSubmitted(job) && !isTrue(job.webhook_received));\n}\n\nfunction pickStaleSubmittedJobs(jobs, now = new Date().toISOString(), minAgeMinutes = 30, limit = 10) {\n  return (jobs || [])\n    .filter((job) => shouldPollCurrentJob(job))\n    .filter((job) => ageMinutes(job.created_at, now) >= minAgeMinutes)\n    .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))\n    .slice(0, limit);\n}\n\nfunction findLatestJob(candidate, jobs) {\n  return (jobs || []).find((job) => String(job.ssemble_job_id) === String(candidate.ssemble_job_id)) || candidate;\n}\n\nfunction readStatus(response) {\n  return String(\n    response?.data?.status ||\n    response?.status ||\n    response?.state ||\n    '',\n  ).toLowerCase();\n}\n\nfunction readFailureReason(response, fallback = '') {\n  return String(\n    response?.data?.failureReason ||\n    response?.failureReason ||\n    response?.error?.message ||\n    response?.message ||\n    fallback ||\n    '',\n  );\n}\n\nfunction normalizeStatusResponse(response, job, now = new Date().toISOString()) {\n  const status = readStatus(response);\n  let route = 'pending';\n  if (status === 'completed') route = 'completed';\n  if (status === 'failed' || status === 'cancelled') route = 'failed';\n\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status,\n    route,\n    timestamp: response?.timestamp || response?.data?.timestamp || now,\n    failureReason: route === 'failed'\n      ? readFailureReason(response, status === 'cancelled' ? 'Ssemble returned cancelled' : 'Ssemble processing failed')\n      : '',\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\nfunction extractShorts(response) {\n  const shorts = response?.data?.shorts || response?.shorts || response?.data?.data?.shorts || [];\n  return Array.isArray(shorts) ? shorts : [];\n}\n\nfunction normalizeCompletedPollResult(job, statusResponse, resultResponse, now = new Date().toISOString()) {\n  return {\n    completed: true,\n    requestId: job.ssemble_job_id,\n    timestamp: resultResponse?.timestamp || statusResponse?.timestamp || now,\n    shorts: extractShorts(resultResponse),\n    failureReason: '',\n    raw: JSON.stringify({ status: statusResponse || {}, result: resultResponse || {} }).slice(0, 40000),\n  };\n}\n\nfunction normalizeFailedPollStatus(job, statusResponse, now = new Date().toISOString()) {\n  const normalized = normalizeStatusResponse(statusResponse, job, now);\n  return {\n    completed: false,\n    requestId: job.ssemble_job_id,\n    timestamp: normalized.timestamp,\n    shorts: [],\n    failureReason: normalized.failureReason || 'Ssemble processing failed',\n    raw: normalized.raw,\n  };\n}\n\nfunction buildNoopPollResult(job, response, now = new Date().toISOString()) {\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status: readStatus(response) || 'pending',\n    route: 'pending',\n    timestamp: response?.timestamp || now,\n    failureReason: readFailureReason(response),\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\n\nreturn [{ json: shapeJobCompleted($input.first().json), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf7b-014",
+      "name": "Update Job Completed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2640,
+        0
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ssemble_Jobs"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "ssemble_job_id"
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf7b-015",
+      "name": "Shape Moment Completed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function verifyAndParseWebhook(input, secret = 'SSEMBLE_WEBHOOK_SECRET') {\n  const query = input.query || {};\n  if (query.secret !== secret) {\n    throw new Error('Webhook secret mismatch - dropping payload');\n  }\n  const payload = input.body || {};\n  const completed = payload.event === 'shorts.completed';\n  return {\n    completed,\n    requestId: payload.requestId || '',\n    timestamp: payload.timestamp || new Date().toISOString(),\n    shorts: (completed && payload.data && payload.data.shorts) || [],\n    failureReason: (!completed && payload.data && payload.data.failureReason) || '',\n    raw: JSON.stringify(payload).slice(0, 40000),\n  };\n}\n\nfunction attachMoment(parsed, jobs) {\n  const job = jobs.find((row) => String(row.ssemble_job_id) === String(parsed.requestId)) || {};\n  return {\n    ...parsed,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n  };\n}\n\nfunction shapeJobCompleted(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'COMPLETED',\n    webhook_received: 'TRUE',\n    response_payload: data.raw,\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeJobFailed(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'FAILED',\n    webhook_received: 'TRUE',\n    error_message: String(data.failureReason || '').slice(0, 1000),\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeMomentStatus(data, status) {\n  return {\n    clip_moment_id: data.clip_moment_id || 'NOOP-ORPHAN',\n    ssemble_status: status,\n  };\n}\n\nfunction explodeCreatedClips(data, now = new Date().toISOString()) {\n  return (data.shorts || []).map((short, index) => ({\n    created_clip_id: `CC-${short.id}`,\n    ssemble_job_id: data.requestId,\n    video_id: data.video_id || '',\n    niche: data.niche || '',\n    clip_title: String(short.title || ''),\n    clip_url: String(short.video_url || ''),\n    local_file_name: '',\n    google_drive_file_id: '',\n    google_drive_url: '',\n    duration_seconds: Number(short.duration || 0),\n    transcript_excerpt: '',\n    suggested_title: '',\n    suggested_caption: '',\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: `viral_score=${short.viral_score || ''}`,\n    created_at: now,\n    rank: index + 1,\n  }));\n}\n\n\nfunction isTrue(value) {\n  return String(value || '').toUpperCase() === 'TRUE';\n}\n\nfunction isSubmitted(job) {\n  return String(job.job_status || '').toUpperCase() === 'SUBMITTED';\n}\n\nfunction ageMinutes(createdAt, now) {\n  const created = Date.parse(createdAt || '');\n  const current = Date.parse(now || new Date().toISOString());\n  if (!Number.isFinite(created) || !Number.isFinite(current)) return 0;\n  return Math.floor((current - created) / 60000);\n}\n\nfunction shouldPollCurrentJob(job) {\n  return Boolean(job && job.ssemble_job_id && isSubmitted(job) && !isTrue(job.webhook_received));\n}\n\nfunction pickStaleSubmittedJobs(jobs, now = new Date().toISOString(), minAgeMinutes = 30, limit = 10) {\n  return (jobs || [])\n    .filter((job) => shouldPollCurrentJob(job))\n    .filter((job) => ageMinutes(job.created_at, now) >= minAgeMinutes)\n    .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))\n    .slice(0, limit);\n}\n\nfunction findLatestJob(candidate, jobs) {\n  return (jobs || []).find((job) => String(job.ssemble_job_id) === String(candidate.ssemble_job_id)) || candidate;\n}\n\nfunction readStatus(response) {\n  return String(\n    response?.data?.status ||\n    response?.status ||\n    response?.state ||\n    '',\n  ).toLowerCase();\n}\n\nfunction readFailureReason(response, fallback = '') {\n  return String(\n    response?.data?.failureReason ||\n    response?.failureReason ||\n    response?.error?.message ||\n    response?.message ||\n    fallback ||\n    '',\n  );\n}\n\nfunction normalizeStatusResponse(response, job, now = new Date().toISOString()) {\n  const status = readStatus(response);\n  let route = 'pending';\n  if (status === 'completed') route = 'completed';\n  if (status === 'failed' || status === 'cancelled') route = 'failed';\n\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status,\n    route,\n    timestamp: response?.timestamp || response?.data?.timestamp || now,\n    failureReason: route === 'failed'\n      ? readFailureReason(response, status === 'cancelled' ? 'Ssemble returned cancelled' : 'Ssemble processing failed')\n      : '',\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\nfunction extractShorts(response) {\n  const shorts = response?.data?.shorts || response?.shorts || response?.data?.data?.shorts || [];\n  return Array.isArray(shorts) ? shorts : [];\n}\n\nfunction normalizeCompletedPollResult(job, statusResponse, resultResponse, now = new Date().toISOString()) {\n  return {\n    completed: true,\n    requestId: job.ssemble_job_id,\n    timestamp: resultResponse?.timestamp || statusResponse?.timestamp || now,\n    shorts: extractShorts(resultResponse),\n    failureReason: '',\n    raw: JSON.stringify({ status: statusResponse || {}, result: resultResponse || {} }).slice(0, 40000),\n  };\n}\n\nfunction normalizeFailedPollStatus(job, statusResponse, now = new Date().toISOString()) {\n  const normalized = normalizeStatusResponse(statusResponse, job, now);\n  return {\n    completed: false,\n    requestId: job.ssemble_job_id,\n    timestamp: normalized.timestamp,\n    shorts: [],\n    failureReason: normalized.failureReason || 'Ssemble processing failed',\n    raw: normalized.raw,\n  };\n}\n\nfunction buildNoopPollResult(job, response, now = new Date().toISOString()) {\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status: readStatus(response) || 'pending',\n    route: 'pending',\n    timestamp: response?.timestamp || now,\n    failureReason: readFailureReason(response),\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\n\nconst data = $('Normalize Completed Poll').first().json;\nreturn [{ json: shapeMomentStatus(data, 'COMPLETED'), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf7b-016",
+      "name": "Update Moment Completed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3080,
+        0
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Clip_Moments"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "clip_moment_id"
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf7b-017",
+      "name": "Explode Shorts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3300,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function verifyAndParseWebhook(input, secret = 'SSEMBLE_WEBHOOK_SECRET') {\n  const query = input.query || {};\n  if (query.secret !== secret) {\n    throw new Error('Webhook secret mismatch - dropping payload');\n  }\n  const payload = input.body || {};\n  const completed = payload.event === 'shorts.completed';\n  return {\n    completed,\n    requestId: payload.requestId || '',\n    timestamp: payload.timestamp || new Date().toISOString(),\n    shorts: (completed && payload.data && payload.data.shorts) || [],\n    failureReason: (!completed && payload.data && payload.data.failureReason) || '',\n    raw: JSON.stringify(payload).slice(0, 40000),\n  };\n}\n\nfunction attachMoment(parsed, jobs) {\n  const job = jobs.find((row) => String(row.ssemble_job_id) === String(parsed.requestId)) || {};\n  return {\n    ...parsed,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n  };\n}\n\nfunction shapeJobCompleted(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'COMPLETED',\n    webhook_received: 'TRUE',\n    response_payload: data.raw,\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeJobFailed(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'FAILED',\n    webhook_received: 'TRUE',\n    error_message: String(data.failureReason || '').slice(0, 1000),\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeMomentStatus(data, status) {\n  return {\n    clip_moment_id: data.clip_moment_id || 'NOOP-ORPHAN',\n    ssemble_status: status,\n  };\n}\n\nfunction explodeCreatedClips(data, now = new Date().toISOString()) {\n  return (data.shorts || []).map((short, index) => ({\n    created_clip_id: `CC-${short.id}`,\n    ssemble_job_id: data.requestId,\n    video_id: data.video_id || '',\n    niche: data.niche || '',\n    clip_title: String(short.title || ''),\n    clip_url: String(short.video_url || ''),\n    local_file_name: '',\n    google_drive_file_id: '',\n    google_drive_url: '',\n    duration_seconds: Number(short.duration || 0),\n    transcript_excerpt: '',\n    suggested_title: '',\n    suggested_caption: '',\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: `viral_score=${short.viral_score || ''}`,\n    created_at: now,\n    rank: index + 1,\n  }));\n}\n\n\nfunction isTrue(value) {\n  return String(value || '').toUpperCase() === 'TRUE';\n}\n\nfunction isSubmitted(job) {\n  return String(job.job_status || '').toUpperCase() === 'SUBMITTED';\n}\n\nfunction ageMinutes(createdAt, now) {\n  const created = Date.parse(createdAt || '');\n  const current = Date.parse(now || new Date().toISOString());\n  if (!Number.isFinite(created) || !Number.isFinite(current)) return 0;\n  return Math.floor((current - created) / 60000);\n}\n\nfunction shouldPollCurrentJob(job) {\n  return Boolean(job && job.ssemble_job_id && isSubmitted(job) && !isTrue(job.webhook_received));\n}\n\nfunction pickStaleSubmittedJobs(jobs, now = new Date().toISOString(), minAgeMinutes = 30, limit = 10) {\n  return (jobs || [])\n    .filter((job) => shouldPollCurrentJob(job))\n    .filter((job) => ageMinutes(job.created_at, now) >= minAgeMinutes)\n    .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))\n    .slice(0, limit);\n}\n\nfunction findLatestJob(candidate, jobs) {\n  return (jobs || []).find((job) => String(job.ssemble_job_id) === String(candidate.ssemble_job_id)) || candidate;\n}\n\nfunction readStatus(response) {\n  return String(\n    response?.data?.status ||\n    response?.status ||\n    response?.state ||\n    '',\n  ).toLowerCase();\n}\n\nfunction readFailureReason(response, fallback = '') {\n  return String(\n    response?.data?.failureReason ||\n    response?.failureReason ||\n    response?.error?.message ||\n    response?.message ||\n    fallback ||\n    '',\n  );\n}\n\nfunction normalizeStatusResponse(response, job, now = new Date().toISOString()) {\n  const status = readStatus(response);\n  let route = 'pending';\n  if (status === 'completed') route = 'completed';\n  if (status === 'failed' || status === 'cancelled') route = 'failed';\n\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status,\n    route,\n    timestamp: response?.timestamp || response?.data?.timestamp || now,\n    failureReason: route === 'failed'\n      ? readFailureReason(response, status === 'cancelled' ? 'Ssemble returned cancelled' : 'Ssemble processing failed')\n      : '',\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\nfunction extractShorts(response) {\n  const shorts = response?.data?.shorts || response?.shorts || response?.data?.data?.shorts || [];\n  return Array.isArray(shorts) ? shorts : [];\n}\n\nfunction normalizeCompletedPollResult(job, statusResponse, resultResponse, now = new Date().toISOString()) {\n  return {\n    completed: true,\n    requestId: job.ssemble_job_id,\n    timestamp: resultResponse?.timestamp || statusResponse?.timestamp || now,\n    shorts: extractShorts(resultResponse),\n    failureReason: '',\n    raw: JSON.stringify({ status: statusResponse || {}, result: resultResponse || {} }).slice(0, 40000),\n  };\n}\n\nfunction normalizeFailedPollStatus(job, statusResponse, now = new Date().toISOString()) {\n  const normalized = normalizeStatusResponse(statusResponse, job, now);\n  return {\n    completed: false,\n    requestId: job.ssemble_job_id,\n    timestamp: normalized.timestamp,\n    shorts: [],\n    failureReason: normalized.failureReason || 'Ssemble processing failed',\n    raw: normalized.raw,\n  };\n}\n\nfunction buildNoopPollResult(job, response, now = new Date().toISOString()) {\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status: readStatus(response) || 'pending',\n    route: 'pending',\n    timestamp: response?.timestamp || now,\n    failureReason: readFailureReason(response),\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\n\nconst rows = explodeCreatedClips($('Normalize Completed Poll').first().json);\nreturn rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));"
+      }
+    },
+    {
+      "id": "wf7b-018",
+      "name": "Append Created_Clips",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3520,
+        0
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Created_Clips"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "created_clip_id"
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf7b-019",
+      "name": "Normalize Failed Poll",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        240
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function verifyAndParseWebhook(input, secret = 'SSEMBLE_WEBHOOK_SECRET') {\n  const query = input.query || {};\n  if (query.secret !== secret) {\n    throw new Error('Webhook secret mismatch - dropping payload');\n  }\n  const payload = input.body || {};\n  const completed = payload.event === 'shorts.completed';\n  return {\n    completed,\n    requestId: payload.requestId || '',\n    timestamp: payload.timestamp || new Date().toISOString(),\n    shorts: (completed && payload.data && payload.data.shorts) || [],\n    failureReason: (!completed && payload.data && payload.data.failureReason) || '',\n    raw: JSON.stringify(payload).slice(0, 40000),\n  };\n}\n\nfunction attachMoment(parsed, jobs) {\n  const job = jobs.find((row) => String(row.ssemble_job_id) === String(parsed.requestId)) || {};\n  return {\n    ...parsed,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n  };\n}\n\nfunction shapeJobCompleted(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'COMPLETED',\n    webhook_received: 'TRUE',\n    response_payload: data.raw,\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeJobFailed(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'FAILED',\n    webhook_received: 'TRUE',\n    error_message: String(data.failureReason || '').slice(0, 1000),\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeMomentStatus(data, status) {\n  return {\n    clip_moment_id: data.clip_moment_id || 'NOOP-ORPHAN',\n    ssemble_status: status,\n  };\n}\n\nfunction explodeCreatedClips(data, now = new Date().toISOString()) {\n  return (data.shorts || []).map((short, index) => ({\n    created_clip_id: `CC-${short.id}`,\n    ssemble_job_id: data.requestId,\n    video_id: data.video_id || '',\n    niche: data.niche || '',\n    clip_title: String(short.title || ''),\n    clip_url: String(short.video_url || ''),\n    local_file_name: '',\n    google_drive_file_id: '',\n    google_drive_url: '',\n    duration_seconds: Number(short.duration || 0),\n    transcript_excerpt: '',\n    suggested_title: '',\n    suggested_caption: '',\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: `viral_score=${short.viral_score || ''}`,\n    created_at: now,\n    rank: index + 1,\n  }));\n}\n\n\nfunction isTrue(value) {\n  return String(value || '').toUpperCase() === 'TRUE';\n}\n\nfunction isSubmitted(job) {\n  return String(job.job_status || '').toUpperCase() === 'SUBMITTED';\n}\n\nfunction ageMinutes(createdAt, now) {\n  const created = Date.parse(createdAt || '');\n  const current = Date.parse(now || new Date().toISOString());\n  if (!Number.isFinite(created) || !Number.isFinite(current)) return 0;\n  return Math.floor((current - created) / 60000);\n}\n\nfunction shouldPollCurrentJob(job) {\n  return Boolean(job && job.ssemble_job_id && isSubmitted(job) && !isTrue(job.webhook_received));\n}\n\nfunction pickStaleSubmittedJobs(jobs, now = new Date().toISOString(), minAgeMinutes = 30, limit = 10) {\n  return (jobs || [])\n    .filter((job) => shouldPollCurrentJob(job))\n    .filter((job) => ageMinutes(job.created_at, now) >= minAgeMinutes)\n    .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))\n    .slice(0, limit);\n}\n\nfunction findLatestJob(candidate, jobs) {\n  return (jobs || []).find((job) => String(job.ssemble_job_id) === String(candidate.ssemble_job_id)) || candidate;\n}\n\nfunction readStatus(response) {\n  return String(\n    response?.data?.status ||\n    response?.status ||\n    response?.state ||\n    '',\n  ).toLowerCase();\n}\n\nfunction readFailureReason(response, fallback = '') {\n  return String(\n    response?.data?.failureReason ||\n    response?.failureReason ||\n    response?.error?.message ||\n    response?.message ||\n    fallback ||\n    '',\n  );\n}\n\nfunction normalizeStatusResponse(response, job, now = new Date().toISOString()) {\n  const status = readStatus(response);\n  let route = 'pending';\n  if (status === 'completed') route = 'completed';\n  if (status === 'failed' || status === 'cancelled') route = 'failed';\n\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status,\n    route,\n    timestamp: response?.timestamp || response?.data?.timestamp || now,\n    failureReason: route === 'failed'\n      ? readFailureReason(response, status === 'cancelled' ? 'Ssemble returned cancelled' : 'Ssemble processing failed')\n      : '',\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\nfunction extractShorts(response) {\n  const shorts = response?.data?.shorts || response?.shorts || response?.data?.data?.shorts || [];\n  return Array.isArray(shorts) ? shorts : [];\n}\n\nfunction normalizeCompletedPollResult(job, statusResponse, resultResponse, now = new Date().toISOString()) {\n  return {\n    completed: true,\n    requestId: job.ssemble_job_id,\n    timestamp: resultResponse?.timestamp || statusResponse?.timestamp || now,\n    shorts: extractShorts(resultResponse),\n    failureReason: '',\n    raw: JSON.stringify({ status: statusResponse || {}, result: resultResponse || {} }).slice(0, 40000),\n  };\n}\n\nfunction normalizeFailedPollStatus(job, statusResponse, now = new Date().toISOString()) {\n  const normalized = normalizeStatusResponse(statusResponse, job, now);\n  return {\n    completed: false,\n    requestId: job.ssemble_job_id,\n    timestamp: normalized.timestamp,\n    shorts: [],\n    failureReason: normalized.failureReason || 'Ssemble processing failed',\n    raw: normalized.raw,\n  };\n}\n\nfunction buildNoopPollResult(job, response, now = new Date().toISOString()) {\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status: readStatus(response) || 'pending',\n    route: 'pending',\n    timestamp: response?.timestamp || now,\n    failureReason: readFailureReason(response),\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\n\nconst job = $('Confirm Still Submitted').first().json;\nconst status = $('Normalize Status').first().json;\nconst normalized = normalizeFailedPollStatus(job, status);\nreturn [{ json: attachMoment(normalized, [job]), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf7b-020",
+      "name": "Shape Job Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        240
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function verifyAndParseWebhook(input, secret = 'SSEMBLE_WEBHOOK_SECRET') {\n  const query = input.query || {};\n  if (query.secret !== secret) {\n    throw new Error('Webhook secret mismatch - dropping payload');\n  }\n  const payload = input.body || {};\n  const completed = payload.event === 'shorts.completed';\n  return {\n    completed,\n    requestId: payload.requestId || '',\n    timestamp: payload.timestamp || new Date().toISOString(),\n    shorts: (completed && payload.data && payload.data.shorts) || [],\n    failureReason: (!completed && payload.data && payload.data.failureReason) || '',\n    raw: JSON.stringify(payload).slice(0, 40000),\n  };\n}\n\nfunction attachMoment(parsed, jobs) {\n  const job = jobs.find((row) => String(row.ssemble_job_id) === String(parsed.requestId)) || {};\n  return {\n    ...parsed,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n  };\n}\n\nfunction shapeJobCompleted(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'COMPLETED',\n    webhook_received: 'TRUE',\n    response_payload: data.raw,\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeJobFailed(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'FAILED',\n    webhook_received: 'TRUE',\n    error_message: String(data.failureReason || '').slice(0, 1000),\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeMomentStatus(data, status) {\n  return {\n    clip_moment_id: data.clip_moment_id || 'NOOP-ORPHAN',\n    ssemble_status: status,\n  };\n}\n\nfunction explodeCreatedClips(data, now = new Date().toISOString()) {\n  return (data.shorts || []).map((short, index) => ({\n    created_clip_id: `CC-${short.id}`,\n    ssemble_job_id: data.requestId,\n    video_id: data.video_id || '',\n    niche: data.niche || '',\n    clip_title: String(short.title || ''),\n    clip_url: String(short.video_url || ''),\n    local_file_name: '',\n    google_drive_file_id: '',\n    google_drive_url: '',\n    duration_seconds: Number(short.duration || 0),\n    transcript_excerpt: '',\n    suggested_title: '',\n    suggested_caption: '',\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: `viral_score=${short.viral_score || ''}`,\n    created_at: now,\n    rank: index + 1,\n  }));\n}\n\n\nfunction isTrue(value) {\n  return String(value || '').toUpperCase() === 'TRUE';\n}\n\nfunction isSubmitted(job) {\n  return String(job.job_status || '').toUpperCase() === 'SUBMITTED';\n}\n\nfunction ageMinutes(createdAt, now) {\n  const created = Date.parse(createdAt || '');\n  const current = Date.parse(now || new Date().toISOString());\n  if (!Number.isFinite(created) || !Number.isFinite(current)) return 0;\n  return Math.floor((current - created) / 60000);\n}\n\nfunction shouldPollCurrentJob(job) {\n  return Boolean(job && job.ssemble_job_id && isSubmitted(job) && !isTrue(job.webhook_received));\n}\n\nfunction pickStaleSubmittedJobs(jobs, now = new Date().toISOString(), minAgeMinutes = 30, limit = 10) {\n  return (jobs || [])\n    .filter((job) => shouldPollCurrentJob(job))\n    .filter((job) => ageMinutes(job.created_at, now) >= minAgeMinutes)\n    .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))\n    .slice(0, limit);\n}\n\nfunction findLatestJob(candidate, jobs) {\n  return (jobs || []).find((job) => String(job.ssemble_job_id) === String(candidate.ssemble_job_id)) || candidate;\n}\n\nfunction readStatus(response) {\n  return String(\n    response?.data?.status ||\n    response?.status ||\n    response?.state ||\n    '',\n  ).toLowerCase();\n}\n\nfunction readFailureReason(response, fallback = '') {\n  return String(\n    response?.data?.failureReason ||\n    response?.failureReason ||\n    response?.error?.message ||\n    response?.message ||\n    fallback ||\n    '',\n  );\n}\n\nfunction normalizeStatusResponse(response, job, now = new Date().toISOString()) {\n  const status = readStatus(response);\n  let route = 'pending';\n  if (status === 'completed') route = 'completed';\n  if (status === 'failed' || status === 'cancelled') route = 'failed';\n\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status,\n    route,\n    timestamp: response?.timestamp || response?.data?.timestamp || now,\n    failureReason: route === 'failed'\n      ? readFailureReason(response, status === 'cancelled' ? 'Ssemble returned cancelled' : 'Ssemble processing failed')\n      : '',\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\nfunction extractShorts(response) {\n  const shorts = response?.data?.shorts || response?.shorts || response?.data?.data?.shorts || [];\n  return Array.isArray(shorts) ? shorts : [];\n}\n\nfunction normalizeCompletedPollResult(job, statusResponse, resultResponse, now = new Date().toISOString()) {\n  return {\n    completed: true,\n    requestId: job.ssemble_job_id,\n    timestamp: resultResponse?.timestamp || statusResponse?.timestamp || now,\n    shorts: extractShorts(resultResponse),\n    failureReason: '',\n    raw: JSON.stringify({ status: statusResponse || {}, result: resultResponse || {} }).slice(0, 40000),\n  };\n}\n\nfunction normalizeFailedPollStatus(job, statusResponse, now = new Date().toISOString()) {\n  const normalized = normalizeStatusResponse(statusResponse, job, now);\n  return {\n    completed: false,\n    requestId: job.ssemble_job_id,\n    timestamp: normalized.timestamp,\n    shorts: [],\n    failureReason: normalized.failureReason || 'Ssemble processing failed',\n    raw: normalized.raw,\n  };\n}\n\nfunction buildNoopPollResult(job, response, now = new Date().toISOString()) {\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status: readStatus(response) || 'pending',\n    route: 'pending',\n    timestamp: response?.timestamp || now,\n    failureReason: readFailureReason(response),\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\n\nreturn [{ json: shapeJobFailed($input.first().json), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf7b-021",
+      "name": "Update Job Failed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2420,
+        240
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ssemble_Jobs"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "ssemble_job_id"
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf7b-022",
+      "name": "Shape Moment Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        240
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function verifyAndParseWebhook(input, secret = 'SSEMBLE_WEBHOOK_SECRET') {\n  const query = input.query || {};\n  if (query.secret !== secret) {\n    throw new Error('Webhook secret mismatch - dropping payload');\n  }\n  const payload = input.body || {};\n  const completed = payload.event === 'shorts.completed';\n  return {\n    completed,\n    requestId: payload.requestId || '',\n    timestamp: payload.timestamp || new Date().toISOString(),\n    shorts: (completed && payload.data && payload.data.shorts) || [],\n    failureReason: (!completed && payload.data && payload.data.failureReason) || '',\n    raw: JSON.stringify(payload).slice(0, 40000),\n  };\n}\n\nfunction attachMoment(parsed, jobs) {\n  const job = jobs.find((row) => String(row.ssemble_job_id) === String(parsed.requestId)) || {};\n  return {\n    ...parsed,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n  };\n}\n\nfunction shapeJobCompleted(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'COMPLETED',\n    webhook_received: 'TRUE',\n    response_payload: data.raw,\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeJobFailed(data) {\n  return {\n    ssemble_job_id: data.requestId,\n    job_status: 'FAILED',\n    webhook_received: 'TRUE',\n    error_message: String(data.failureReason || '').slice(0, 1000),\n    completed_at: data.timestamp,\n  };\n}\n\nfunction shapeMomentStatus(data, status) {\n  return {\n    clip_moment_id: data.clip_moment_id || 'NOOP-ORPHAN',\n    ssemble_status: status,\n  };\n}\n\nfunction explodeCreatedClips(data, now = new Date().toISOString()) {\n  return (data.shorts || []).map((short, index) => ({\n    created_clip_id: `CC-${short.id}`,\n    ssemble_job_id: data.requestId,\n    video_id: data.video_id || '',\n    niche: data.niche || '',\n    clip_title: String(short.title || ''),\n    clip_url: String(short.video_url || ''),\n    local_file_name: '',\n    google_drive_file_id: '',\n    google_drive_url: '',\n    duration_seconds: Number(short.duration || 0),\n    transcript_excerpt: '',\n    suggested_title: '',\n    suggested_caption: '',\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: `viral_score=${short.viral_score || ''}`,\n    created_at: now,\n    rank: index + 1,\n  }));\n}\n\n\nfunction isTrue(value) {\n  return String(value || '').toUpperCase() === 'TRUE';\n}\n\nfunction isSubmitted(job) {\n  return String(job.job_status || '').toUpperCase() === 'SUBMITTED';\n}\n\nfunction ageMinutes(createdAt, now) {\n  const created = Date.parse(createdAt || '');\n  const current = Date.parse(now || new Date().toISOString());\n  if (!Number.isFinite(created) || !Number.isFinite(current)) return 0;\n  return Math.floor((current - created) / 60000);\n}\n\nfunction shouldPollCurrentJob(job) {\n  return Boolean(job && job.ssemble_job_id && isSubmitted(job) && !isTrue(job.webhook_received));\n}\n\nfunction pickStaleSubmittedJobs(jobs, now = new Date().toISOString(), minAgeMinutes = 30, limit = 10) {\n  return (jobs || [])\n    .filter((job) => shouldPollCurrentJob(job))\n    .filter((job) => ageMinutes(job.created_at, now) >= minAgeMinutes)\n    .sort((a, b) => Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0))\n    .slice(0, limit);\n}\n\nfunction findLatestJob(candidate, jobs) {\n  return (jobs || []).find((job) => String(job.ssemble_job_id) === String(candidate.ssemble_job_id)) || candidate;\n}\n\nfunction readStatus(response) {\n  return String(\n    response?.data?.status ||\n    response?.status ||\n    response?.state ||\n    '',\n  ).toLowerCase();\n}\n\nfunction readFailureReason(response, fallback = '') {\n  return String(\n    response?.data?.failureReason ||\n    response?.failureReason ||\n    response?.error?.message ||\n    response?.message ||\n    fallback ||\n    '',\n  );\n}\n\nfunction normalizeStatusResponse(response, job, now = new Date().toISOString()) {\n  const status = readStatus(response);\n  let route = 'pending';\n  if (status === 'completed') route = 'completed';\n  if (status === 'failed' || status === 'cancelled') route = 'failed';\n\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status,\n    route,\n    timestamp: response?.timestamp || response?.data?.timestamp || now,\n    failureReason: route === 'failed'\n      ? readFailureReason(response, status === 'cancelled' ? 'Ssemble returned cancelled' : 'Ssemble processing failed')\n      : '',\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\nfunction extractShorts(response) {\n  const shorts = response?.data?.shorts || response?.shorts || response?.data?.data?.shorts || [];\n  return Array.isArray(shorts) ? shorts : [];\n}\n\nfunction normalizeCompletedPollResult(job, statusResponse, resultResponse, now = new Date().toISOString()) {\n  return {\n    completed: true,\n    requestId: job.ssemble_job_id,\n    timestamp: resultResponse?.timestamp || statusResponse?.timestamp || now,\n    shorts: extractShorts(resultResponse),\n    failureReason: '',\n    raw: JSON.stringify({ status: statusResponse || {}, result: resultResponse || {} }).slice(0, 40000),\n  };\n}\n\nfunction normalizeFailedPollStatus(job, statusResponse, now = new Date().toISOString()) {\n  const normalized = normalizeStatusResponse(statusResponse, job, now);\n  return {\n    completed: false,\n    requestId: job.ssemble_job_id,\n    timestamp: normalized.timestamp,\n    shorts: [],\n    failureReason: normalized.failureReason || 'Ssemble processing failed',\n    raw: normalized.raw,\n  };\n}\n\nfunction buildNoopPollResult(job, response, now = new Date().toISOString()) {\n  return {\n    requestId: job.ssemble_job_id,\n    clip_moment_id: job.clip_moment_id || '',\n    video_id: job.video_id || '',\n    niche: job.niche || '',\n    status: readStatus(response) || 'pending',\n    route: 'pending',\n    timestamp: response?.timestamp || now,\n    failureReason: readFailureReason(response),\n    raw: JSON.stringify(response || {}).slice(0, 40000),\n  };\n}\n\n\nconst data = $('Normalize Failed Poll').first().json;\nreturn [{ json: shapeMomentStatus(data, 'ERROR'), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf7b-023",
+      "name": "Update Moment Failed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2860,
+        240
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Clip_Moments"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "clip_moment_id"
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf7b-024",
+      "name": "Wait 2s Completed",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3740,
+        0
+      ],
+      "parameters": {
+        "amount": 2
+      }
+    },
+    {
+      "id": "wf7b-025",
+      "name": "Wait 2s Failed",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3080,
+        240
+      ],
+      "parameters": {
+        "amount": 2
+      }
+    },
+    {
+      "id": "wf7b-026",
+      "name": "Wait 2s Pending",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1980,
+        420
+      ],
+      "parameters": {
+        "amount": 2
+      }
+    }
+  ],
+  "connections": {
+    "Schedule 15m": {
+      "main": [
+        [
+          {
+            "node": "Read Ssemble_Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Ssemble_Jobs": {
+      "main": [
+        [
+          {
+            "node": "Pick Stale Submitted Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Stale Submitted Jobs": {
+      "main": [
+        [
+          {
+            "node": "Poll Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Loop": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Re-read Ssemble_Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-read Ssemble_Jobs": {
+      "main": [
+        [
+          {
+            "node": "Confirm Still Submitted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirm Still Submitted": {
+      "main": [
+        [
+          {
+            "node": "Check Ssemble Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Ssemble Status": {
+      "main": [
+        [
+          {
+            "node": "Normalize Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Status": {
+      "main": [
+        [
+          {
+            "node": "Status Completed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status Completed?": {
+      "main": [
+        [
+          {
+            "node": "Get Ssemble Shorts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Status Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status Failed?": {
+      "main": [
+        [
+          {
+            "node": "Normalize Failed Poll",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 2s Pending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Ssemble Shorts": {
+      "main": [
+        [
+          {
+            "node": "Normalize Completed Poll",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Completed Poll": {
+      "main": [
+        [
+          {
+            "node": "Shape Job Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Job Completed": {
+      "main": [
+        [
+          {
+            "node": "Update Job Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Job Completed": {
+      "main": [
+        [
+          {
+            "node": "Shape Moment Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Moment Completed": {
+      "main": [
+        [
+          {
+            "node": "Update Moment Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Moment Completed": {
+      "main": [
+        [
+          {
+            "node": "Explode Shorts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explode Shorts": {
+      "main": [
+        [
+          {
+            "node": "Append Created_Clips",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Created_Clips": {
+      "main": [
+        [
+          {
+            "node": "Wait 2s Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2s Completed": {
+      "main": [
+        [
+          {
+            "node": "Poll Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Failed Poll": {
+      "main": [
+        [
+          {
+            "node": "Shape Job Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Job Failed": {
+      "main": [
+        [
+          {
+            "node": "Update Job Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Job Failed": {
+      "main": [
+        [
+          {
+            "node": "Shape Moment Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Moment Failed": {
+      "main": [
+        [
+          {
+            "node": "Update Moment Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Moment Failed": {
+      "main": [
+        [
+          {
+            "node": "Wait 2s Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2s Failed": {
+      "main": [
+        [
+          {
+            "node": "Poll Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2s Pending": {
+      "main": [
+        [
+          {
+            "node": "Poll Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}

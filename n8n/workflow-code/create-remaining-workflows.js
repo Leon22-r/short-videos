@@ -50,6 +50,13 @@ const sheetsNode = (id, name, position, parameters, extra = {}) => node(
 
 const httpNode = (id, name, position, parameters, extra = {}) => node(id, name, 'n8n-nodes-base.httpRequest', 4.2, position, parameters, extra);
 
+const ssembleHttpExtra = {
+  onError: 'continueRegularOutput',
+  retryOnFail: true,
+  maxTries: 3,
+  waitBetweenTries: 5000,
+};
+
 const openAiNode = (id, name, position) => node(
   id,
   name,
@@ -223,6 +230,112 @@ return [{ json: shapeMomentStatus(data, 'ERROR'), pairedItem: { item: 0 } }];`),
   });
 }
 
+function wf7b() {
+  const webhookHelper = helper('ssemble-webhook');
+  const pollingHelper = helper('ssemble-polling');
+  const helpers = `${webhookHelper}\n${pollingHelper}`;
+  writeWorkflow('n8n/workflows/07b-ssemble-polling-fallback.json', {
+    name: 'WF7b Ssemble Polling Fallback',
+    nodes: [
+      node('wf7b-001', 'Schedule 15m', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'minutes', minutesInterval: 15 }] } }),
+      sheetsNode('wf7b-002', 'Read Ssemble_Jobs', [220, 0], sheet('read', 'Ssemble_Jobs'), { alwaysOutputData: true }),
+      codeNode('wf7b-003', 'Pick Stale Submitted Jobs', [440, 0], `${pollingHelper}
+const jobs = $('Read Ssemble_Jobs').all().map(i => i.json);
+const picked = pickStaleSubmittedJobs(jobs, new Date().toISOString(), 30, 10);
+return picked.map((job, index) => ({ json: job, pairedItem: { item: index } }));`),
+      node('wf7b-004', 'Poll Loop', 'n8n-nodes-base.splitInBatches', 3, [660, 0], { batchSize: 1, options: {} }),
+      sheetsNode('wf7b-005', 'Re-read Ssemble_Jobs', [880, 120], sheet('read', 'Ssemble_Jobs'), { alwaysOutputData: true }),
+      codeNode('wf7b-006', 'Confirm Still Submitted', [1100, 120], `${pollingHelper}
+const candidate = $('Poll Loop').first().json;
+const jobs = $('Re-read Ssemble_Jobs').all().map(i => i.json);
+const latest = findLatestJob(candidate, jobs);
+if (!shouldPollCurrentJob(latest)) return [];
+return [{ json: latest, pairedItem: { item: 0 } }];`),
+      httpNode('wf7b-007', 'Check Ssemble Status', [1320, 120], {
+        method: 'GET',
+        url: "={{ 'https://aiclipping.ssemble.com/api/v1/shorts/' + $json.ssemble_job_id + '/status' }}",
+        authentication: 'genericCredentialType',
+        genericAuthType: 'httpHeaderAuth',
+        options: { timeout: 60000 },
+      }, ssembleHttpExtra),
+      codeNode('wf7b-008', 'Normalize Status', [1540, 120], `${pollingHelper}
+const job = $('Confirm Still Submitted').first().json;
+const status = normalizeStatusResponse($input.first().json, job);
+return [{ json: status, pairedItem: { item: 0 } }];`),
+      ifNode('wf7b-009', 'Status Completed?', [1760, 80], '={{ $json.route }}', 'completed', 'string', 'equals'),
+      ifNode('wf7b-010', 'Status Failed?', [1760, 220], '={{ $json.route }}', 'failed', 'string', 'equals'),
+      httpNode('wf7b-011', 'Get Ssemble Shorts', [1980, 0], {
+        method: 'GET',
+        url: "={{ 'https://aiclipping.ssemble.com/api/v1/shorts/' + $('Confirm Still Submitted').first().json.ssemble_job_id }}",
+        authentication: 'genericCredentialType',
+        genericAuthType: 'httpHeaderAuth',
+        options: { timeout: 60000 },
+      }, ssembleHttpExtra),
+      codeNode('wf7b-012', 'Normalize Completed Poll', [2200, 0], `${helpers}
+const job = $('Confirm Still Submitted').first().json;
+const status = $('Normalize Status').first().json;
+const result = $input.first().json;
+const normalized = normalizeCompletedPollResult(job, status, result);
+if (!normalized.shorts.length) return [];
+return [{ json: attachMoment(normalized, [job]), pairedItem: { item: 0 } }];`),
+      codeNode('wf7b-013', 'Shape Job Completed', [2420, 0], `${helpers}
+return [{ json: shapeJobCompleted($input.first().json), pairedItem: { item: 0 } }];`),
+      sheetsNode('wf7b-014', 'Update Job Completed', [2640, 0], sheet('appendOrUpdate', 'Ssemble_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['ssemble_job_id'] } })),
+      codeNode('wf7b-015', 'Shape Moment Completed', [2860, 0], `${helpers}
+const data = $('Normalize Completed Poll').first().json;
+return [{ json: shapeMomentStatus(data, 'COMPLETED'), pairedItem: { item: 0 } }];`),
+      sheetsNode('wf7b-016', 'Update Moment Completed', [3080, 0], sheet('appendOrUpdate', 'Clip_Moments', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] } })),
+      codeNode('wf7b-017', 'Explode Shorts', [3300, 0], `${helpers}
+const rows = explodeCreatedClips($('Normalize Completed Poll').first().json);
+return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
+      sheetsNode('wf7b-018', 'Append Created_Clips', [3520, 0], sheet('appendOrUpdate', 'Created_Clips', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['created_clip_id'] } })),
+      codeNode('wf7b-019', 'Normalize Failed Poll', [1980, 240], `${helpers}
+const job = $('Confirm Still Submitted').first().json;
+const status = $('Normalize Status').first().json;
+const normalized = normalizeFailedPollStatus(job, status);
+return [{ json: attachMoment(normalized, [job]), pairedItem: { item: 0 } }];`),
+      codeNode('wf7b-020', 'Shape Job Failed', [2200, 240], `${helpers}
+return [{ json: shapeJobFailed($input.first().json), pairedItem: { item: 0 } }];`),
+      sheetsNode('wf7b-021', 'Update Job Failed', [2420, 240], sheet('appendOrUpdate', 'Ssemble_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['ssemble_job_id'] } })),
+      codeNode('wf7b-022', 'Shape Moment Failed', [2640, 240], `${helpers}
+const data = $('Normalize Failed Poll').first().json;
+return [{ json: shapeMomentStatus(data, 'ERROR'), pairedItem: { item: 0 } }];`),
+      sheetsNode('wf7b-023', 'Update Moment Failed', [2860, 240], sheet('appendOrUpdate', 'Clip_Moments', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] } })),
+      node('wf7b-024', 'Wait 2s Completed', 'n8n-nodes-base.wait', 1.1, [3740, 0], { amount: 2 }),
+      node('wf7b-025', 'Wait 2s Failed', 'n8n-nodes-base.wait', 1.1, [3080, 240], { amount: 2 }),
+      node('wf7b-026', 'Wait 2s Pending', 'n8n-nodes-base.wait', 1.1, [1980, 420], { amount: 2 }),
+    ],
+    connections: {
+      'Schedule 15m': { main: [[{ node: 'Read Ssemble_Jobs', type: 'main', index: 0 }]] },
+      'Read Ssemble_Jobs': { main: [[{ node: 'Pick Stale Submitted Jobs', type: 'main', index: 0 }]] },
+      'Pick Stale Submitted Jobs': { main: [[{ node: 'Poll Loop', type: 'main', index: 0 }]] },
+      'Poll Loop': { main: [[], [{ node: 'Re-read Ssemble_Jobs', type: 'main', index: 0 }]] },
+      'Re-read Ssemble_Jobs': { main: [[{ node: 'Confirm Still Submitted', type: 'main', index: 0 }]] },
+      'Confirm Still Submitted': { main: [[{ node: 'Check Ssemble Status', type: 'main', index: 0 }]] },
+      'Check Ssemble Status': { main: [[{ node: 'Normalize Status', type: 'main', index: 0 }]] },
+      'Normalize Status': { main: [[{ node: 'Status Completed?', type: 'main', index: 0 }]] },
+      'Status Completed?': { main: [[{ node: 'Get Ssemble Shorts', type: 'main', index: 0 }], [{ node: 'Status Failed?', type: 'main', index: 0 }]] },
+      'Status Failed?': { main: [[{ node: 'Normalize Failed Poll', type: 'main', index: 0 }], [{ node: 'Wait 2s Pending', type: 'main', index: 0 }]] },
+      'Get Ssemble Shorts': { main: [[{ node: 'Normalize Completed Poll', type: 'main', index: 0 }]] },
+      'Normalize Completed Poll': { main: [[{ node: 'Shape Job Completed', type: 'main', index: 0 }]] },
+      'Shape Job Completed': { main: [[{ node: 'Update Job Completed', type: 'main', index: 0 }]] },
+      'Update Job Completed': { main: [[{ node: 'Shape Moment Completed', type: 'main', index: 0 }]] },
+      'Shape Moment Completed': { main: [[{ node: 'Update Moment Completed', type: 'main', index: 0 }]] },
+      'Update Moment Completed': { main: [[{ node: 'Explode Shorts', type: 'main', index: 0 }]] },
+      'Explode Shorts': { main: [[{ node: 'Append Created_Clips', type: 'main', index: 0 }]] },
+      'Append Created_Clips': { main: [[{ node: 'Wait 2s Completed', type: 'main', index: 0 }]] },
+      'Wait 2s Completed': { main: [[{ node: 'Poll Loop', type: 'main', index: 0 }]] },
+      'Normalize Failed Poll': { main: [[{ node: 'Shape Job Failed', type: 'main', index: 0 }]] },
+      'Shape Job Failed': { main: [[{ node: 'Update Job Failed', type: 'main', index: 0 }]] },
+      'Update Job Failed': { main: [[{ node: 'Shape Moment Failed', type: 'main', index: 0 }]] },
+      'Shape Moment Failed': { main: [[{ node: 'Update Moment Failed', type: 'main', index: 0 }]] },
+      'Update Moment Failed': { main: [[{ node: 'Wait 2s Failed', type: 'main', index: 0 }]] },
+      'Wait 2s Failed': { main: [[{ node: 'Poll Loop', type: 'main', index: 0 }]] },
+      'Wait 2s Pending': { main: [[{ node: 'Poll Loop', type: 'main', index: 0 }]] },
+    },
+  });
+}
+
 function wf8() {
   const h = helper('drive-storage-transform');
   const folders = `{
@@ -318,5 +431,6 @@ return [{ json: digest, pairedItem: { item: 0 } }];`),
 
 wf6();
 wf7();
+wf7b();
 wf8();
 wf9();
