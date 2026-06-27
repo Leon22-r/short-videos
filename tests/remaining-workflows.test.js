@@ -292,6 +292,64 @@ test('WF8 reuses uploaded Drive files and builds OpenAI planner requests', () =>
   assert.equal(parsed.review_status, 'NEEDS_REVIEW');
 });
 
+test('WF8 planner request carries the strict JSON schema and schema instructions', () => {
+  const planner = buildPlannerRequest({
+    created_clip_id: 'CC-1', niche: 'FINANCE_BUSINESS', clip_title: 'Money', duration_seconds: 45,
+  });
+  const schema = JSON.parse(planner.transformation_schema);
+
+  assert.equal(schema.type, 'object');
+  assert.equal(schema.additionalProperties, false);
+  assert(schema.required.includes('best_title'));
+  assert(schema.required.includes('caption'));
+  assert.match(planner.user_message, /must conform to this schema/);
+  assert.match(planner.user_message, /Do not use Markdown code fences/);
+});
+
+test('WF8 parse survives fenced, array, and content-part response shapes', () => {
+  const meta = { created_clip_id: 'CC-1', video_id: 'VID-1', niche: 'FINANCE_BUSINESS' };
+  const payload = { best_title: 'Stop Wasting M-Pesa', caption: 'Hard truth about money' };
+
+  const fenced = parseTransformationPlan(meta, {
+    choices: [{ message: { content: '```json\n' + JSON.stringify(payload) + '\n```' } }],
+  });
+  const arrayShape = parseTransformationPlan(meta, [{ message: { content: JSON.stringify(payload) } }]);
+  const contentParts = parseTransformationPlan(meta, {
+    content: [{ type: 'output_text', text: JSON.stringify(payload) }],
+  });
+
+  for (const out of [fenced, arrayShape, contentParts]) {
+    assert.equal(out.suggested_title, 'Stop Wasting M-Pesa');
+    assert.equal(out.suggested_caption, 'Hard truth about money');
+    assert.equal(out.review_status, 'NEEDS_REVIEW');
+  }
+});
+
+test('WF8 parse flags unrecoverable responses for retry instead of writing blanks', () => {
+  const meta = { created_clip_id: 'CC-1', video_id: 'VID-1', niche: 'FINANCE_BUSINESS' };
+
+  const garbage = parseTransformationPlan(meta, { choices: [{ message: { content: 'not json at all' } }] });
+  const apiError = parseTransformationPlan(meta, { error: { message: 'rate limited' } });
+
+  assert.equal(garbage.review_status, 'NEEDS_RETRY');
+  assert.equal(garbage.suggested_title, '');
+  assert.match(garbage.transformation_plan, /parse_error/);
+  assert.equal(apiError.review_status, 'NEEDS_RETRY');
+  assert.match(apiError.transformation_plan, /rate limited/);
+});
+
+test('WF8 planner OpenAI node enforces strict json_schema structured output', () => {
+  const workflow = requireWorkflow('08', 'drive-storage-transform');
+  const openAi = workflow.nodes.find((node) => node.name === 'Call OpenAI Planner');
+  const textOptions = openAi.parameters.options.textFormat.textOptions;
+
+  assert.equal(textOptions.type, 'json_schema');
+  assert.equal(textOptions.strict, true);
+  assert.equal(textOptions.schema, '={{ $json.transformation_schema }}');
+  assert.equal(openAi.onError, 'continueRegularOutput');
+  assert(!openAi.parameters.responses.values.some((value) => Object.keys(value).length === 0));
+});
+
 test('WF8 uses official OpenAI node for planner', () => {
   const workflow = requireWorkflow('08', 'drive-storage-transform');
   const nodeTypes = Object.fromEntries(workflow.nodes.map((node) => [node.name, node.type]));

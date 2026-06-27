@@ -69,12 +69,21 @@ const openAiNode = (id, name, position) => node(
       values: [
         { role: 'system', content: '={{ $json.system_message }}' },
         { role: 'user', content: '={{ $json.user_message }}' },
-        {},
       ],
     },
     builtInTools: {},
-    options: {},
+    options: {
+      textFormat: {
+        textOptions: {
+          type: 'json_schema',
+          name: 'clip_transformation',
+          schema: '={{ $json.transformation_schema }}',
+          strict: true,
+        },
+      },
+    },
   },
+  { onError: 'continueRegularOutput' },
 );
 
 const ifNode = (id, name, position, leftValue, rightValue, type, operation) => node(
