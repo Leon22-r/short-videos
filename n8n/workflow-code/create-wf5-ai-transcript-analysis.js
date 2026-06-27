@@ -3,7 +3,11 @@ const { readFileSync } = require('node:fs');
 
 const workflowPath = process.argv[2] || 'n8n/workflows/05-ai-transcript-analysis.json';
 const helperSource = readFileSync('n8n/workflow-code/ai-transcript-analysis.js', 'utf8');
-const embeddedHelper = helperSource.replace(/module\.exports = \{[\s\S]*?\};\n?/, '');
+const fairShareSource = readFileSync('n8n/workflow-code/fair-share.js', 'utf8');
+const embeddedFairShare = fairShareSource.replace(/module\.exports = \{[\s\S]*?\};\n?/, '');
+const embeddedHelper = `${embeddedFairShare}\n${helperSource
+  .replace(/const \{[^}]*pickFairBy(?:Source|Group)[^}]*\} = require\('\.\/fair-share'\);\n\n/, '')
+  .replace(/module\.exports = \{[\s\S]*?\};\n?/, '')}`;
 const healthHelperSource = readFileSync('n8n/workflow-code/channel-health-check.js', 'utf8');
 const embeddedHealthHelper = healthHelperSource.replace(/module\.exports = \{[\s\S]*?\};\n?/, '');
 
@@ -101,7 +105,7 @@ const rows = pickUnanalyzed(
   $('Read Transcript_Analysis').all().map(i => i.json),
   $('Read Source_Channels').all().map(i => i.json),
   $('Read Candidate_Videos').all().map(i => i.json),
-  5,
+  { limit: 5, perSourceLimit: 1 },
 );
 return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
     codeNode('a1b2c3d4-0005-4000-8000-000000000017', 'Build Missing Window Moments', [1100, -160], `${embeddedHelper}
@@ -129,11 +133,64 @@ return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`)
       typeVersion: 3,
       position: [1100, 0],
     },
-    codeNode('a1b2c3d4-0005-4000-8000-000000000007', 'Build OpenAI Request', [1320, 120], `${embeddedHelper}
-const row = $input.first().json;
-return [{ json: buildAnalysisRequest(row), pairedItem: { item: 0 } }];`),
-    openAiNode('a1b2c3d4-0005-4000-8000-000000000008', 'Call OpenAI', [1540, 120]),
-    codeNode('a1b2c3d4-0005-4000-8000-000000000009', 'Parse And Gate', [1760, 120], `${embeddedHelper}
+    {
+      parameters: {
+        conditions: {
+          options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+          conditions: [{
+            id: 'has-full-transcript-file',
+            leftValue: '={{ $json.transcript_full_file_id || $json.transcript_full_url }}',
+            rightValue: '',
+            operator: { type: 'string', operation: 'notEmpty' },
+          }],
+          combinator: 'and',
+        },
+        options: {},
+      },
+      id: 'a1b2c3d4-0005-4000-8000-000000000024',
+      name: 'Has Full Transcript File?',
+      type: 'n8n-nodes-base.if',
+      typeVersion: 2.2,
+      position: [1320, 120],
+    },
+    {
+      parameters: {
+        resource: 'file',
+        operation: 'download',
+        fileId: {
+          __rl: true,
+          mode: 'id',
+          value: "={{ $json.transcript_full_file_id || String($json.transcript_full_url || '').match(/\\/d\\/([^/]+)/)?.[1] || '' }}",
+        },
+        binaryPropertyName: 'data',
+        options: {},
+      },
+      id: 'a1b2c3d4-0005-4000-8000-000000000025',
+      name: 'Download Full Transcript',
+      type: 'n8n-nodes-base.googleDrive',
+      typeVersion: 3,
+      position: [1540, 20],
+    },
+    {
+      parameters: {
+        operation: 'text',
+        binaryPropertyName: 'data',
+        options: {
+          destinationKey: 'transcript_full',
+        },
+      },
+      id: 'a1b2c3d4-0005-4000-8000-000000000026',
+      name: 'Extract Transcript Text',
+      type: 'n8n-nodes-base.extractFromFile',
+      typeVersion: 1,
+      position: [1760, 20],
+    },
+    codeNode('a1b2c3d4-0005-4000-8000-000000000007', 'Build OpenAI Request', [1980, 120], `${embeddedHelper}
+const row = $('Analysis Loop').first().json;
+const full = $json.transcript_full || row.transcript_text;
+return [{ json: buildAnalysisRequest({ ...row, transcript_full: full }), pairedItem: { item: 0 } }];`),
+    openAiNode('a1b2c3d4-0005-4000-8000-000000000008', 'Call OpenAI', [2200, 120]),
+    codeNode('a1b2c3d4-0005-4000-8000-000000000009', 'Parse And Gate', [2420, 120], `${embeddedHelper}
 const row = $('Build OpenAI Request').first().json;
 const resp = $input.first().json;
 let result;
@@ -143,34 +200,34 @@ try {
   throw new Error(\`AI returned unparseable JSON for \${row.video_id}: \${String(err)}\`);
 }
 return [{ json: result, pairedItem: { item: 0 } }];`),
-    codeNode('a1b2c3d4-0005-4000-8000-000000000010', 'Shape Analysis Update', [1980, 120], `const parseResult = $input.first().json;
+    codeNode('a1b2c3d4-0005-4000-8000-000000000010', 'Shape Analysis Update', [2640, 120], `const parseResult = $input.first().json;
 const sourceId = $('Build OpenAI Request').first().json.source_id || '';
 const videoId = $('Build OpenAI Request').first().json.video_id || '';
 return [{ json: { ...parseResult.analysisUpdate, source_id: sourceId, video_id: videoId }, pairedItem: { item: 0 } }];`),
     sheetsNode(
       'a1b2c3d4-0005-4000-8000-000000000011',
       'Update Analysis Row',
-      [2200, 120],
+      [2860, 120],
       sheet('appendOrUpdate', 'Transcript_Analysis', {
         columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['analysis_id'] },
       }),
     ),
-    codeNode('a1b2c3d4-0005-4000-8000-000000000012', 'Shape Candidate Update', [2420, 120], `const parseResult = $input.first().json;
+    codeNode('a1b2c3d4-0005-4000-8000-000000000012', 'Shape Candidate Update', [3080, 120], `const parseResult = $input.first().json;
 return [{ json: parseResult.candidateUpdate, pairedItem: { item: 0 } }];`),
     sheetsNode(
       'a1b2c3d4-0005-4000-8000-000000000013',
       'Update Candidate Status',
-      [2640, 120],
+      [3300, 120],
       sheet('appendOrUpdate', 'Candidate_Videos', {
         columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['video_id'] },
       }),
     ),
-    codeNode('a1b2c3d4-0005-4000-8000-000000000014', 'Explode Clip Moments', [2860, 20], `const rows = $input.first().json.momentRows || [];
+    codeNode('a1b2c3d4-0005-4000-8000-000000000014', 'Explode Clip Moments', [3520, 20], `const rows = $input.first().json.momentRows || [];
 return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
     sheetsNode(
       'a1b2c3d4-0005-4000-8000-000000000015',
       'Append Clip_Moments',
-      [3080, 20],
+      [3740, 20],
       sheet('appendOrUpdate', 'Clip_Moments', {
         columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] },
       }),
@@ -310,7 +367,15 @@ return toSkip.map((c, i) => ({
     },
     'Build Missing Window Moments': { main: [[{ node: 'Backfill Clip_Moments', type: 'main', index: 0 }]] },
     'Pick Unanalyzed': { main: [[{ node: 'Analysis Loop', type: 'main', index: 0 }]] },
-    'Analysis Loop': { main: [[], [{ node: 'Build OpenAI Request', type: 'main', index: 0 }]] },
+    'Analysis Loop': { main: [[], [{ node: 'Has Full Transcript File?', type: 'main', index: 0 }]] },
+    'Has Full Transcript File?': {
+      main: [
+        [{ node: 'Download Full Transcript', type: 'main', index: 0 }],
+        [{ node: 'Build OpenAI Request', type: 'main', index: 0 }],
+      ],
+    },
+    'Download Full Transcript': { main: [[{ node: 'Extract Transcript Text', type: 'main', index: 0 }]] },
+    'Extract Transcript Text': { main: [[{ node: 'Build OpenAI Request', type: 'main', index: 0 }]] },
     'Build OpenAI Request': { main: [[{ node: 'Call OpenAI', type: 'main', index: 0 }]] },
     'Call OpenAI': { main: [[{ node: 'Parse And Gate', type: 'main', index: 0 }]] },
     'Parse And Gate': {

@@ -1,3 +1,5 @@
+const { pickFairByGroup } = require('./fair-share');
+
 const TITLE_FORMULAS = {
   CHRISTIAN_CONTENT: ['God Is Not Asking You to Ignore This', 'This Is What Waiting on God Really Means', 'A Biblical Lesson Most People Miss'],
   MOTIVATION_DISCIPLINE: ["The Real Reason You Can't Stay Consistent", 'Motivation Is Not Your Problem', 'Stop Waiting to Feel Ready'],
@@ -93,13 +95,14 @@ function buildSchemaInstructions() {
   ].join('\n');
 }
 
-function pickAwaitingDownloads(clips, jobs, moments, folders, limit = 5) {
+function pickAwaitingDownloads(clips, jobs, moments, folders, options = 5) {
+  const limit = typeof options === 'number' ? options : Number(options.limit || 5);
+  const perSourceLimit = typeof options === 'number' ? limit : Number(options.perSourceLimit || 1);
   const jobsById = Object.fromEntries(jobs.map((job) => [job.ssemble_job_id, job]));
   const momentsById = Object.fromEntries(moments.map((moment) => [moment.clip_moment_id, moment]));
 
-  return clips
+  const enriched = clips
     .filter((clip) => String(clip.review_status) === 'AWAITING_DOWNLOAD')
-    .slice(0, limit)
     .map((clip) => {
       const job = jobsById[clip.ssemble_job_id] || {};
       const moment = momentsById[job.clip_moment_id] || {};
@@ -108,6 +111,7 @@ function pickAwaitingDownloads(clips, jobs, moments, folders, limit = 5) {
         ...clip,
         niche,
         video_id: clip.video_id || job.video_id || '',
+        source_id: moment.source_id || job.source_id || clip.source_id || '',
         drive_folder_id: folders[niche],
         file_name: `${niche}_${clip.created_clip_id}.mp4`,
         moment_core_idea: moment.core_idea || '',
@@ -118,6 +122,15 @@ function pickAwaitingDownloads(clips, jobs, moments, folders, limit = 5) {
         moment_suggested_title: moment.suggested_title || '',
       };
     });
+
+  return pickFairByGroup(enriched, {
+    limit,
+    perSourceLimit,
+    groupKey: 'niche',
+    sourceKey: 'source_id',
+    sourceFallbackKeys: ['niche'],
+    sortKey: 'created_at',
+  });
 }
 
 function buildDriveIdUpdate(clip, drive) {

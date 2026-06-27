@@ -55,11 +55,13 @@ function buildFetchPlan(channel) {
   return plan;
 }
 
-function buildCandidateRows(meta, videoApi, existingIds, now = new Date().toISOString()) {
+function buildCandidateRows(meta, videoApi, existingIds, now = new Date().toISOString(), options = {}) {
   if (meta.__empty) return [{ __noop: true }];
 
+  const perSourceLimit = Number(options.perSourceLimit || 5);
   const out = [];
   for (const video of videoApi.items || []) {
+    if (out.length >= perSourceLimit) break;
     if (!video.id || existingIds[video.id]) continue;
     existingIds[video.id] = true;
 

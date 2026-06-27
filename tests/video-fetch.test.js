@@ -96,6 +96,29 @@ test('returns noop marker when every video is duplicate', () => {
   assert.deepEqual(rows, [{ __noop: true }]);
 });
 
+test('limits newly built candidate rows per channel', () => {
+  const meta = { source_id: 'SRC-1', source_name: 'Source', niche: 'FINANCE_BUSINESS' };
+  const api = {
+    items: Array.from({ length: 8 }, (_, index) => ({
+      id: `video${index}`,
+      snippet: {
+        title: `Useful interview ${index}`,
+        publishedAt: `2026-06-27T00:0${index}:00.000Z`,
+        defaultAudioLanguage: 'en',
+        categoryId: '22',
+        liveBroadcastContent: 'none',
+      },
+      statistics: { viewCount: '1000', likeCount: '10', commentCount: '2' },
+      contentDetails: { duration: 'PT20M' },
+    })),
+  };
+
+  const rows = buildCandidateRows(meta, api, {}, '2026-06-27T01:00:00.000Z', { perSourceLimit: 5 });
+
+  assert.equal(rows.length, 5);
+  assert.deepEqual(rows.map((row) => row.youtube_video_id), ['video0', 'video1', 'video2', 'video3', 'video4']);
+});
+
 test('pre-rejects music and live videos while stripping internal fields', () => {
   const [music, live, normal, noop] = stripInternalFields([
     { video_id: 'VID-1', processing_status: 'NEW', __category_id: '10', __is_live: 'none' },

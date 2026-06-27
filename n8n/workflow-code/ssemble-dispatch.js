@@ -1,3 +1,5 @@
+const { pickFairByGroup } = require('./fair-share');
+
 function nairobiDay(value) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi' }).format(new Date(value));
 }
@@ -27,48 +29,53 @@ function planSsembleRequests(moments, jobs, options = {}) {
     .filter((moment) => String(moment.ssemble_status) === 'PENDING')
     .filter((moment) => !dispatched[moment.clip_moment_id]);
 
-  const byVideo = {};
-  for (const moment of pending) {
-    byVideo[moment.video_id] = byVideo[moment.video_id] || [];
-    byVideo[moment.video_id].push(moment);
-  }
+  const selected = pickFairByGroup(pending, {
+    limit: remaining,
+    perSourceLimit: Number(options.perSourceLimit || 1),
+    groupKey: 'niche',
+    sourceKey: 'source_id',
+    sourceFallbackKeys: ['niche'],
+    compare: (a, b) => {
+      const scoreDelta = Number(b.clip_score || 0) - Number(a.clip_score || 0);
+      if (scoreDelta !== 0) return scoreDelta;
+      return String(a.created_at || '').localeCompare(String(b.created_at || ''));
+    },
+  });
 
   const requests = [];
-  for (const videoId of Object.keys(byVideo).sort()) {
-    const momentsForVideo = byVideo[videoId].sort((a, b) => Number(b.clip_score || 0) - Number(a.clip_score || 0));
-    for (const moment of momentsForVideo) {
-      if (remaining === 0) break;
-      let start = Math.max(0, Math.floor(Number(moment.start_sec)));
-      let end = Math.floor(Number(moment.end_sec));
-      if (end - start < 60) {
-        const pad = Math.ceil((60 - (end - start)) / 2);
-        start = Math.max(0, start - pad);
-        end = start + 60;
-      }
-      if (end - start > 1200) end = start + 1200;
-      const isWindow = String(moment.strategy) === 'USE_20_MIN_WINDOW';
-      const body = {
-        url: moment.source_video_url,
-        start,
-        end,
-        preferredLength: 'under60sec',
-        language: 'en',
-        music: false,
-        layout: 'auto',
-        ...(isWindow ? {} : { noClipping: true }),
-        webhookUrl,
-      };
-      requests.push({
-        clip_moment_id: moment.clip_moment_id,
-        video_id: moment.video_id,
-        niche: moment.niche,
-        source_video_url: moment.source_video_url,
-        start_sec: start,
-        end_sec: end,
-        ssemble_body: JSON.stringify(body),
-      });
-      remaining -= 1;
+  for (const moment of selected) {
+    if (remaining === 0) break;
+    let start = Math.max(0, Math.floor(Number(moment.start_sec)));
+    let end = Math.floor(Number(moment.end_sec));
+    if (end - start < 60) {
+      const pad = Math.ceil((60 - (end - start)) / 2);
+      start = Math.max(0, start - pad);
+      end = start + 60;
     }
+    if (end - start > 1200) end = start + 1200;
+    const isWindow = String(moment.strategy) === 'USE_20_MIN_WINDOW';
+    const body = {
+      url: moment.source_video_url,
+      start,
+      end,
+      preferredLength: 'under60sec',
+      language: 'en',
+      music: false,
+      layout: 'auto',
+      ...(isWindow ? {} : { noClipping: true }),
+      webhookUrl,
+    };
+    requests.push({
+      clip_moment_id: moment.clip_moment_id,
+      video_id: moment.video_id,
+      niche: moment.niche,
+      source_id: moment.source_id || '',
+      source_video_url: moment.source_video_url,
+      start_sec: start,
+      end_sec: end,
+      ssemble_body: JSON.stringify(body),
+    });
+    remaining -= 1;
   }
   return requests;
 }
@@ -79,6 +86,7 @@ function buildReservationRow(request, now = new Date().toISOString()) {
     video_id: request.video_id,
     clip_moment_id: request.clip_moment_id,
     niche: request.niche,
+    source_id: request.source_id || '',
     source_video_url: request.source_video_url,
     start_sec: request.start_sec,
     end_sec: request.end_sec,
@@ -98,6 +106,7 @@ function buildSubmittedJobUpdate(request, response, now = new Date().toISOString
     video_id: request.video_id,
     clip_moment_id: request.clip_moment_id,
     niche: request.niche,
+    source_id: request.source_id || '',
     source_video_url: request.source_video_url,
     start_sec: request.start_sec,
     end_sec: request.end_sec,
@@ -118,6 +127,7 @@ function buildSubmitFailedJobUpdate(request, response, now = new Date().toISOStr
     video_id: request.video_id,
     clip_moment_id: request.clip_moment_id,
     niche: request.niche,
+    source_id: request.source_id || '',
     source_video_url: request.source_video_url,
     start_sec: request.start_sec,
     end_sec: request.end_sec,

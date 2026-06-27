@@ -27,7 +27,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
         },
         "sheetName": {
           "__rl": true,
@@ -49,7 +49,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const pending = $input.all()\n  .filter(i => String(i.json.validity_status) === 'VALID'\n            && String(i.json.transcript_available || '') === '')\n  .slice(0, 10);\nreturn pending.map((i, idx) => ({ json: i.json, pairedItem: { item: idx } }));"
+        "jsCode": "function defaultCompare(sortKey) {\n  return (a, b) => {\n    const av = String(a[sortKey] || '');\n    const bv = String(b[sortKey] || '');\n    if (av && bv && av !== bv) return av.localeCompare(bv);\n    if (av && !bv) return -1;\n    if (!av && bv) return 1;\n    return 0;\n  };\n}\n\nfunction pickFairBySource(rows, options = {}) {\n  const limit = Number(options.limit || rows.length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const sourceKey = options.sourceKey || 'source_id';\n  const fallbackKeys = options.fallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const buckets = new Map();\n  for (const row of rows || []) {\n    const keyValues = [sourceKey, ...fallbackKeys].map((key) => row[key]).filter(Boolean);\n    const source = String(keyValues[0] || '__unknown__');\n    if (!buckets.has(source)) buckets.set(source, []);\n    buckets.get(source).push(row);\n  }\n\n  const sourceOrder = [...buckets.keys()];\n  for (const source of sourceOrder) {\n    buckets.get(source).sort(compare);\n  }\n\n  const picked = [];\n  const pickedBySource = {};\n  let madeProgress = true;\n\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const source of sourceOrder) {\n      if (picked.length >= limit) break;\n      pickedBySource[source] = pickedBySource[source] || 0;\n      if (pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      picked.push(bucket.shift());\n      pickedBySource[source] += 1;\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\nfunction pickFairByGroup(rows, options = {}) {\n  const limit = Number(options.limit || (rows || []).length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const groupKey = options.groupKey || 'niche';\n  const groupFallbackKeys = options.groupFallbackKeys || [];\n  const sourceKey = options.sourceKey || 'source_id';\n  const sourceFallbackKeys = options.sourceFallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const groups = new Map();\n  for (const row of rows || []) {\n    const groupValues = [groupKey, ...groupFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const sourceValues = [sourceKey, ...sourceFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const group = String(groupValues[0] || '__unknown_group__');\n    const source = String(sourceValues[0] || '__unknown_source__');\n\n    if (!groups.has(group)) {\n      groups.set(group, {\n        sourceOrder: [],\n        buckets: new Map(),\n        pickedBySource: {},\n        nextSourceIndex: 0,\n      });\n    }\n    const groupBucket = groups.get(group);\n    if (!groupBucket.buckets.has(source)) {\n      groupBucket.buckets.set(source, []);\n      groupBucket.sourceOrder.push(source);\n    }\n    groupBucket.buckets.get(source).push(row);\n  }\n\n  const groupOrder = [...groups.keys()];\n  for (const group of groupOrder) {\n    const groupBucket = groups.get(group);\n    for (const source of groupBucket.sourceOrder) {\n      groupBucket.buckets.get(source).sort(compare);\n    }\n  }\n\n  function pickFromGroup(groupBucket) {\n    const totalSources = groupBucket.sourceOrder.length;\n    if (totalSources === 0) return null;\n\n    for (let attempts = 0; attempts < totalSources; attempts += 1) {\n      const index = (groupBucket.nextSourceIndex + attempts) % totalSources;\n      const source = groupBucket.sourceOrder[index];\n      groupBucket.pickedBySource[source] = groupBucket.pickedBySource[source] || 0;\n      if (groupBucket.pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = groupBucket.buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      groupBucket.nextSourceIndex = (index + 1) % totalSources;\n      groupBucket.pickedBySource[source] += 1;\n      return bucket.shift();\n    }\n\n    return null;\n  }\n\n  const picked = [];\n  let madeProgress = true;\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const group of groupOrder) {\n      if (picked.length >= limit) break;\n      const row = pickFromGroup(groups.get(group));\n      if (!row) continue;\n      picked.push(row);\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\n\nconst eligible = $input.all()\n  .filter(i => String(i.json.validity_status) === 'VALID'\n            && String(i.json.transcript_available || '') === '')\n  .map(i => i.json);\nconst pending = pickFairByGroup(eligible, {\n  limit: 10,\n  perSourceLimit: 2,\n  groupKey: 'niche',\n  sourceKey: 'source_id',\n  sourceFallbackKeys: ['niche'],\n  sortKey: 'created_at',\n});\nreturn pending.map((row, idx) => ({ json: row, pairedItem: { item: idx } }));"
       },
       "id": "a1b2c3d4-0004-4000-8000-000000000003",
       "name": "Pick Pending Transcripts",
@@ -77,13 +77,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:8787/transcript",
+        "url": "TRANSCRIPT_SERVICE_URL",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "x-api-key",
-              "value": "local-test-key"
+              "value": "TRANSCRIPT_API_KEY"
             }
           ]
         },
@@ -136,7 +136,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const video = $('Video Loop').first().json;\nconst resp = $input.first().json;\nconst snippets = resp.transcript || [];\n\nconst lines = snippets.map(s => {\n  const t = Math.floor(Number(s.start) || 0);\n  const mm = String(Math.floor(t / 60)).padStart(2, '0');\n  const ss = String(t % 60).padStart(2, '0');\n  return `[${mm}:${ss}] ${s.text}`;\n});\nlet transcriptText = lines.join('\\n');\nlet status = 'FETCHED';\nconst LIMIT = 45000;\nif (transcriptText.length > LIMIT) {\n  transcriptText = transcriptText.slice(0, LIMIT) + '\\n...[TRUNCATED]';\n  status = 'TRUNCATED';\n}\nconst words = (resp.plain_text || '').split(/\\s+/).filter(Boolean).length;\n\nreturn [{\n  json: {\n    analysis_id: `AN-${video.youtube_video_id}`,\n    video_id: video.video_id,\n    niche: video.niche,\n    video_title: video.video_title,\n    video_url: video.video_url,\n    transcript_status: status,\n    transcript_text: transcriptText,\n    transcript_length_words: words,\n    ai_episode_score: '',\n    recommended_strategy: '',\n    recommended_start_sec: '',\n    recommended_end_sec: '',\n    reason_for_strategy: '',\n    rights_risk: '',\n    permission_risk: '',\n    monetization_risk: '',\n    originality_potential: '',\n    kenya_relevance: '',\n    ai_json_output: '',\n    created_at: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "const video = $('Video Loop').first().json;\nconst resp = $input.first().json;\nconst snippets = resp.transcript || [];\n\nconst lines = snippets.map(s => {\n  const t = Math.floor(Number(s.start) || 0);\n  const mm = String(Math.floor(t / 60)).padStart(2, '0');\n  const ss = String(t % 60).padStart(2, '0');\n  return `[${mm}:${ss}] ${s.text}`;\n});\nconst transcriptFull = lines.join('\\n');\nlet transcriptText = transcriptFull;\nconst LIMIT = 45000;\nif (transcriptFull.length > LIMIT) {\n  transcriptText = transcriptFull.slice(0, LIMIT) + '\\n...[TRUNCATED]';\n}\nconst words = (resp.plain_text || '').split(/\\s+/).filter(Boolean).length;\n\nreturn [{\n  json: {\n    analysis_id: `AN-${video.youtube_video_id}`,\n    video_id: video.video_id,\n    niche: video.niche,\n    video_title: video.video_title,\n    video_url: video.video_url,\n    transcript_status: 'FETCHED',\n    transcript_text: transcriptText,\n    transcript_full: transcriptFull,\n    transcript_full_url: '',\n    transcript_full_file_id: '',\n    transcript_length_words: words,\n    ai_episode_score: '',\n    recommended_strategy: '',\n    recommended_start_sec: '',\n    recommended_end_sec: '',\n    reason_for_strategy: '',\n    rights_risk: '',\n    permission_risk: '',\n    monetization_risk: '',\n    originality_potential: '',\n    kenya_relevance: '',\n    ai_json_output: '',\n    created_at: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
       },
       "id": "a1b2c3d4-0004-4000-8000-000000000007",
       "name": "Build Analysis Row",
@@ -149,11 +149,71 @@
     },
     {
       "parameters": {
+        "operation": "toText",
+        "sourceProperty": "transcript_full",
+        "binaryPropertyName": "data",
+        "options": {
+          "fileName": "={{ $json.analysis_id }}.txt"
+        }
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000015",
+      "name": "Convert Transcript To File",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1540,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $(\"Build Analysis Row\").first().json.analysis_id }}.txt",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "TRANSCRIPTS_DRIVE_FOLDER_ID"
+        },
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000016",
+      "name": "Upload Transcript To Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1760,
+        20
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const row = { ...$('Build Analysis Row').first().json };\nconst drive = $input.first().json || {};\nrow.transcript_full_file_id = drive.id || '';\nrow.transcript_full_url = drive.webViewLink || (drive.id ? `https://drive.google.com/file/d/${drive.id}/view` : '');\ndelete row.transcript_full;\nreturn [{ json: row, pairedItem: { item: 0 } }];"
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000017",
+      "name": "Attach Transcript URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        20
+      ]
+    },
+    {
+      "parameters": {
         "operation": "appendOrUpdate",
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
         },
         "sheetName": {
           "__rl": true,
@@ -174,7 +234,7 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
       "position": [
-        1540,
+        2200,
         20
       ]
     },
@@ -188,7 +248,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1760,
+        2420,
         20
       ]
     },
@@ -198,7 +258,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
         },
         "sheetName": {
           "__rl": true,
@@ -219,7 +279,7 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
       "position": [
-        1980,
+        2640,
         20
       ]
     },
@@ -228,11 +288,11 @@
         "amount": 3
       },
       "id": "a1b2c3d4-0004-4000-8000-000000000011",
-      "name": "Wait 10s",
+      "name": "Wait 3s",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        2200,
+        2860,
         20
       ]
     },
@@ -256,7 +316,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
         },
         "sheetName": {
           "__rl": true,
@@ -286,7 +346,7 @@
         "amount": 3
       },
       "id": "a1b2c3d4-0004-4000-8000-000000000014",
-      "name": "Wait 10s b",
+      "name": "Wait 3s b",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
@@ -374,6 +434,39 @@
       "main": [
         [
           {
+            "node": "Convert Transcript To File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert Transcript To File": {
+      "main": [
+        [
+          {
+            "node": "Upload Transcript To Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Transcript To Drive": {
+      "main": [
+        [
+          {
+            "node": "Attach Transcript URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Transcript URL": {
+      "main": [
+        [
+          {
             "node": "Append Transcript_Analysis",
             "type": "main",
             "index": 0
@@ -407,14 +500,14 @@
       "main": [
         [
           {
-            "node": "Wait 10s",
+            "node": "Wait 3s",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Wait 10s": {
+    "Wait 3s": {
       "main": [
         [
           {
@@ -440,14 +533,14 @@
       "main": [
         [
           {
-            "node": "Wait 10s b",
+            "node": "Wait 3s b",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Wait 10s b": {
+    "Wait 3s b": {
       "main": [
         [
           {

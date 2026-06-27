@@ -1,6 +1,16 @@
 const fs = require('node:fs');
 
-const helper = (name) => fs.readFileSync(`n8n/workflow-code/${name}.js`, 'utf8').replace(/module\.exports = \{[\s\S]*?\};\n?/, '');
+const helper = (name) => {
+  const source = fs.readFileSync(`n8n/workflow-code/${name}.js`, 'utf8');
+  const stripped = source
+    .replace(/const \{[^}]*pickFairBy(?:Source|Group)[^}]*\} = require\('\.\/fair-share'\);\n\n/, '')
+    .replace(/module\.exports = \{[\s\S]*?\};\n?/, '');
+  if (!source.includes("require('./fair-share')")) return stripped;
+
+  const fairShare = fs.readFileSync('n8n/workflow-code/fair-share.js', 'utf8')
+    .replace(/module\.exports = \{[\s\S]*?\};\n?/, '');
+  return `${fairShare}\n${stripped}`;
+};
 
 const sheet = (operation, sheetName, extra = {}) => ({
   operation,
@@ -124,7 +134,7 @@ function wf6() {
 const requests = planSsembleRequests(
   $('Read Clip_Moments').all().map(i => i.json),
   $('Read Ssemble_Jobs').all().map(i => i.json),
-  { dailyBudget: 10, webhookUrl: 'https://YOUR_N8N_DOMAIN/webhook/ssemble-callback?secret=SSEMBLE_WEBHOOK_SECRET' },
+  { dailyBudget: 10, webhookUrl: 'https://YOUR_N8N_DOMAIN/webhook/ssemble-callback?secret=SSEMBLE_WEBHOOK_SECRET', perSourceLimit: 1 },
 );
 return requests.map((request, index) => ({ json: request, pairedItem: { item: index } }));`),
       node('wf6-005', 'Dispatch Loop', 'n8n-nodes-base.splitInBatches', 3, [880, 0], { batchSize: 1, options: {} }),
@@ -377,6 +387,7 @@ const rows = pickAwaitingDownloads(
   $('Read Ssemble_Jobs').all().map(i => i.json),
   $('Read Clip_Moments').all().map(i => i.json),
   ${folders},
+  { limit: 5, perSourceLimit: 1 },
 );
 return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
       node('wf8-006', 'Clip Loop', 'n8n-nodes-base.splitInBatches', 3, [1100, 0], { batchSize: 1, options: {} }),

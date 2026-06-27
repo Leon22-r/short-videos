@@ -61,6 +61,30 @@ function responseEnvelope(text, id = 'msg_fixture') {
 }
 
 const windowAnalysis = analysis();
+const normalizedWindowAnalysis = {
+  ...windowAnalysis,
+  best_20_min_windows: [windowAnalysis.best_20_min_window],
+};
+delete normalizedWindowAnalysis.best_20_min_window;
+const multiWindowAnalysis = analysis({
+  best_20_min_windows: [
+    {
+      use_this: true,
+      start_sec: 0,
+      end_sec: 1200,
+      why_this_window: 'The opening has several founder lessons.',
+      estimated_number_of_good_clips: 5,
+    },
+    {
+      use_this: true,
+      start_sec: 2400,
+      end_sec: 3600,
+      why_this_window: 'The later section has dense money lessons.',
+      estimated_number_of_good_clips: 4,
+    },
+  ],
+  best_20_min_window: undefined,
+});
 const exactAnalysis = analysis({
   recommended_strategy: 'USE_EXACT_CLIPS_ONLY',
   exact_clips: [exactClip()],
@@ -76,6 +100,7 @@ module.exports = {
   canonicalUnfenced: responseEnvelope(JSON.stringify(windowAnalysis), 'msg_canonical'),
   exactAnalysis,
   exactClip,
+  multiWindowAnalysis,
   missingClosingFence: responseEnvelope(
     `\`\`\`json\n${JSON.stringify({ output: windowAnalysis })}`,
     'msg_missing_fence',
@@ -88,6 +113,7 @@ module.exports = {
     'msg_misplaced_risk',
   ),
   responseEnvelope,
+  normalizedWindowAnalysis,
   skipWithEmptyWindow: responseEnvelope(
     `\`\`\`json\n${JSON.stringify({ output: skipWithEmptyWindow })}\n\`\`\``,
     'msg_empty_window',

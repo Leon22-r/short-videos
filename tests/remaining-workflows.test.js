@@ -115,6 +115,55 @@ test('WF6 workflow writes reservation before Ssemble API call', () => {
   assert.equal(workflow.connections['Reserve Ssemble Job'].main[0][0].node, 'Call Ssemble Create');
 });
 
+test('WF6 dispatches Ssemble requests fairly by source before spending credits', () => {
+  const moments = [
+    { clip_moment_id: 'A-1', video_id: 'VID-A1', source_id: 'SRC-A', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/a1', start_sec: 0, end_sec: 90, clip_score: 10, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:01:00.000Z' },
+    { clip_moment_id: 'A-2', video_id: 'VID-A2', source_id: 'SRC-A', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/a2', start_sec: 0, end_sec: 90, clip_score: 9, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:02:00.000Z' },
+    { clip_moment_id: 'B-1', video_id: 'VID-B1', source_id: 'SRC-B', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/b1', start_sec: 0, end_sec: 90, clip_score: 8, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:01:00.000Z' },
+  ];
+
+  const requests = planSsembleRequests(moments, [], {
+    dailyBudget: 3,
+    now: '2026-06-27T10:00:00.000Z',
+    perSourceLimit: 1,
+  });
+
+  assert.deepEqual(requests.map((request) => request.clip_moment_id), ['A-1', 'B-1']);
+});
+
+test('WF6 falls back to niche fairness when source_id is missing', () => {
+  const moments = [
+    { clip_moment_id: 'F-1', video_id: 'VID-F1', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/f1', start_sec: 0, end_sec: 90, clip_score: 10, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:01:00.000Z' },
+    { clip_moment_id: 'F-2', video_id: 'VID-F2', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/f2', start_sec: 0, end_sec: 90, clip_score: 9, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:02:00.000Z' },
+    { clip_moment_id: 'C-1', video_id: 'VID-C1', niche: 'CHRISTIAN_CONTENT', source_video_url: 'https://youtu.be/c1', start_sec: 0, end_sec: 90, clip_score: 8, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:01:00.000Z' },
+  ];
+
+  const requests = planSsembleRequests(moments, [], {
+    dailyBudget: 3,
+    now: '2026-06-27T10:00:00.000Z',
+    perSourceLimit: 1,
+  });
+
+  assert.deepEqual(requests.map((request) => request.clip_moment_id), ['F-1', 'C-1']);
+});
+
+test('WF6 balances Ssemble spend by niche before spending extra credits in one niche', () => {
+  const moments = [
+    { clip_moment_id: 'F-A1', video_id: 'VID-FA1', source_id: 'SRC-FA', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/fa1', start_sec: 0, end_sec: 90, clip_score: 10, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:01:00.000Z' },
+    { clip_moment_id: 'F-A2', video_id: 'VID-FA2', source_id: 'SRC-FA', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/fa2', start_sec: 0, end_sec: 90, clip_score: 9, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:02:00.000Z' },
+    { clip_moment_id: 'F-B1', video_id: 'VID-FB1', source_id: 'SRC-FB', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/fb1', start_sec: 0, end_sec: 90, clip_score: 8, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:03:00.000Z' },
+    { clip_moment_id: 'C-A1', video_id: 'VID-CA1', source_id: 'SRC-CA', niche: 'CHRISTIAN_CONTENT', source_video_url: 'https://youtu.be/ca1', start_sec: 0, end_sec: 90, clip_score: 7, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:01:00.000Z' },
+  ];
+
+  const requests = planSsembleRequests(moments, [], {
+    dailyBudget: 3,
+    now: '2026-06-27T10:00:00.000Z',
+    perSourceLimit: 2,
+  });
+
+  assert.deepEqual(requests.map((request) => request.clip_moment_id), ['F-A1', 'C-A1', 'F-B1']);
+});
+
 test('WF7 verifies webhook secret, joins job lineage, and explodes shorts', () => {
   const parsed = verifyAndParseWebhook(
     {
@@ -292,6 +341,76 @@ test('WF8 reuses uploaded Drive files and builds OpenAI planner requests', () =>
   assert.equal(parsed.review_status, 'NEEDS_REVIEW');
 });
 
+test('WF8 picks awaiting downloads fairly by source lineage', () => {
+  const clips = [
+    { created_clip_id: 'CC-A1', ssemble_job_id: 'REQ-A1', review_status: 'AWAITING_DOWNLOAD', created_at: '2026-06-27T00:01:00.000Z' },
+    { created_clip_id: 'CC-A2', ssemble_job_id: 'REQ-A2', review_status: 'AWAITING_DOWNLOAD', created_at: '2026-06-27T00:02:00.000Z' },
+    { created_clip_id: 'CC-B1', ssemble_job_id: 'REQ-B1', review_status: 'AWAITING_DOWNLOAD', created_at: '2026-06-27T00:01:00.000Z' },
+  ];
+  const jobs = [
+    { ssemble_job_id: 'REQ-A1', clip_moment_id: 'CM-A1', video_id: 'VID-A1', niche: 'FINANCE_BUSINESS' },
+    { ssemble_job_id: 'REQ-A2', clip_moment_id: 'CM-A2', video_id: 'VID-A2', niche: 'FINANCE_BUSINESS' },
+    { ssemble_job_id: 'REQ-B1', clip_moment_id: 'CM-B1', video_id: 'VID-B1', niche: 'FINANCE_BUSINESS' },
+  ];
+  const moments = [
+    { clip_moment_id: 'CM-A1', source_id: 'SRC-A' },
+    { clip_moment_id: 'CM-A2', source_id: 'SRC-A' },
+    { clip_moment_id: 'CM-B1', source_id: 'SRC-B' },
+  ];
+
+  const selected = pickAwaitingDownloads(clips, jobs, moments, { FINANCE_BUSINESS: 'FOLDER-1' }, { limit: 5, perSourceLimit: 1 });
+
+  assert.deepEqual(selected.map((clip) => clip.created_clip_id), ['CC-A1', 'CC-B1']);
+});
+
+test('WF8 falls back to niche fairness when source_id lineage is missing', () => {
+  const clips = [
+    { created_clip_id: 'CC-F1', ssemble_job_id: 'REQ-F1', review_status: 'AWAITING_DOWNLOAD', created_at: '2026-06-27T00:01:00.000Z' },
+    { created_clip_id: 'CC-F2', ssemble_job_id: 'REQ-F2', review_status: 'AWAITING_DOWNLOAD', created_at: '2026-06-27T00:02:00.000Z' },
+    { created_clip_id: 'CC-C1', ssemble_job_id: 'REQ-C1', review_status: 'AWAITING_DOWNLOAD', created_at: '2026-06-27T00:01:00.000Z' },
+  ];
+  const jobs = [
+    { ssemble_job_id: 'REQ-F1', clip_moment_id: 'CM-F1', video_id: 'VID-F1', niche: 'FINANCE_BUSINESS' },
+    { ssemble_job_id: 'REQ-F2', clip_moment_id: 'CM-F2', video_id: 'VID-F2', niche: 'FINANCE_BUSINESS' },
+    { ssemble_job_id: 'REQ-C1', clip_moment_id: 'CM-C1', video_id: 'VID-C1', niche: 'CHRISTIAN_CONTENT' },
+  ];
+
+  const selected = pickAwaitingDownloads(clips, jobs, [], {
+    FINANCE_BUSINESS: 'FOLDER-F',
+    CHRISTIAN_CONTENT: 'FOLDER-C',
+  }, { limit: 5, perSourceLimit: 1 });
+
+  assert.deepEqual(selected.map((clip) => clip.created_clip_id), ['CC-F1', 'CC-C1']);
+});
+
+test('WF8 balances downloads by niche before taking extra clips from one niche', () => {
+  const clips = [
+    { created_clip_id: 'CC-FA1', ssemble_job_id: 'REQ-FA1', review_status: 'AWAITING_DOWNLOAD', created_at: '2026-06-27T00:01:00.000Z' },
+    { created_clip_id: 'CC-FA2', ssemble_job_id: 'REQ-FA2', review_status: 'AWAITING_DOWNLOAD', created_at: '2026-06-27T00:02:00.000Z' },
+    { created_clip_id: 'CC-FB1', ssemble_job_id: 'REQ-FB1', review_status: 'AWAITING_DOWNLOAD', created_at: '2026-06-27T00:03:00.000Z' },
+    { created_clip_id: 'CC-CA1', ssemble_job_id: 'REQ-CA1', review_status: 'AWAITING_DOWNLOAD', created_at: '2026-06-27T00:01:00.000Z' },
+  ];
+  const jobs = [
+    { ssemble_job_id: 'REQ-FA1', clip_moment_id: 'CM-FA1', video_id: 'VID-FA1', niche: 'FINANCE_BUSINESS' },
+    { ssemble_job_id: 'REQ-FA2', clip_moment_id: 'CM-FA2', video_id: 'VID-FA2', niche: 'FINANCE_BUSINESS' },
+    { ssemble_job_id: 'REQ-FB1', clip_moment_id: 'CM-FB1', video_id: 'VID-FB1', niche: 'FINANCE_BUSINESS' },
+    { ssemble_job_id: 'REQ-CA1', clip_moment_id: 'CM-CA1', video_id: 'VID-CA1', niche: 'CHRISTIAN_CONTENT' },
+  ];
+  const moments = [
+    { clip_moment_id: 'CM-FA1', source_id: 'SRC-FA' },
+    { clip_moment_id: 'CM-FA2', source_id: 'SRC-FA' },
+    { clip_moment_id: 'CM-FB1', source_id: 'SRC-FB' },
+    { clip_moment_id: 'CM-CA1', source_id: 'SRC-CA' },
+  ];
+
+  const selected = pickAwaitingDownloads(clips, jobs, moments, {
+    FINANCE_BUSINESS: 'FOLDER-F',
+    CHRISTIAN_CONTENT: 'FOLDER-C',
+  }, { limit: 3, perSourceLimit: 2 });
+
+  assert.deepEqual(selected.map((clip) => clip.created_clip_id), ['CC-FA1', 'CC-CA1', 'CC-FB1']);
+});
+
 test('WF8 planner request carries the strict JSON schema and schema instructions', () => {
   const planner = buildPlannerRequest({
     created_clip_id: 'CC-1', niche: 'FINANCE_BUSINESS', clip_title: 'Money', duration_seconds: 45,
@@ -397,10 +516,25 @@ test('WF9 digest includes auto-paused channels section', () => {
   assert.match(digest.html, /active_status=TRUE/);
 });
 
+test('WF9 digest alerts when a niche has no active channels left', () => {
+  const channels = [
+    { source_name: 'Finance A', niche: 'FINANCE_BUSINESS', active_status: 'FALSE', auto_paused_at: new Date().toISOString(), auto_paused_reason: 'skip_rate=80%' },
+    { source_name: 'Finance B', niche: 'FINANCE_BUSINESS', active_status: 'FALSE', auto_paused_at: '', auto_paused_reason: 'manual disable' },
+    { source_name: 'Faith A', niche: 'CHRISTIAN_CONTENT', active_status: 'TRUE' },
+  ];
+
+  const digest = buildReviewDigest([], channels);
+
+  assert.match(digest.subject, /niche attention/);
+  assert.match(digest.html, /FINANCE_BUSINESS/);
+  assert.match(digest.html, /No active channels remain/);
+});
+
 test('WF9 digest returns null when no clips and no recently paused channels', () => {
   const oldTimestamp = new Date(Date.now() - 90000000).toISOString(); // 25h ago
   const channels = [
     { source_name: 'Old Channel', niche: 'FINANCE_BUSINESS', auto_paused_at: oldTimestamp, auto_paused_reason: 'skip_rate=70%' },
+    { source_name: 'Active Channel', niche: 'FINANCE_BUSINESS', active_status: 'TRUE' },
   ];
   assert.equal(buildReviewDigest([], channels), null);
 });
@@ -408,9 +542,12 @@ test('WF9 digest returns null when no clips and no recently paused channels', ()
 test('WF9 digest includes both clips and channels when both present', () => {
   const now = new Date().toISOString();
   const clips = [{ review_status: 'NEEDS_REVIEW', niche: 'MOTIVATION_DISCIPLINE', created_clip_id: 'clip-1', google_drive_url: 'https://drive/1', duration_seconds: 60, reviewer_notes: '', suggested_title: 'Test' }];
-  const channels = [{ source_name: 'Finance Guru KE', niche: 'FINANCE_BUSINESS', auto_paused_at: now, auto_paused_reason: 'skip_rate=80%' }];
+  const channels = [
+    { source_name: 'Finance Guru KE', niche: 'FINANCE_BUSINESS', active_status: 'FALSE', auto_paused_at: now, auto_paused_reason: 'skip_rate=80%' },
+    { source_name: 'Finance Backup', niche: 'FINANCE_BUSINESS', active_status: 'TRUE' },
+  ];
   const digest = buildReviewDigest(clips, channels);
-  assert.match(digest.subject, /1 clips, 1 channels paused/);
+  assert.match(digest.subject, /1 clips, 1 channels auto-paused/);
   assert.match(digest.html, /Finance Guru KE/);
   assert.match(digest.html, /MOTIVATION_DISCIPLINE/);
 });

@@ -80,7 +80,7 @@ WF5 tracks channel quality after every analysis and auto-pauses poor-performing 
 
 **Re-enable:** Set `active_status=TRUE` in Source_Channels (one cell). WF5 detects this on the next analysis from that channel and automatically resets the health window (`health_reset_at=NOW`, counters cleared). The channel then needs to accumulate 10 new videos before it can be judged again — preventing an immediate re-pause from stale historical data.
 
-**Notification:** WF9 daily digest includes a "Channels Auto-Paused Today" section listing any channels paused in the last 24 hours.
+**Notification:** WF9 daily digest includes a "Channels Auto-Paused Today" section listing any channels paused in the last 24 hours. It also flags any niche where no active channels remain, so you know when to add new sources or re-enable suitable paused channels.
 
 ### New Google Sheet Columns Required
 

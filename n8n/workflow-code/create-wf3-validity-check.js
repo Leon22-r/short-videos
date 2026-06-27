@@ -43,6 +43,14 @@ const REJECT_PATTERNS = [
   [/\\b(news bulletin|breaking news|live news)\\b/i, 'NEWS_CLIP'],
   [/#shorts/i, 'SHORTS_UPLOAD'],
 ];
+const STATIC_NARRATION_PATTERNS = [
+  /\\b(one|single)\\s+(picture|image|photo)\\b/i,
+  /\\b(static|still)\\s+(image|picture|photo|background|screen)\\b/i,
+  /\\b(quote card|quotes slideshow|slideshow|slide show)\\b/i,
+  /\\b(text[-\\s]?to[-\\s]?speech|tts|ai voice(?:\\s*over)?|robot voice)\\b.*\\b(story|stories|quotes?|motivation|motivational|wisdom|narration)\\b/i,
+  /\\b(story|stories|quotes?|motivation|motivational|wisdom)\\b.*\\b(narration|narrated|voice\\s*over|voiceover)\\b/i,
+  /\\b(narration|narrated|voice\\s*over|voiceover)\\b.*\\b(static|still|one picture|single image|slideshow|quotes?)\\b/i,
+];
 const PREFER_PATTERNS = [
   /podcast/i, /interview/i, /sermon/i, /teaching/i, /lesson/i, /masterclass/i,
   /conversation/i, /keynote/i, /q\\s*&\\s*a/i, /panel/i, /testimony/i,
@@ -63,6 +71,13 @@ for (const item of $input.all()) {
   else {
     for (const [re, code] of REJECT_PATTERNS) {
       if (re.test(title)) { status = 'REJECTED'; reason = code; break; }
+    }
+    const staticText = [v.video_title, v.video_description, v.description, v.source_name, v.source_type]
+      .filter(Boolean)
+      .join(' ');
+    if (status === 'VALID' && STATIC_NARRATION_PATTERNS.some(re => re.test(staticText))) {
+      status = 'REJECTED';
+      reason = 'STATIC_NARRATION_VISUALS';
     }
   }
 

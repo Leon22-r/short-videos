@@ -1,6 +1,8 @@
 const fs = require('node:fs');
 
 const workflowPath = process.argv[2] || 'n8n/workflows/04-transcript-fetch.json';
+const fairShareSource = fs.readFileSync('n8n/workflow-code/fair-share.js', 'utf8')
+  .replace(/module\.exports = \{[\s\S]*?\};\n?/, '');
 
 const sheet = (operation, sheetName, extra = {}) => ({
   operation,
@@ -39,6 +41,16 @@ const waitNode = (id, name, position) => ({
   position,
 });
 
+const node = (id, name, type, typeVersion, position, parameters, extra = {}) => ({
+  parameters,
+  id,
+  name,
+  type,
+  typeVersion,
+  position,
+  ...extra,
+});
+
 const workflow = {
   name: 'WF4 Transcript Fetch',
   nodes: [
@@ -51,11 +63,20 @@ const workflow = {
       position: [0, 0],
     },
     sheetsNode('a1b2c3d4-0004-4000-8000-000000000002', 'Read Candidate_Videos', [220, 0], sheet('read', 'Candidate_Videos')),
-    codeNode('a1b2c3d4-0004-4000-8000-000000000003', 'Pick Pending Transcripts', [440, 0], `const pending = $input.all()
+    codeNode('a1b2c3d4-0004-4000-8000-000000000003', 'Pick Pending Transcripts', [440, 0], `${fairShareSource}
+const eligible = $input.all()
   .filter(i => String(i.json.validity_status) === 'VALID'
             && String(i.json.transcript_available || '') === '')
-  .slice(0, 10);
-return pending.map((i, idx) => ({ json: i.json, pairedItem: { item: idx } }));`),
+  .map(i => i.json);
+const pending = pickFairByGroup(eligible, {
+  limit: 10,
+  perSourceLimit: 2,
+  groupKey: 'niche',
+  sourceKey: 'source_id',
+  sourceFallbackKeys: ['niche'],
+  sortKey: 'created_at',
+});
+return pending.map((row, idx) => ({ json: row, pairedItem: { item: idx } }));`),
     {
       parameters: { batchSize: 1, options: {} },
       id: 'a1b2c3d4-0004-4000-8000-000000000004',
@@ -114,12 +135,11 @@ const lines = snippets.map(s => {
   const ss = String(t % 60).padStart(2, '0');
   return \`[\${mm}:\${ss}] \${s.text}\`;
 });
-let transcriptText = lines.join('\\n');
-let status = 'FETCHED';
+const transcriptFull = lines.join('\\n');
+let transcriptText = transcriptFull;
 const LIMIT = 45000;
-if (transcriptText.length > LIMIT) {
-  transcriptText = transcriptText.slice(0, LIMIT) + '\\n...[TRUNCATED]';
-  status = 'TRUNCATED';
+if (transcriptFull.length > LIMIT) {
+  transcriptText = transcriptFull.slice(0, LIMIT) + '\\n...[TRUNCATED]';
 }
 const words = (resp.plain_text || '').split(/\\s+/).filter(Boolean).length;
 
@@ -130,8 +150,11 @@ return [{
     niche: video.niche,
     video_title: video.video_title,
     video_url: video.video_url,
-    transcript_status: status,
+    transcript_status: 'FETCHED',
     transcript_text: transcriptText,
+    transcript_full: transcriptFull,
+    transcript_full_url: '',
+    transcript_full_file_id: '',
     transcript_length_words: words,
     ai_episode_score: '',
     recommended_strategy: '',
@@ -148,15 +171,53 @@ return [{
   },
   pairedItem: { item: 0 },
 }];`),
+    node(
+      'a1b2c3d4-0004-4000-8000-000000000015',
+      'Convert Transcript To File',
+      'n8n-nodes-base.convertToFile',
+      1.1,
+      [1540, 20],
+      {
+        operation: 'toText',
+        sourceProperty: 'transcript_full',
+        binaryPropertyName: 'data',
+        options: {
+          fileName: '={{ $json.analysis_id }}.txt',
+        },
+      },
+    ),
+    node(
+      'a1b2c3d4-0004-4000-8000-000000000016',
+      'Upload Transcript To Drive',
+      'n8n-nodes-base.googleDrive',
+      3,
+      [1760, 20],
+      {
+        resource: 'file',
+        operation: 'upload',
+        name: '={{ $("Build Analysis Row").first().json.analysis_id }}.txt',
+        driveId: { __rl: true, mode: 'list', value: 'My Drive' },
+        folderId: { __rl: true, mode: 'id', value: 'TRANSCRIPTS_DRIVE_FOLDER_ID' },
+        inputDataFieldName: 'data',
+        options: {},
+      },
+      { onError: 'continueRegularOutput' },
+    ),
+    codeNode('a1b2c3d4-0004-4000-8000-000000000017', 'Attach Transcript URL', [1980, 20], `const row = { ...$('Build Analysis Row').first().json };
+const drive = $input.first().json || {};
+row.transcript_full_file_id = drive.id || '';
+row.transcript_full_url = drive.webViewLink || (drive.id ? \`https://drive.google.com/file/d/\${drive.id}/view\` : '');
+delete row.transcript_full;
+return [{ json: row, pairedItem: { item: 0 } }];`),
     sheetsNode(
       'a1b2c3d4-0004-4000-8000-000000000008',
       'Append Transcript_Analysis',
-      [1540, 20],
+      [2200, 20],
       sheet('appendOrUpdate', 'Transcript_Analysis', {
         columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['analysis_id'] },
       }),
     ),
-    codeNode('a1b2c3d4-0004-4000-8000-000000000009', 'Mark Transcript OK', [1760, 20], `const video = $('Video Loop').first().json;
+    codeNode('a1b2c3d4-0004-4000-8000-000000000009', 'Mark Transcript OK', [2420, 20], `const video = $('Video Loop').first().json;
 const resp = $('Call Transcript Service').first().json;
 return [{ json: {
   video_id: video.video_id,
@@ -166,12 +227,12 @@ return [{ json: {
     sheetsNode(
       'a1b2c3d4-0004-4000-8000-000000000010',
       'Update Candidate OK',
-      [1980, 20],
+      [2640, 20],
       sheet('appendOrUpdate', 'Candidate_Videos', {
         columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['video_id'] },
       }),
     ),
-    waitNode('a1b2c3d4-0004-4000-8000-000000000011', 'Wait 3s', [2200, 20]),
+    waitNode('a1b2c3d4-0004-4000-8000-000000000011', 'Wait 3s', [2860, 20]),
     codeNode('a1b2c3d4-0004-4000-8000-000000000012', 'Mark Transcript Failed', [1320, 220], `const video = $('Video Loop').first().json;
 const resp = $input.first().json;
 const code = resp.error_code || (resp.error ? 'HTTP_ERROR' : 'UNKNOWN');
@@ -205,7 +266,10 @@ return [{ json: {
         [{ node: 'Mark Transcript Failed', type: 'main', index: 0 }],
       ],
     },
-    'Build Analysis Row': { main: [[{ node: 'Append Transcript_Analysis', type: 'main', index: 0 }]] },
+    'Build Analysis Row': { main: [[{ node: 'Convert Transcript To File', type: 'main', index: 0 }]] },
+    'Convert Transcript To File': { main: [[{ node: 'Upload Transcript To Drive', type: 'main', index: 0 }]] },
+    'Upload Transcript To Drive': { main: [[{ node: 'Attach Transcript URL', type: 'main', index: 0 }]] },
+    'Attach Transcript URL': { main: [[{ node: 'Append Transcript_Analysis', type: 'main', index: 0 }]] },
     'Append Transcript_Analysis': { main: [[{ node: 'Mark Transcript OK', type: 'main', index: 0 }]] },
     'Mark Transcript OK': { main: [[{ node: 'Update Candidate OK', type: 'main', index: 0 }]] },
     'Update Candidate OK': { main: [[{ node: 'Wait 3s', type: 'main', index: 0 }]] },

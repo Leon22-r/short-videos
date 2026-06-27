@@ -94,6 +94,22 @@ test('rejects known low-value title patterns', () => {
   assert(rows.every((row) => row.processing_status === 'SKIPPED'));
 });
 
+test('rejects static narration and still-image voiceover candidates', () => {
+  const rows = applyValidityRules([
+    { video_id: 'VID-1', video_title: 'Motivational speech voice over one picture', duration_seconds: 900, processing_status: 'NEW', validity_status: '' },
+    { video_id: 'VID-2', video_title: 'Wisdom story narration with static image', duration_seconds: 1200, processing_status: 'NEW', validity_status: '' },
+    { video_id: 'VID-3', video_title: 'AI voiceover quotes slideshow', duration_seconds: 600, processing_status: 'NEW', validity_status: '' },
+  ], {});
+
+  assert.deepEqual(rows.map((row) => row.rejection_reason), [
+    'STATIC_NARRATION_VISUALS',
+    'STATIC_NARRATION_VISUALS',
+    'STATIC_NARRATION_VISUALS',
+  ]);
+  assert(rows.every((row) => row.validity_status === 'REJECTED'));
+  assert(rows.every((row) => row.processing_status === 'SKIPPED'));
+});
+
 test('flags non-English or non-Swahili language for review', () => {
   const [row] = applyValidityRules([
     {

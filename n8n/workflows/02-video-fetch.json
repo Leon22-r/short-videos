@@ -27,7 +27,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
         },
         "sheetName": {
           "__rl": true,
@@ -52,7 +52,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
         },
         "sheetName": {
           "__rl": true,
@@ -69,8 +69,8 @@
         440,
         0
       ],
-      "alwaysOutputData": true,
-      "executeOnce": true
+      "executeOnce": true,
+      "alwaysOutputData": true
     },
     {
       "parameters": {
@@ -117,7 +117,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "={{ 'https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=50&playlistId=' + $json.uploads_playlist_id + ($json.page_token ? '&pageToken=' + $json.page_token : '') + '&key=' + $env.YOUTUBE_API_KEY }}",
+        "url": "={{ 'https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=50&playlistId=' + $json.uploads_playlist_id + ($json.page_token ? '&pageToken=' + $json.page_token : '') + '&key=YOUTUBE_API_KEY' }}",
         "options": {}
       },
       "id": "a1b2c3d4-0002-4000-8000-000000000007",
@@ -146,7 +146,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "=https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id={{ $json.video_ids || 'dQw4w9WgXcQ' }}&key={{ $env.YOUTUBE_API_KEY }}",
+        "url": "=https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id={{ $json.video_ids || 'dQw4w9WgXcQ' }}&key=YOUTUBE_API_KEY",
         "options": {}
       },
       "id": "a1b2c3d4-0002-4000-8000-000000000009",
@@ -162,7 +162,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const sd = $getWorkflowStaticData('global');\nconst metas = $('Build Videos Lookup').all();\nconst out = [];\nconst now = new Date().toISOString();\nfor (const [i, item] of $input.all().entries()) {\n  const meta = metas[i].json;\n  if (meta.__empty) continue;\n  for (const v of item.json.items || []) {\n    if (!v.id || sd.existingIds[v.id]) continue;\n    sd.existingIds[v.id] = true;\n    sd.fetchedCounts[meta.source_id] = (sd.fetchedCounts[meta.source_id] || 0) + 1;\n    out.push({\n      json: {\n        video_id: `VID-${v.id}`,\n        niche: meta.niche,\n        source_id: meta.source_id,\n        source_name: meta.source_name,\n        video_title: v.snippet.title,\n        video_url: `https://www.youtube.com/watch?v=${v.id}`,\n        youtube_video_id: v.id,\n        duration_seconds: isoDurationToSeconds(v.contentDetails.duration),\n        published_at: v.snippet.publishedAt,\n        view_count: Number((v.statistics || {}).viewCount || 0),\n        like_count: Number((v.statistics || {}).likeCount || 0),\n        comment_count: Number((v.statistics || {}).commentCount || 0),\n        transcript_available: '',\n        language: v.snippet.defaultAudioLanguage || v.snippet.defaultLanguage || '',\n        validity_status: '',\n        validity_score: '',\n        rejection_reason: '',\n        duplicate_status: 'UNIQUE',\n        processing_status: 'NEW',\n        created_at: now,\n        __category_id: v.snippet.categoryId || '',\n        __is_live: v.snippet.liveBroadcastContent || 'none',\n        __title_lower: (v.snippet.title || '').toLowerCase(),\n      },\n      pairedItem: { item: i },\n    });\n  }\n}\nif (out.length === 0) return [{ json: { __noop: true }, pairedItem: { item: 0 } }];\nreturn out;\n\nfunction isoDurationToSeconds(iso) {\n  const m = String(iso || '').match(/PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?/);\n  if (!m) return 0;\n  return (Number(m[1] || 0) * 3600) + (Number(m[2] || 0) * 60) + Number(m[3] || 0);\n}"
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nconst metas = $('Build Videos Lookup').all();\nconst MAX_NEW_VIDEOS_PER_SOURCE = 5;\nconst newThisSource = {};\nconst out = [];\nconst now = new Date().toISOString();\nfor (const [i, item] of $input.all().entries()) {\n  const meta = metas[i].json;\n  if (meta.__empty) continue;\n  for (const v of item.json.items || []) {\n    if (!v.id || sd.existingIds[v.id]) continue;\n    newThisSource[meta.source_id] = newThisSource[meta.source_id] || 0;\n    if (newThisSource[meta.source_id] >= MAX_NEW_VIDEOS_PER_SOURCE) continue;\n    newThisSource[meta.source_id] += 1;\n    sd.existingIds[v.id] = true;\n    sd.fetchedCounts[meta.source_id] = (sd.fetchedCounts[meta.source_id] || 0) + 1;\n    out.push({\n      json: {\n        video_id: `VID-${v.id}`,\n        niche: meta.niche,\n        source_id: meta.source_id,\n        source_name: meta.source_name,\n        video_title: v.snippet.title,\n        video_url: `https://www.youtube.com/watch?v=${v.id}`,\n        youtube_video_id: v.id,\n        duration_seconds: isoDurationToSeconds(v.contentDetails.duration),\n        published_at: v.snippet.publishedAt,\n        view_count: Number((v.statistics || {}).viewCount || 0),\n        like_count: Number((v.statistics || {}).likeCount || 0),\n        comment_count: Number((v.statistics || {}).commentCount || 0),\n        transcript_available: '',\n        language: v.snippet.defaultAudioLanguage || v.snippet.defaultLanguage || '',\n        validity_status: '',\n        validity_score: '',\n        rejection_reason: '',\n        duplicate_status: 'UNIQUE',\n        processing_status: 'NEW',\n        created_at: now,\n        __category_id: v.snippet.categoryId || '',\n        __is_live: v.snippet.liveBroadcastContent || 'none',\n        __title_lower: (v.snippet.title || '').toLowerCase(),\n      },\n      pairedItem: { item: i },\n    });\n  }\n}\nif (out.length === 0) return [{ json: { __noop: true }, pairedItem: { item: 0 } }];\nreturn out;\n\nfunction isoDurationToSeconds(iso) {\n  const m = String(iso || '').match(/PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?/);\n  if (!m) return 0;\n  return (Number(m[1] || 0) * 3600) + (Number(m[2] || 0) * 60) + Number(m[3] || 0);\n}"
       },
       "id": "a1b2c3d4-0002-4000-8000-000000000010",
       "name": "Build Candidate Rows",
@@ -207,7 +207,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
         },
         "sheetName": {
           "__rl": true,
@@ -250,7 +250,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
         },
         "sheetName": {
           "__rl": true,

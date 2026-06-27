@@ -7,6 +7,15 @@ const REJECT_PATTERNS = [
   [/#shorts/i, 'SHORTS_UPLOAD'],
 ];
 
+const STATIC_NARRATION_PATTERNS = [
+  /\b(one|single)\s+(picture|image|photo)\b/i,
+  /\b(static|still)\s+(image|picture|photo|background|screen)\b/i,
+  /\b(quote card|quotes slideshow|slideshow|slide show)\b/i,
+  /\b(text[-\s]?to[-\s]?speech|tts|ai voice(?:\s*over)?|robot voice)\b.*\b(story|stories|quotes?|motivation|motivational|wisdom|narration)\b/i,
+  /\b(story|stories|quotes?|motivation|motivational|wisdom)\b.*\b(narration|narrated|voice\s*over|voiceover)\b/i,
+  /\b(narration|narrated|voice\s*over|voiceover)\b.*\b(static|still|one picture|single image|slideshow|quotes?)\b/i,
+];
+
 const PREFER_PATTERNS = [
   /podcast/i,
   /interview/i,
@@ -43,6 +52,18 @@ function scoreCandidate(candidate) {
   return Math.min(10, score);
 }
 
+function staticNarrationRisk(candidate) {
+  const text = [
+    candidate.video_title,
+    candidate.video_description,
+    candidate.description,
+    candidate.source_name,
+    candidate.source_type,
+  ].filter(Boolean).join(' ');
+
+  return STATIC_NARRATION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 function classifyCandidate(candidate, riskBySource) {
   const title = String(candidate.video_title || '');
   const duration = Number(candidate.duration_seconds || 0);
@@ -62,6 +83,10 @@ function classifyCandidate(candidate, riskBySource) {
         reason = code;
         break;
       }
+    }
+    if (status === 'VALID' && staticNarrationRisk(candidate)) {
+      status = 'REJECTED';
+      reason = 'STATIC_NARRATION_VISUALS';
     }
   }
 
@@ -97,4 +122,5 @@ module.exports = {
   buildRiskBySource,
   classifyCandidate,
   scoreCandidate,
+  staticNarrationRisk,
 };

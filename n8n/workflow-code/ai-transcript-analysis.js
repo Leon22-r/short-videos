@@ -1,3 +1,5 @@
+const { pickFairByGroup } = require('./fair-share');
+
 const NICHE_RULES = {
   CHRISTIAN_CONTENT: 'Prioritize biblical truth connected to daily life, work, discipline, money, relationships, identity, prayer, obedience, forgiveness, wisdom, and purpose.',
   MOTIVATION_DISCIPLINE: 'Prioritize habits, focus, procrastination, consistency, routines, self-control, confidence, resilience, work ethic, and execution.',
@@ -10,11 +12,24 @@ const SYSTEM_PROMPT = `You are a short-form video content strategist for a Kenya
 
 Find valuable, transformable short-form moments.
 
-Prioritize USE_20_MIN_WINDOW when a transcript contains at least 3 strong clips within a single 60-1200 second window. Use USE_EXACT_CLIPS_ONLY only when the good moments are scattered far apart or when there are only 1-2 strong clips. Use SKIP_THIS_VIDEO only when the transcript lacks strong, brand-safe, transformable opportunities.
+Prioritize USE_20_MIN_WINDOW when a transcript contains at least 3 strong clips within a single 60-1200 second window. For long videos, return up to 5 distinct 20-minute windows when each window independently contains at least 3 strong clips. Use USE_EXACT_CLIPS_ONLY only when the good moments are scattered far apart or when there are only 1-2 strong clips. Use SKIP_THIS_VIDEO only when the transcript lacks strong, brand-safe, transformable opportunities.
 
-Because Ssemble credits are spent more efficiently on one high-density window, prefer a 20-minute window whenever it can produce multiple usable shorts.
+Because Ssemble credits are spent more efficiently on high-density windows, prefer 20-minute windows whenever they can produce multiple usable shorts.
 
 Return valid JSON matching the requested schema.`;
+
+const WINDOW_SCHEMA = {
+  type: 'object',
+  properties: {
+    use_this: { type: 'boolean' },
+    start_sec: { type: 'number' },
+    end_sec: { type: 'number' },
+    why_this_window: { type: 'string' },
+    estimated_number_of_good_clips: { type: 'number' },
+  },
+  required: ['use_this', 'start_sec', 'end_sec', 'why_this_window', 'estimated_number_of_good_clips'],
+  additionalProperties: false,
+};
 
 const ANALYSIS_SCHEMA = {
   type: 'object',
@@ -25,17 +40,10 @@ const ANALYSIS_SCHEMA = {
           enum: ['SKIP_THIS_VIDEO', 'USE_EXACT_CLIPS_ONLY', 'USE_20_MIN_WINDOW'],
         },
         reason_for_strategy: { type: 'string' },
-        best_20_min_window: {
-          type: 'object',
-          properties: {
-            use_this: { type: 'boolean' },
-            start_sec: { type: 'number' },
-            end_sec: { type: 'number' },
-            why_this_window: { type: 'string' },
-            estimated_number_of_good_clips: { type: 'number' },
-          },
-          required: ['use_this', 'start_sec', 'end_sec', 'why_this_window', 'estimated_number_of_good_clips'],
-          additionalProperties: false,
+        best_20_min_windows: {
+          type: 'array',
+          maxItems: 5,
+          items: WINDOW_SCHEMA,
         },
         exact_clips: {
           type: 'array',
@@ -96,7 +104,7 @@ const ANALYSIS_SCHEMA = {
     'overall_episode_score',
     'recommended_strategy',
     'reason_for_strategy',
-    'best_20_min_window',
+    'best_20_min_windows',
     'exact_clips',
     'risk_notes',
   ],
@@ -115,11 +123,11 @@ function buildSchemaInstructions() {
     'Do not use Markdown code fences.',
     'Use this strategy enum: SKIP_THIS_VIDEO, USE_EXACT_CLIPS_ONLY, USE_20_MIN_WINDOW.',
     'All start_sec and end_sec values are raw seconds from the beginning of the video. Minute 5 is start_sec = 300; a 20-minute duration is 1200 seconds.',
-    'For USE_20_MIN_WINDOW, set best_20_min_window.use_this=true, estimate at least 3 good clips, and provide a 60-1200 second window; exact_clips may be empty.',
+    'For USE_20_MIN_WINDOW, populate best_20_min_windows with 1-5 distinct windows. Each window must have use_this=true, estimate at least 3 good clips, and provide a 60-1200 second range; exact_clips may be empty.',
     'For USE_EXACT_CLIPS_ONLY, exact_clips must contain at least one clip with final_recommendation="clip".',
     'For exact_clips[].final_recommendation use: clip, use_as_idea_only, or skip.',
     'For risk fields use lowercase: low, medium, or high.',
-    'For SKIP_THIS_VIDEO, provide a complete best_20_min_window with use_this=false, numeric zero values, an empty why_this_window, and estimated_number_of_good_clips=0.',
+    'For SKIP_THIS_VIDEO, return an empty best_20_min_windows array.',
     'The JSON must conform to this schema:',
     JSON.stringify(ANALYSIS_SCHEMA),
   ].join('\n');
@@ -135,7 +143,9 @@ function riskMax(risks) {
   return 'low';
 }
 
-function pickUnanalyzed(analysisRows, sourceRows, candidateRows, limit = 5) {
+function pickUnanalyzed(analysisRows, sourceRows, candidateRows, options = 5) {
+  const limit = typeof options === 'number' ? options : Number(options.limit || 5);
+  const perSourceLimit = typeof options === 'number' ? limit : Number(options.perSourceLimit || 1);
   const riskBySource = {};
   for (const source of sourceRows) {
     riskBySource[source.source_id] = String(source.risk_level || 'low').toLowerCase();
@@ -146,10 +156,9 @@ function pickUnanalyzed(analysisRows, sourceRows, candidateRows, limit = 5) {
     candidateByVideo[candidate.video_id] = candidate;
   }
 
-  return analysisRows
+  const eligible = analysisRows
     .filter((row) => ['FETCHED', 'TRUNCATED'].includes(String(row.transcript_status)))
     .filter((row) => String(row.ai_episode_score || '') === '')
-    .slice(0, limit)
     .map((row) => {
       const candidate = candidateByVideo[row.video_id] || {};
       return {
@@ -157,8 +166,18 @@ function pickUnanalyzed(analysisRows, sourceRows, candidateRows, limit = 5) {
         processing_status: candidate.processing_status || row.processing_status || 'NEW',
         source_risk: riskBySource[candidate.source_id] || 'low',
         source_id: candidate.source_id || '',
+        niche: candidate.niche || row.niche || '',
       };
     });
+
+  return pickFairByGroup(eligible, {
+    limit,
+    perSourceLimit,
+    groupKey: 'niche',
+    sourceKey: 'source_id',
+    sourceFallbackKeys: ['niche'],
+    sortKey: 'created_at',
+  });
 }
 
 function buildAnalysisPrompt(row) {
@@ -168,7 +187,7 @@ function buildAnalysisPrompt(row) {
     `Niche: ${row.niche}`,
     `Niche rules: ${NICHE_RULES[row.niche] || 'General educational value.'}`,
     'Transcript with timestamps:',
-    String(row.transcript_text || '').slice(0, 100000),
+    String(row.transcript_full || row.transcript_text || '').slice(0, 300000),
     buildSchemaInstructions(),
   ].join('\n');
 }
@@ -253,6 +272,19 @@ function validateSchema(value, schema, path = 'AI response') {
   }
 }
 
+function normalizeAnalysis(ai) {
+  const normalized = { ...(ai || {}) };
+  if (!Array.isArray(normalized.best_20_min_windows)) {
+    if (normalized.best_20_min_window !== undefined) {
+      normalized.best_20_min_windows = [normalized.best_20_min_window];
+    } else {
+      normalized.best_20_min_windows = [];
+    }
+  }
+  delete normalized.best_20_min_window;
+  return normalized;
+}
+
 function validateAiResponse(ai) {
   validateSchema(ai, ANALYSIS_SCHEMA);
 }
@@ -297,15 +329,17 @@ function buildWindowMoment(row, window, options = {}) {
   const startSec = Number(window.start_sec);
   const endSec = Number(window.end_sec);
   const estimatedClips = Number(options.estimatedClips);
+  const index = Number.isInteger(options.index) ? options.index : 0;
   const rightsRisk = ['low', 'medium', 'high'].includes(String(options.rightsRisk).toLowerCase())
     ? String(options.rightsRisk).toLowerCase()
     : 'low';
 
   return {
-    clip_moment_id: `CM-${row.video_id}-W0`,
+    clip_moment_id: `CM-${row.video_id}-W${index}`,
     video_id: row.video_id,
     niche: row.niche || '',
-    rank: 0,
+    source_id: options.sourceId || row.source_id || '',
+    rank: index,
     start_sec: startSec,
     end_sec: endSec,
     clip_length_seconds: endSec - startSec,
@@ -345,6 +379,19 @@ function parseStoredAnalysis(value) {
   }
 }
 
+function collectWindows(ai) {
+  return (ai.best_20_min_windows || [])
+    .filter((window) => {
+      const windowLength = Number(window.end_sec) - Number(window.start_sec);
+      return window.use_this === true
+        && Number(window.start_sec) >= 0
+        && windowLength >= 60
+        && windowLength <= 1200
+        && Number(window.estimated_number_of_good_clips) >= 3;
+    })
+    .slice(0, 5);
+}
+
 function buildMissingWindowMoments(analysisRows, sourceRows, candidateRows, momentRows, now) {
   const riskBySource = {};
   for (const source of sourceRows || []) {
@@ -363,31 +410,40 @@ function buildMissingWindowMoments(analysisRows, sourceRows, candidateRows, mome
   for (const row of analysisRows || []) {
     if (String(row.recommended_strategy) !== 'USE_20_MIN_WINDOW' || !row.video_id) continue;
 
-    const clipMomentId = `CM-${row.video_id}-W0`;
-    if (existingIds.has(clipMomentId)) continue;
-
-    const startSec = Number(row.recommended_start_sec);
-    const endSec = Number(row.recommended_end_sec);
-    const windowLength = endSec - startSec;
-    if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || startSec < 0
-      || windowLength < 60 || windowLength > 1200) continue;
-
     const stored = parseStoredAnalysis(row.ai_json_output);
-    const storedWindow = stored.best_20_min_window || {};
+    const normalized = normalizeAnalysis(stored);
+    let windows = collectWindows(normalized);
+    if (windows.length === 0) {
+      const startSec = Number(row.recommended_start_sec);
+      const endSec = Number(row.recommended_end_sec);
+      const windowLength = endSec - startSec;
+      if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || startSec < 0
+        || windowLength < 60 || windowLength > 1200) continue;
+      windows = [{
+        use_this: true,
+        start_sec: startSec,
+        end_sec: endSec,
+        why_this_window: row.reason_for_strategy || '',
+        estimated_number_of_good_clips: '',
+      }];
+    }
     const sourceRisk = riskBySource[sourceByVideo[row.video_id]] || 'low';
-    repairs.push(buildWindowMoment(row, {
-      start_sec: startSec,
-      end_sec: endSec,
-      why_this_window: storedWindow.why_this_window || row.reason_for_strategy || '',
-    }, {
-      clipScore: row.ai_episode_score,
-      rightsRisk: row.rights_risk,
-      estimatedClips: storedWindow.estimated_number_of_good_clips,
-      highRiskSource: sourceRisk === 'high',
-      fallbackReason: row.reason_for_strategy,
-      now: timestamp,
-    }));
-    existingIds.add(clipMomentId);
+    const sourceId = sourceByVideo[row.video_id] || row.source_id || '';
+    windows.forEach((window, index) => {
+      const clipMomentId = `CM-${row.video_id}-W${index}`;
+      if (existingIds.has(clipMomentId)) return;
+      repairs.push(buildWindowMoment(row, window, {
+        index,
+        clipScore: row.ai_episode_score,
+        rightsRisk: row.rights_risk,
+        estimatedClips: window.estimated_number_of_good_clips,
+        highRiskSource: sourceRisk === 'high',
+        sourceId,
+        fallbackReason: row.reason_for_strategy,
+        now: timestamp,
+      }));
+      existingIds.add(clipMomentId);
+    });
   }
 
   return repairs;
@@ -397,7 +453,7 @@ function parseAndGate(row, response, now = new Date().toISOString()) {
   let ai;
   try {
     if (response && response.error) throw new Error(String(response.error.message || response.error));
-    ai = parseAiResponse(response);
+    ai = normalizeAnalysis(parseAiResponse(response));
     validateAiResponse(ai);
   } catch (error) {
     return buildRetryableResult(row, response, error);
@@ -417,14 +473,9 @@ function parseAndGate(row, response, now = new Date().toISOString()) {
   let strategy = String(ai.recommended_strategy || 'SKIP_THIS_VIDEO');
   if (episodeScore < 7 || conservativeRisk === 'high') strategy = 'SKIP_THIS_VIDEO';
 
-  const window = ai.best_20_min_window || {};
+  const windows = collectWindows(ai);
   if (strategy === 'USE_20_MIN_WINDOW') {
-    const windowLength = Number(window.end_sec) - Number(window.start_sec);
-    const validWindow = window.use_this === true
-      && windowLength >= 60
-      && windowLength <= 1200
-      && Number(window.estimated_number_of_good_clips) >= 3;
-    if (!validWindow) {
+    if (windows.length === 0) {
       strategy = clips.length > 0 ? 'USE_EXACT_CLIPS_ONLY' : 'SKIP_THIS_VIDEO';
     }
   }
@@ -438,8 +489,8 @@ function parseAndGate(row, response, now = new Date().toISOString()) {
     analysis_id: row.analysis_id,
     ai_episode_score: episodeScore,
     recommended_strategy: strategy,
-    recommended_start_sec: strategy === 'USE_20_MIN_WINDOW' ? Number(window.start_sec) : '',
-    recommended_end_sec: strategy === 'USE_20_MIN_WINDOW' ? Number(window.end_sec) : '',
+    recommended_start_sec: strategy === 'USE_20_MIN_WINDOW' ? Number(windows[0].start_sec) : '',
+    recommended_end_sec: strategy === 'USE_20_MIN_WINDOW' ? Number(windows[0].end_sec) : '',
     reason_for_strategy: String(ai.reason_for_strategy || '').slice(0, 1000),
     rights_risk: riskMax(clipRightsRisks),
     permission_risk: riskMax(clipRightsRisks),
@@ -460,18 +511,21 @@ function parseAndGate(row, response, now = new Date().toISOString()) {
 
   let momentRows = [];
   if (strategy === 'USE_20_MIN_WINDOW') {
-    momentRows = [buildWindowMoment(row, window, {
+    momentRows = windows.map((window, index) => buildWindowMoment(row, window, {
+      index,
       clipScore: episodeScore,
       rightsRisk: riskMax(clipRightsRisks),
       estimatedClips: window.estimated_number_of_good_clips,
       highRiskSource,
+      sourceId: row.source_id || '',
       now,
-    })];
+    }));
   } else if (strategy === 'USE_EXACT_CLIPS_ONLY') {
     momentRows = clips.map((clip, index) => ({
       clip_moment_id: `CM-${row.video_id}-${index + 1}`,
       video_id: row.video_id,
       niche: row.niche,
+      source_id: row.source_id || '',
       rank: index + 1,
       start_sec: Number(clip.start_sec),
       end_sec: Number(clip.end_sec),

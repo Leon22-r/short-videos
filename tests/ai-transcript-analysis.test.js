@@ -85,6 +85,74 @@ test('picks fetched unanalyzed transcripts and joins source risk', () => {
   assert.equal(rows[0].processing_status, 'READY_FOR_ANALYSIS');
 });
 
+test('pickUnanalyzed preserves full transcript Drive fields', () => {
+  const rows = pickUnanalyzed(
+    [{
+      ...baseRow,
+      transcript_full_url: 'https://drive.google.com/file/d/file-1/view',
+      transcript_full_file_id: 'file-1',
+    }],
+    [],
+    [{ video_id: baseRow.video_id, source_id: 'SRC-1' }],
+  );
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].transcript_full_url, 'https://drive.google.com/file/d/file-1/view');
+  assert.equal(rows[0].transcript_full_file_id, 'file-1');
+});
+
+test('pickUnanalyzed selects AI analysis rows fairly by source', () => {
+  const analysisRows = [
+    ...Array.from({ length: 4 }, (_, index) => ({
+      ...baseRow,
+      analysis_id: `AN-A-${index}`,
+      video_id: `VID-A-${index}`,
+      transcript_status: 'FETCHED',
+      ai_episode_score: '',
+      created_at: `2026-06-27T00:0${index}:00.000Z`,
+    })),
+    ...Array.from({ length: 2 }, (_, index) => ({
+      ...baseRow,
+      analysis_id: `AN-B-${index}`,
+      video_id: `VID-B-${index}`,
+      transcript_status: 'FETCHED',
+      ai_episode_score: '',
+      created_at: `2026-06-27T00:0${index}:00.000Z`,
+    })),
+  ];
+  const candidates = [
+    ...Array.from({ length: 4 }, (_, index) => ({ video_id: `VID-A-${index}`, source_id: 'SRC-A' })),
+    ...Array.from({ length: 2 }, (_, index) => ({ video_id: `VID-B-${index}`, source_id: 'SRC-B' })),
+  ];
+
+  const picked = pickUnanalyzed(analysisRows, [], candidates, { limit: 5, perSourceLimit: 1 });
+
+  assert.deepEqual(picked.map((row) => row.video_id), ['VID-A-0', 'VID-B-0']);
+});
+
+test('pickUnanalyzed balances AI analysis by niche before taking extra rows from one niche', () => {
+  const analysisRows = [
+    ...['VID-FA1', 'VID-FA2', 'VID-FB1', 'VID-CA1'].map((videoId, index) => ({
+      ...baseRow,
+      analysis_id: `AN-${videoId}`,
+      video_id: videoId,
+      transcript_status: 'FETCHED',
+      ai_episode_score: '',
+      created_at: `2026-06-27T00:0${index + 1}:00.000Z`,
+    })),
+  ];
+  const candidates = [
+    { video_id: 'VID-FA1', niche: 'FINANCE_BUSINESS', source_id: 'SRC-FA' },
+    { video_id: 'VID-FA2', niche: 'FINANCE_BUSINESS', source_id: 'SRC-FA' },
+    { video_id: 'VID-FB1', niche: 'FINANCE_BUSINESS', source_id: 'SRC-FB' },
+    { video_id: 'VID-CA1', niche: 'CHRISTIAN_CONTENT', source_id: 'SRC-CA' },
+  ];
+
+  const picked = pickUnanalyzed(analysisRows, [], candidates, { limit: 3, perSourceLimit: 2 });
+
+  assert.deepEqual(picked.map((row) => row.video_id), ['VID-FA1', 'VID-CA1', 'VID-FB1']);
+});
+
 test('builds OpenAI app node analysis inputs', () => {
   const result = buildAnalysisRequest(baseRow);
 
@@ -92,6 +160,9 @@ test('builds OpenAI app node analysis inputs', () => {
   assert.deepEqual(ANALYSIS_SCHEMA.properties.overall_episode_score, {
     type: 'number', minimum: 0, maximum: 10,
   });
+  assert.equal(ANALYSIS_SCHEMA.properties.best_20_min_window, undefined);
+  assert.equal(ANALYSIS_SCHEMA.properties.best_20_min_windows.type, 'array');
+  assert.equal(ANALYSIS_SCHEMA.properties.best_20_min_windows.maxItems, 5);
   assert.equal(result.video_id, baseRow.video_id);
   assert.equal(result.openai_model, 'gpt-4o-mini');
   assert.deepEqual(JSON.parse(result.analysis_schema), ANALYSIS_SCHEMA);
@@ -99,7 +170,7 @@ test('builds OpenAI app node analysis inputs', () => {
   assert.match(result.system_message, /Prioritize USE_20_MIN_WINDOW/);
   assert.match(result.system_message, /at least 3 strong clips within a single 60-1200 second window/);
   assert.match(result.system_message, /USE_EXACT_CLIPS_ONLY only when the good moments are scattered far apart/);
-  assert.match(result.system_message, /Ssemble credits are spent more efficiently on one high-density window/);
+  assert.match(result.system_message, /Ssemble credits are spent more efficiently on high-density windows/);
   assert.match(result.user_message, /FINANCE_BUSINESS/);
   assert.match(result.user_message, /"overall_episode_score"/);
   assert.match(result.user_message, /Return the bare analysis object/);
@@ -108,8 +179,21 @@ test('builds OpenAI app node analysis inputs', () => {
   assert.doesNotMatch(result.user_message, /```json/);
   assert.match(result.user_message, /raw seconds from the beginning/);
   assert.match(result.user_message, /minute 5.*300/i);
-  assert.match(result.user_message, /USE_20_MIN_WINDOW.*exact_clips may be empty/);
+  assert.match(result.user_message, /USE_20_MIN_WINDOW.*best_20_min_windows/i);
+  assert.match(result.user_message, /For SKIP_THIS_VIDEO.*empty best_20_min_windows array/i);
   assert.match(result.user_message, /USE_EXACT_CLIPS_ONLY.*at least one clip/);
+});
+
+test('buildAnalysisRequest uses full transcript text before preview fallback', () => {
+  const fullTail = 'late transcript marker at minute 100';
+  const result = buildAnalysisRequest({
+    ...baseRow,
+    transcript_text: '[00:00] preview only',
+    transcript_full: `[00:00] preview only\n[100:00] ${fullTail}`,
+  });
+
+  assert.match(result.user_message, new RegExp(fullTail));
+  assert.doesNotMatch(result.user_message, /\[00:00\] preview only$/);
 });
 
 test('parses output wrapper responses', () => {
@@ -258,6 +342,32 @@ test('WF5 uses official OpenAI node without separate moderation', () => {
   assert.equal(workflow.connections['Call OpenAI'].main[0][0].node, 'Parse And Gate');
 });
 
+test('WF5 downloads full transcript when available and falls back for old rows', () => {
+  const nodeTypes = Object.fromEntries(workflow.nodes.map((node) => [node.name, node.type]));
+  const hasFull = workflow.nodes.find((node) => node.name === 'Has Full Transcript File?');
+  const download = workflow.nodes.find((node) => node.name === 'Download Full Transcript');
+  const extract = workflow.nodes.find((node) => node.name === 'Extract Transcript Text');
+  const buildRequest = workflow.nodes.find((node) => node.name === 'Build OpenAI Request');
+
+  assert.equal(nodeTypes['Has Full Transcript File?'], 'n8n-nodes-base.if');
+  assert.equal(nodeTypes['Download Full Transcript'], 'n8n-nodes-base.googleDrive');
+  assert.equal(nodeTypes['Extract Transcript Text'], 'n8n-nodes-base.extractFromFile');
+  assert.equal(download.parameters.resource, 'file');
+  assert.equal(download.parameters.operation, 'download');
+  assert.equal(download.parameters.binaryPropertyName, 'data');
+  assert.equal(extract.parameters.operation, 'text');
+  assert.equal(extract.parameters.binaryPropertyName, 'data');
+  assert.equal(extract.parameters.options.destinationKey, 'transcript_full');
+  assert.match(buildRequest.parameters.jsCode, /\$\('Analysis Loop'\)\.first\(\)\.json/);
+  assert.match(buildRequest.parameters.jsCode, /\$json\.transcript_full \|\| row\.transcript_text/);
+
+  assert.equal(workflow.connections['Analysis Loop'].main[1][0].node, 'Has Full Transcript File?');
+  assert.equal(workflow.connections['Has Full Transcript File?'].main[0][0].node, 'Download Full Transcript');
+  assert.equal(workflow.connections['Has Full Transcript File?'].main[1][0].node, 'Build OpenAI Request');
+  assert.equal(workflow.connections['Download Full Transcript'].main[0][0].node, 'Extract Transcript Text');
+  assert.equal(workflow.connections['Extract Transcript Text'].main[0][0].node, 'Build OpenAI Request');
+});
+
 test('WF5 generator embeds the helper prompt without overriding it', () => {
   const generator = readFileSync('n8n/workflow-code/create-wf5-ai-transcript-analysis.js', 'utf8');
 
@@ -384,6 +494,36 @@ test('creates one pending window row when there are enough strong clips in range
   assert.equal(result.momentRows[0].ssemble_status, 'PENDING');
 });
 
+test('creates one row per valid 20-minute window and caps at five', () => {
+  const windows = Array.from({ length: 6 }, (_, index) => ({
+    use_this: true,
+    start_sec: index * 1300,
+    end_sec: index * 1300 + 1200,
+    why_this_window: `Dense section ${index}`,
+    estimated_number_of_good_clips: 3 + index,
+  }));
+  const result = parseAndGate(baseRow, ai({
+    recommended_strategy: 'USE_20_MIN_WINDOW',
+    best_20_min_windows: windows,
+    best_20_min_window: undefined,
+    exact_clips: [],
+  }));
+
+  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_20_MIN_WINDOW');
+  assert.equal(result.analysisUpdate.recommended_start_sec, 0);
+  assert.equal(result.analysisUpdate.recommended_end_sec, 1200);
+  assert.equal(result.momentRows.length, 5);
+  assert.deepEqual(result.momentRows.map((row) => row.clip_moment_id), [
+    'CM-VID-video1234567-W0',
+    'CM-VID-video1234567-W1',
+    'CM-VID-video1234567-W2',
+    'CM-VID-video1234567-W3',
+    'CM-VID-video1234567-W4',
+  ]);
+  assert.equal(result.momentRows[1].start_sec, 1300);
+  assert.equal(result.momentRows[1].core_idea, 'Dense section 1');
+});
+
 test('creates one pending window row without exact clips', () => {
   const result = parseAndGate(baseRow, ai({
     recommended_strategy: 'USE_20_MIN_WINDOW',
@@ -403,13 +543,14 @@ test('creates one pending window row without exact clips', () => {
   assert.equal(result.momentRows[0].start_sec, 300);
   assert.equal(result.momentRows[0].end_sec, 1500);
   assert.deepEqual(Object.keys(result.momentRows[0]), [
-    'clip_moment_id', 'video_id', 'niche', 'rank', 'start_sec', 'end_sec',
-    'clip_length_seconds', 'hook_first_2_seconds', 'core_idea', 'why_valuable',
-    'target_audience', 'suggested_title', 'suggested_caption', 'on_screen_text',
-    'suggested_broll', 'commentary_angle', 'kenyan_african_application',
-    'bible_verse_if_relevant', 'needs_extra_context', 'originality_score',
-    'clip_score', 'rights_risk', 'final_recommendation', 'ssemble_status',
-    'ssemble_job_id', 'strategy', 'source_video_url', 'created_at',
+    'clip_moment_id', 'video_id', 'niche', 'source_id', 'rank', 'start_sec',
+    'end_sec', 'clip_length_seconds', 'hook_first_2_seconds', 'core_idea',
+    'why_valuable', 'target_audience', 'suggested_title', 'suggested_caption',
+    'on_screen_text', 'suggested_broll', 'commentary_angle',
+    'kenyan_african_application', 'bible_verse_if_relevant',
+    'needs_extra_context', 'originality_score', 'clip_score', 'rights_risk',
+    'final_recommendation', 'ssemble_status', 'ssemble_job_id', 'strategy',
+    'source_video_url', 'created_at',
   ]);
 });
 
@@ -426,10 +567,13 @@ test('backfills one complete deterministic row for a missing window moment', () 
     reason_for_strategy: 'Useful window',
     rights_risk: 'medium',
     ai_json_output: JSON.stringify({
-      best_20_min_window: {
+      best_20_min_windows: [{
+        use_this: true,
+        start_sec: 0,
+        end_sec: 1200,
         why_this_window: 'Dense founder section',
         estimated_number_of_good_clips: 5,
-      },
+      }],
     }),
   }];
 
@@ -443,6 +587,7 @@ test('backfills one complete deterministic row for a missing window moment', () 
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].clip_moment_id, 'CM-VID-1-W0');
+  assert.equal(rows[0].source_id, 'SRC-1');
   assert.equal(rows[0].rank, 0);
   assert.equal(rows[0].clip_score, 10);
   assert.equal(rows[0].rights_risk, 'medium');
@@ -450,6 +595,42 @@ test('backfills one complete deterministic row for a missing window moment', () 
   assert.equal(rows[0].core_idea, 'Dense founder section');
   assert.equal(rows[0].why_valuable, 'window with ~5 strong clips');
   assert.equal(rows[0].created_at, now);
+});
+
+test('backfills every missing stored window moment independently', () => {
+  const rows = buildMissingWindowMoments([{
+    video_id: 'VID-1',
+    niche: 'FINANCE_BUSINESS',
+    video_url: 'https://youtube.test/1',
+    ai_episode_score: 8,
+    recommended_strategy: 'USE_20_MIN_WINDOW',
+    recommended_start_sec: 0,
+    recommended_end_sec: 1200,
+    rights_risk: 'low',
+    ai_json_output: JSON.stringify({
+      best_20_min_windows: [
+        {
+          use_this: true,
+          start_sec: 0,
+          end_sec: 1200,
+          why_this_window: 'Opening section',
+          estimated_number_of_good_clips: 5,
+        },
+        {
+          use_this: true,
+          start_sec: 2400,
+          end_sec: 3600,
+          why_this_window: 'Later section',
+          estimated_number_of_good_clips: 4,
+        },
+      ],
+    }),
+  }], [], [], [{ clip_moment_id: 'CM-VID-1-W0' }], '2026-06-23T10:00:00.000Z');
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].clip_moment_id, 'CM-VID-1-W1');
+  assert.equal(rows[0].start_sec, 2400);
+  assert.equal(rows[0].core_idea, 'Later section');
 });
 
 test('window backfill skips existing, non-window, and invalid-window rows', () => {
@@ -493,10 +674,11 @@ test('window backfill tolerates malformed metadata and routes high-risk sources 
 });
 
 test('high risk source requires manual approval before Ssemble', () => {
-  const result = parseAndGate({ ...baseRow, source_risk: 'high' }, ai());
+  const result = parseAndGate({ ...baseRow, source_risk: 'high', source_id: 'SRC-1' }, ai());
 
   assert.equal(result.candidateUpdate.processing_status, 'ANALYZED');
   assert.equal(result.momentRows[0].ssemble_status, 'AWAITING_MANUAL_APPROVAL');
+  assert.equal(result.momentRows[0].source_id, 'SRC-1');
 });
 
 test('returns a retryable result for OpenAI errors', () => {
@@ -574,7 +756,7 @@ test('accepts complete legacy window output and stores only bare analysis JSON',
 
   assert.equal(result.retryable, false);
   assert.equal(result.analysisUpdate.recommended_strategy, 'USE_20_MIN_WINDOW');
-  assert.deepEqual(stored, fixtures.windowAnalysis);
+  assert.deepEqual(stored, fixtures.normalizedWindowAnalysis);
   assert.equal(stored.output, undefined);
   assert.doesNotMatch(result.analysisUpdate.ai_json_output, /msg_legacy_window|```/);
 });
@@ -583,14 +765,14 @@ test('accepts canonical unfenced output in the n8n transport envelope', () => {
   const result = parseAndGate(baseRow, fixtures.canonicalUnfenced);
 
   assert.equal(result.retryable, false);
-  assert.deepEqual(JSON.parse(result.analysisUpdate.ai_json_output), fixtures.windowAnalysis);
+  assert.deepEqual(JSON.parse(result.analysisUpdate.ai_json_output), fixtures.normalizedWindowAnalysis);
 });
 
 test('accepts n8n structured output when content text is already an object', () => {
   const result = parseAndGate(baseRow, fixtures.structuredObject);
 
   assert.equal(result.retryable, false);
-  assert.deepEqual(JSON.parse(result.analysisUpdate.ai_json_output), fixtures.windowAnalysis);
+  assert.deepEqual(JSON.parse(result.analysisUpdate.ai_json_output), fixtures.normalizedWindowAnalysis);
 });
 
 test('rejects a SKIP response with an incomplete window object', () => {

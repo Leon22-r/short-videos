@@ -1,10 +1,21 @@
 const TRANSCRIPT_LIMIT = 45000;
+const { pickFairByGroup } = require('./fair-share');
 
-function pickPendingTranscripts(candidateRows, limit = 10) {
-  return candidateRows
+function pickPendingTranscripts(candidateRows, options = {}) {
+  const limit = typeof options === 'number' ? options : Number(options.limit || 10);
+  const perSourceLimit = typeof options === 'number' ? limit : Number(options.perSourceLimit || 2);
+  const eligible = candidateRows
     .filter((row) => String(row.validity_status) === 'VALID')
-    .filter((row) => String(row.transcript_available || '') === '')
-    .slice(0, limit);
+    .filter((row) => String(row.transcript_available || '') === '');
+
+  return pickFairByGroup(eligible, {
+    limit,
+    perSourceLimit,
+    groupKey: 'niche',
+    sourceKey: 'source_id',
+    sourceFallbackKeys: ['niche'],
+    sortKey: 'created_at',
+  });
 }
 
 function formatTimestamp(seconds) {
@@ -21,21 +32,24 @@ function buildTimestampedTranscript(snippets) {
 }
 
 function buildAnalysisRow(video, response, now = new Date().toISOString()) {
-  let transcriptText = buildTimestampedTranscript(response.transcript || []);
-  let transcriptStatus = 'FETCHED';
-  if (transcriptText.length > TRANSCRIPT_LIMIT) {
-    transcriptText = `${transcriptText.slice(0, TRANSCRIPT_LIMIT)}\n...[TRUNCATED]`;
-    transcriptStatus = 'TRUNCATED';
+  const transcriptFull = buildTimestampedTranscript(response.transcript || []);
+  let transcriptText = transcriptFull;
+  if (transcriptFull.length > TRANSCRIPT_LIMIT) {
+    transcriptText = `${transcriptFull.slice(0, TRANSCRIPT_LIMIT)}\n...[TRUNCATED]`;
   }
 
   return {
     analysis_id: `AN-${video.youtube_video_id}`,
     video_id: video.video_id,
     niche: video.niche,
+    source_id: video.source_id || '',
     video_title: video.video_title,
     video_url: video.video_url,
-    transcript_status: transcriptStatus,
+    transcript_status: 'FETCHED',
     transcript_text: transcriptText,
+    transcript_full: transcriptFull,
+    transcript_full_url: '',
+    transcript_full_file_id: '',
     transcript_length_words: String(response.plain_text || '').split(/\s+/).filter(Boolean).length,
     ai_episode_score: '',
     recommended_strategy: '',

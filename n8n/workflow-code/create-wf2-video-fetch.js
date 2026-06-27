@@ -137,6 +137,8 @@ function channelMeta(c) {
     ),
     codeNode('a1b2c3d4-0002-4000-8000-000000000010', 'Build Candidate Rows', [1980, 120], `const sd = $getWorkflowStaticData('global');
 const metas = $('Build Videos Lookup').all();
+const MAX_NEW_VIDEOS_PER_SOURCE = 5;
+const newThisSource = {};
 const out = [];
 const now = new Date().toISOString();
 for (const [i, item] of $input.all().entries()) {
@@ -144,6 +146,9 @@ for (const [i, item] of $input.all().entries()) {
   if (meta.__empty) continue;
   for (const v of item.json.items || []) {
     if (!v.id || sd.existingIds[v.id]) continue;
+    newThisSource[meta.source_id] = newThisSource[meta.source_id] || 0;
+    if (newThisSource[meta.source_id] >= MAX_NEW_VIDEOS_PER_SOURCE) continue;
+    newThisSource[meta.source_id] += 1;
     sd.existingIds[v.id] = true;
     sd.fetchedCounts[meta.source_id] = (sd.fetchedCounts[meta.source_id] || 0) + 1;
     out.push({
