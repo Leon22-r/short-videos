@@ -27,6 +27,15 @@ const {
   parseTransformationPlan,
   pickAwaitingDownloads,
 } = require('../n8n/workflow-code/drive-storage-transform');
+const {
+  buildAssetDownloadPlan,
+  buildCompletedRenderUpdate,
+  buildFfmpegCommand,
+  buildRenderFailureUpdate,
+  buildRenderStatusUpdate,
+  pickPendingRenderJob,
+  selectMusicTrack,
+} = require('../n8n/workflow-code/ffmpeg-render');
 const { buildReviewDigest } = require('../n8n/workflow-code/review-queue-digest');
 
 const wf5 = require('../n8n/workflows/05-ai-transcript-analysis.json');
@@ -656,6 +665,81 @@ test('WF8b one-off backfill workflow parses transformation JSON and updates Crea
   assert.equal(workflow.connections['Manual Trigger'].main[0][0].node, 'Read Created_Clips');
   assert.equal(workflow.connections['Read Created_Clips'].main[0][0].node, 'Backfill Transform Columns');
   assert.equal(workflow.connections['Backfill Transform Columns'].main[0][0].node, 'Update Created_Clips');
+});
+
+test('WF8c picks one oldest pending render job', () => {
+  const picked = pickPendingRenderJob([
+    { render_id: 'RENDER-new', render_status: 'PENDING', created_at: '2026-06-29T10:05:00.000Z' },
+    { render_id: 'RENDER-old', render_status: 'PENDING', created_at: '2026-06-29T10:00:00.000Z' },
+    { render_id: 'RENDER-done', render_status: 'COMPLETED', created_at: '2026-06-29T09:00:00.000Z' },
+  ]);
+
+  assert.equal(picked.render_id, 'RENDER-old');
+});
+
+test('WF8c selects music by niche mood energy and default fallback', () => {
+  const rows = [
+    { music_id: 'FIN-DEFAULT', niche: 'FINANCE_BUSINESS', mood: 'premium', energy_level: 'low', drive_file_id: 'DRIVE-D', recommended_volume: '0.07', active_status: 'TRUE' },
+    { music_id: 'FIN-FOCUSED', niche: 'FINANCE_BUSINESS', mood: 'focused', energy_level: 'medium', drive_file_id: 'DRIVE-F', recommended_volume: '0.09', active_status: 'TRUE' },
+  ];
+  const exact = selectMusicTrack(
+    { niche: 'FINANCE_BUSINESS', music_mood: 'focused', music_energy_level: 'medium', music_volume: 0.2 },
+    rows,
+    { music_default_id: 'FIN-DEFAULT' },
+  );
+  const fallback = selectMusicTrack(
+    { niche: 'FINANCE_BUSINESS', music_mood: 'missing', music_energy_level: 'missing', music_volume: 0.01 },
+    rows,
+    { music_default_id: 'FIN-DEFAULT' },
+  );
+
+  assert.equal(exact.music_id, 'FIN-FOCUSED');
+  assert.equal(exact.music_volume, 0.14);
+  assert.equal(fallback.music_id, 'FIN-DEFAULT');
+  assert.equal(fallback.music_volume, 0.04);
+});
+
+test('WF8c builds asset plan and fails when branding is missing', () => {
+  const job = { render_id: 'RENDER-1', niche: 'FINANCE_BUSINESS', source_drive_file_id: 'SRC', music_mood: 'focused', music_energy_level: 'medium' };
+  const plan = buildAssetDownloadPlan(
+    job,
+    [{ niche: 'FINANCE_BUSINESS', watermark_drive_file_id: 'WM', progress_bar_color: '0x137546', default_cta: 'Follow', active_status: 'TRUE' }],
+    [],
+    { FINANCE_BUSINESS: 'FINAL-FOLDER' },
+  );
+  const missing = buildAssetDownloadPlan(job, [], [], { FINANCE_BUSINESS: 'FINAL-FOLDER' });
+
+  assert.equal(plan.watermark_drive_file_id, 'WM');
+  assert.equal(plan.final_drive_folder_id, 'FINAL-FOLDER');
+  assert.equal(plan.render_status, 'DOWNLOADING_ASSETS');
+  assert.equal(missing.render_status, 'FAILED');
+  assert.match(missing.error_message, /branding/i);
+});
+
+test('WF8c FFmpeg command escapes text and uses explicit fontfile', () => {
+  const command = buildFfmpegCommand({
+    render_id: 'RENDER-1',
+    input_path: '/data/jobs/RENDER-1/input.mp4',
+    watermark_path: '/data/jobs/RENDER-1/watermark.png',
+    music_path: '/data/jobs/RENDER-1/music.mp3',
+    output_path: '/data/jobs/RENDER-1/output.mp4',
+    log_path: '/data/jobs/RENDER-1/render.log',
+    hook_text: "Don't waste money: track it",
+    cta_text: 'Follow for money lessons',
+    cta_start_second: 38,
+    cta_end_second: 42,
+    duration_seconds: 42,
+    progress_bar_color: '0x137546',
+    music_volume: 0.09,
+    fontfile: '/usr/share/fonts/dejavu/DejaVuSans.ttf',
+  });
+
+  assert.match(command, /ffmpeg -y/);
+  assert(command.includes("fontfile='/usr/share/fonts/dejavu/DejaVuSans.ttf'"));
+  assert.match(command, /amix=inputs=2/);
+  assert.match(command, /0x137546/);
+  assert(!command.includes("Don't waste"));
+  assert.match(command, /render.log' 2>&1/);
 });
 
 test('WF9 digest skips empty queue and groups review links', () => {
