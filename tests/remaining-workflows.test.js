@@ -667,6 +667,42 @@ test('WF8b one-off backfill workflow parses transformation JSON and updates Crea
   assert.equal(workflow.connections['Backfill Transform Columns'].main[0][0].node, 'Update Created_Clips');
 });
 
+test('WF8 creates Render_Jobs rows after updating Created_Clips', () => {
+  const workflow = requireWorkflow('08', 'drive-storage-transform');
+  const names = workflow.nodes.map((node) => node.name);
+
+  assert(names.includes('Build Render Job'));
+  assert(names.includes('Create Render Job'));
+  assert.equal(workflow.connections['Update Created Clip'].main[0][0].node, 'Build Render Job');
+  assert.equal(workflow.connections['Build Render Job'].main[0][0].node, 'Create Render Job');
+  assert.equal(workflow.connections['Create Render Job'].main[0][0].node, 'Clip Loop');
+});
+
+test('WF8c workflow renders one pending job and stores FFmpeg command', () => {
+  const workflow = requireWorkflow('08c', 'ffmpeg-render-final-clip');
+  const names = workflow.nodes.map((node) => node.name);
+
+  assert(names.includes('Read Render_Jobs'));
+  assert(names.includes('Pick Pending Render'));
+  assert(names.includes('Read Channel_Branding'));
+  assert(names.includes('Read Music_Library'));
+  assert(names.includes('Build Asset Plan'));
+  assert(names.includes('Download Source Clip'));
+  assert(names.includes('Write Source Clip'));
+  assert(names.includes('Download Watermark'));
+  assert(names.includes('Write Watermark'));
+  assert(names.includes('Download Music'));
+  assert(names.includes('Write Music'));
+  assert(names.includes('Build FFmpeg Command'));
+  assert(names.includes('Run FFmpeg'));
+  assert(names.includes('Read Final Output'));
+  assert(names.includes('Upload Final To Drive'));
+  assert(names.includes('Mark Render Completed'));
+  assert.equal(workflow.nodes.find((node) => node.name === 'Run FFmpeg').type, 'n8n-nodes-base.executeCommand');
+  assert.equal(workflow.nodes.find((node) => node.name === 'Write Source Clip').type, 'n8n-nodes-base.readWriteFile');
+  assert.equal(workflow.nodes.find((node) => node.name === 'Read Final Output').type, 'n8n-nodes-base.readWriteFile');
+});
+
 test('WF8c picks one oldest pending render job', () => {
   const picked = pickPendingRenderJob([
     { render_id: 'RENDER-new', render_status: 'PENDING', created_at: '2026-06-29T10:05:00.000Z' },

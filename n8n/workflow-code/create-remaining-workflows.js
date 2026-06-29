@@ -413,6 +413,10 @@ const meta = $('Build Planner Request').first().json;
 const resp = $input.first().json;
 return [{ json: parseTransformationPlan(meta, resp), pairedItem: { item: 0 } }];`),
       sheetsNode('wf8-015', 'Update Created Clip', [3080, 120], sheet('appendOrUpdate', 'Created_Clips', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['created_clip_id'] } })),
+      codeNode('wf8-016', 'Build Render Job', [3300, 120], `${h}
+const parsed = $('Parse Plan').first().json;
+return [{ json: buildRenderJobRow(parsed), pairedItem: { item: 0 } }];`),
+      sheetsNode('wf8-017', 'Create Render Job', [3520, 120], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
     ],
     connections: {
       'Schedule 30m': { main: [[{ node: 'Read Created_Clips', type: 'main', index: 0 }]] },
@@ -429,7 +433,9 @@ return [{ json: parseTransformationPlan(meta, resp), pairedItem: { item: 0 } }];
       'Build Planner Request': { main: [[{ node: 'Call OpenAI Planner', type: 'main', index: 0 }]] },
       'Call OpenAI Planner': { main: [[{ node: 'Parse Plan', type: 'main', index: 0 }]] },
       'Parse Plan': { main: [[{ node: 'Update Created Clip', type: 'main', index: 0 }]] },
-      'Update Created Clip': { main: [[{ node: 'Clip Loop', type: 'main', index: 0 }]] },
+      'Update Created Clip': { main: [[{ node: 'Build Render Job', type: 'main', index: 0 }]] },
+      'Build Render Job': { main: [[{ node: 'Create Render Job', type: 'main', index: 0 }]] },
+      'Create Render Job': { main: [[{ node: 'Clip Loop', type: 'main', index: 0 }]] },
     },
   });
 }
@@ -479,9 +485,115 @@ return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`)
   });
 }
 
+function wf8c() {
+  const h = helper('ffmpeg-render');
+  const finalFolders = `{
+  CHRISTIAN_CONTENT: 'GOOGLE_DRIVE_FINAL_FOLDER_CHRISTIAN_CONTENT',
+  MOTIVATION_DISCIPLINE: 'GOOGLE_DRIVE_FINAL_FOLDER_MOTIVATION_DISCIPLINE',
+  FINANCE_BUSINESS: 'GOOGLE_DRIVE_FINAL_FOLDER_FINANCE_BUSINESS',
+  LIFE_VALUES_RELATIONSHIPS: 'GOOGLE_DRIVE_FINAL_FOLDER_LIFE_VALUES_RELATIONSHIPS',
+  AFRICAN_KENYAN_SUCCESS: 'GOOGLE_DRIVE_FINAL_FOLDER_AFRICAN_KENYAN_SUCCESS',
+}`;
+  writeWorkflow('n8n/workflows/08c-ffmpeg-render-final-clip.json', {
+    name: 'WF8c FFmpeg Render Final Clip',
+    nodes: [
+      node('wf8c-001', 'Schedule 15m', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'minutes', minutesInterval: 15 }] } }),
+      sheetsNode('wf8c-002', 'Read Render_Jobs', [220, 0], sheet('read', 'Render_Jobs')),
+      codeNode('wf8c-003', 'Pick Pending Render', [440, 0], `${h}
+const job = pickPendingRenderJob($input.all().map(i => i.json));
+return job ? [{ json: job, pairedItem: { item: 0 } }] : [];`),
+      sheetsNode('wf8c-004', 'Read Channel_Branding', [660, 0], sheet('read', 'Channel_Branding'), { alwaysOutputData: true }),
+      sheetsNode('wf8c-005', 'Read Music_Library', [880, 0], sheet('read', 'Music_Library'), { alwaysOutputData: true }),
+      codeNode('wf8c-006', 'Build Asset Plan', [1100, 0], `${h}
+const job = $('Pick Pending Render').first().json;
+const plan = buildAssetDownloadPlan(
+  job,
+  $('Read Channel_Branding').all().map(i => i.json),
+  $('Read Music_Library').all().map(i => i.json),
+  ${finalFolders},
+);
+return [{ json: { ...job, ...plan }, pairedItem: { item: 0 } }];`),
+      sheetsNode('wf8c-007', 'Save Asset Plan', [1320, 0], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+      ifNode('wf8c-008', 'Assets Ready?', [1540, 0], '={{ $json.render_status }}', 'DOWNLOADING_ASSETS', 'string', 'equals'),
+      node('wf8c-009', 'Download Source Clip', 'n8n-nodes-base.googleDrive', 3, [1760, -120], { resource: 'file', operation: 'download', fileId: { __rl: true, mode: 'id', value: '={{ $json.source_drive_file_id }}' }, options: { binaryPropertyName: 'source' } }),
+      node('wf8c-010', 'Write Source Clip', 'n8n-nodes-base.readWriteFile', 1, [1980, -120], { operation: 'write', fileName: '={{ "/data/jobs/" + $("Build Asset Plan").first().json.render_id + "/input.mp4" }}', dataPropertyName: 'source', options: {} }),
+      node('wf8c-011', 'Download Watermark', 'n8n-nodes-base.googleDrive', 3, [2200, -120], { resource: 'file', operation: 'download', fileId: { __rl: true, mode: 'id', value: '={{ $("Build Asset Plan").first().json.watermark_drive_file_id }}' }, options: { binaryPropertyName: 'watermark' } }),
+      node('wf8c-012', 'Write Watermark', 'n8n-nodes-base.readWriteFile', 1, [2420, -120], { operation: 'write', fileName: '={{ "/data/jobs/" + $("Build Asset Plan").first().json.render_id + "/watermark.png" }}', dataPropertyName: 'watermark', options: {} }),
+      node('wf8c-013', 'Download Music', 'n8n-nodes-base.googleDrive', 3, [2640, -120], { resource: 'file', operation: 'download', fileId: { __rl: true, mode: 'id', value: '={{ $("Build Asset Plan").first().json.music_drive_file_id }}' }, options: { binaryPropertyName: 'music' } }, { onError: 'continueRegularOutput' }),
+      node('wf8c-014', 'Write Music', 'n8n-nodes-base.readWriteFile', 1, [2860, -120], { operation: 'write', fileName: '={{ "/data/jobs/" + $("Build Asset Plan").first().json.render_id + "/music.mp3" }}', dataPropertyName: 'music', options: {} }, { onError: 'continueRegularOutput' }),
+      codeNode('wf8c-015', 'Build FFmpeg Command', [3080, -120], `${h}
+const job = $('Build Asset Plan').first().json;
+const workdir = \`/data/jobs/\${job.render_id}\`;
+const hasMusic = Boolean(job.music_drive_file_id);
+const command = buildFfmpegCommand({
+  ...job,
+  workdir,
+  input_path: \`\${workdir}/input.mp4\`,
+  watermark_path: \`\${workdir}/watermark.png\`,
+  music_path: hasMusic ? \`\${workdir}/music.mp3\` : '',
+  output_path: \`\${workdir}/output.mp4\`,
+  log_path: \`\${workdir}/render.log\`,
+});
+return [{
+  json: {
+    ...buildRenderStatusUpdate(job, 'RENDERING', new Date().toISOString(), {
+      ffmpeg_command: command,
+      final_local_path: \`\${workdir}/output.mp4\`,
+    }),
+    command,
+  },
+  pairedItem: { item: 0 },
+}];`),
+      sheetsNode('wf8c-016', 'Mark Rendering', [3300, -120], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+      node('wf8c-017', 'Run FFmpeg', 'n8n-nodes-base.executeCommand', 1, [3520, -120], { command: '={{ $json.command }}' }, { onError: 'continueRegularOutput' }),
+      codeNode('wf8c-018', 'Mark Uploading', [3740, -120], `${h}
+const job = $('Build Asset Plan').first().json;
+return [{ json: buildRenderStatusUpdate(job, 'UPLOADING'), pairedItem: { item: 0 } }];`),
+      sheetsNode('wf8c-019', 'Save Uploading', [3960, -120], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+      node('wf8c-020', 'Read Final Output', 'n8n-nodes-base.readWriteFile', 1, [4180, -120], { operation: 'read', fileSelector: '={{ "/data/jobs/" + $("Build Asset Plan").first().json.render_id + "/output.mp4" }}', options: { dataPropertyName: 'data' } }),
+      node('wf8c-021', 'Upload Final To Drive', 'n8n-nodes-base.googleDrive', 3, [4400, -120], { resource: 'file', operation: 'upload', name: '={{ $("Build Asset Plan").first().json.render_id }}_final.mp4', driveId: { __rl: true, mode: 'list', value: 'My Drive' }, folderId: { __rl: true, mode: 'id', value: '={{ $("Build Asset Plan").first().json.final_drive_folder_id }}' }, inputDataFieldName: 'data', options: {} }),
+      codeNode('wf8c-022', 'Build Completed Update', [4620, -120], `${h}
+const job = $('Build Asset Plan').first().json;
+const drive = $input.first().json;
+return [{ json: buildCompletedRenderUpdate(job, drive), pairedItem: { item: 0 } }];`),
+      sheetsNode('wf8c-023', 'Mark Render Completed', [4840, -120], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+      codeNode('wf8c-024', 'Build Asset Failure', [1760, 160], `${h}
+const job = $('Build Asset Plan').first().json;
+return [{ json: buildRenderFailureUpdate(job, job.error_message || 'Render asset setup failed'), pairedItem: { item: 0 } }];`),
+      sheetsNode('wf8c-025', 'Mark Asset Failure', [1980, 160], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+    ],
+    connections: {
+      'Schedule 15m': { main: [[{ node: 'Read Render_Jobs', type: 'main', index: 0 }]] },
+      'Read Render_Jobs': { main: [[{ node: 'Pick Pending Render', type: 'main', index: 0 }]] },
+      'Pick Pending Render': { main: [[{ node: 'Read Channel_Branding', type: 'main', index: 0 }]] },
+      'Read Channel_Branding': { main: [[{ node: 'Read Music_Library', type: 'main', index: 0 }]] },
+      'Read Music_Library': { main: [[{ node: 'Build Asset Plan', type: 'main', index: 0 }]] },
+      'Build Asset Plan': { main: [[{ node: 'Save Asset Plan', type: 'main', index: 0 }]] },
+      'Save Asset Plan': { main: [[{ node: 'Assets Ready?', type: 'main', index: 0 }]] },
+      'Assets Ready?': { main: [[{ node: 'Download Source Clip', type: 'main', index: 0 }], [{ node: 'Build Asset Failure', type: 'main', index: 0 }]] },
+      'Download Source Clip': { main: [[{ node: 'Write Source Clip', type: 'main', index: 0 }]] },
+      'Write Source Clip': { main: [[{ node: 'Download Watermark', type: 'main', index: 0 }]] },
+      'Download Watermark': { main: [[{ node: 'Write Watermark', type: 'main', index: 0 }]] },
+      'Write Watermark': { main: [[{ node: 'Download Music', type: 'main', index: 0 }]] },
+      'Download Music': { main: [[{ node: 'Write Music', type: 'main', index: 0 }]] },
+      'Write Music': { main: [[{ node: 'Build FFmpeg Command', type: 'main', index: 0 }]] },
+      'Build FFmpeg Command': { main: [[{ node: 'Mark Rendering', type: 'main', index: 0 }]] },
+      'Mark Rendering': { main: [[{ node: 'Run FFmpeg', type: 'main', index: 0 }]] },
+      'Run FFmpeg': { main: [[{ node: 'Mark Uploading', type: 'main', index: 0 }]] },
+      'Mark Uploading': { main: [[{ node: 'Save Uploading', type: 'main', index: 0 }]] },
+      'Save Uploading': { main: [[{ node: 'Read Final Output', type: 'main', index: 0 }]] },
+      'Read Final Output': { main: [[{ node: 'Upload Final To Drive', type: 'main', index: 0 }]] },
+      'Upload Final To Drive': { main: [[{ node: 'Build Completed Update', type: 'main', index: 0 }]] },
+      'Build Completed Update': { main: [[{ node: 'Mark Render Completed', type: 'main', index: 0 }]] },
+      'Build Asset Failure': { main: [[{ node: 'Mark Asset Failure', type: 'main', index: 0 }]] },
+    },
+  });
+}
+
 wf6();
 wf7();
 wf7b();
 wf8();
 wf8b();
+wf8c();
 wf9();
