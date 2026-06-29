@@ -178,6 +178,27 @@ Title style guides: ${JSON.stringify(TITLE_FORMULAS[clip.niche] || TITLE_FORMULA
   };
 }
 
+function textValue(value, limit = 2000) {
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim();
+  if (text.toLowerCase() === 'null') return '';
+  return text.slice(0, limit);
+}
+
+function listValue(value, options = {}) {
+  const items = Array.isArray(value) ? value : (value ? [value] : []);
+  const cleaned = items
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+  if (options.hashtags) {
+    return cleaned
+      .map((tag) => (tag.startsWith('#') ? tag : `#${tag.replace(/^#+/, '')}`))
+      .join(' ')
+      .slice(0, options.limit || 1000);
+  }
+  return cleaned.join('\n').slice(0, options.limit || 4000);
+}
+
 function parseTransformationPlan(meta, response) {
   let plan;
   let parseError = '';
@@ -202,13 +223,63 @@ function parseTransformationPlan(meta, response) {
     google_drive_url: meta.drive_url || meta.google_drive_url,
     suggested_title: title,
     suggested_caption: String(plan.caption || '').slice(0, 500),
+    content_thesis: textValue(plan.content_thesis, 2000),
+    hook: textValue(plan.hook, 1000),
+    narration_script: textValue(plan.narration_script, 5000),
+    commentary_angle: textValue(plan.commentary_angle, 2000),
+    kenyan_african_localization: textValue(plan.kenyan_african_localization, 2000),
+    bible_verse_if_relevant: textValue(plan.bible_verse_if_relevant, 1000),
+    alternative_titles: listValue(plan.alternative_titles, { limit: 2000 }),
+    on_screen_text_beats: listValue(plan.on_screen_text_beats, { limit: 3000 }),
+    broll_plan: listValue(plan.broll_plan, { limit: 3000 }),
+    editing_style: textValue(plan.editing_style, 1000),
+    hashtags: listValue(plan.hashtags, { hashtags: true, limit: 1000 }),
+    cta: textValue(plan.cta, 1000),
+    risk_warning: textValue(plan.risk_warning, 1000),
+    originality_checklist: listValue(plan.originality_checklist, { limit: 3000 }),
     transformation_plan: JSON.stringify(parseError ? { parse_error: parseError, raw: response } : plan).slice(0, 40000),
     review_status: parseError || !title ? 'NEEDS_RETRY' : 'NEEDS_REVIEW',
   };
 }
 
+function backfillTransformationPlanRows(rows) {
+  const alreadyFilledKeys = [
+    'content_thesis',
+    'hook',
+    'narration_script',
+    'commentary_angle',
+    'kenyan_african_localization',
+    'alternative_titles',
+    'on_screen_text_beats',
+    'broll_plan',
+    'editing_style',
+    'hashtags',
+    'cta',
+    'risk_warning',
+    'originality_checklist',
+  ];
+
+  const updates = [];
+  for (const row of rows || []) {
+    if (!row.created_clip_id || !row.transformation_plan) continue;
+    if (alreadyFilledKeys.some((key) => String(row[key] || '').trim())) continue;
+
+    let plan;
+    try {
+      plan = JSON.parse(stripJsonFence(row.transformation_plan));
+    } catch {
+      continue;
+    }
+    if (!plan || typeof plan !== 'object' || Array.isArray(plan) || plan.parse_error) continue;
+
+    updates.push(parseTransformationPlan(row, plan));
+  }
+  return updates;
+}
+
 module.exports = {
   TRANSFORMATION_SCHEMA,
+  backfillTransformationPlanRows,
   buildDriveIdUpdate,
   buildPlannerRequest,
   parseAiResponse,

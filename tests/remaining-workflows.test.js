@@ -21,6 +21,7 @@ const {
 } = require('../n8n/workflow-code/ssemble-polling');
 const {
   buildPlannerRequest,
+  backfillTransformationPlanRows,
   parseTransformationPlan,
   pickAwaitingDownloads,
 } = require('../n8n/workflow-code/drive-storage-transform');
@@ -444,6 +445,93 @@ test('WF8 parse survives fenced, array, and content-part response shapes', () =>
   }
 });
 
+test('WF8 parse promotes transformation plan fields into readable sheet columns', () => {
+  const meta = { created_clip_id: 'CC-1', video_id: 'VID-1', niche: 'FINANCE_BUSINESS' };
+  const payload = {
+    content_thesis: 'Kenyan founders need distribution before polish.',
+    best_title: 'Distribution Beats Polish',
+    alternative_titles: ['Build Distribution First', 'Stop Polishing in Private'],
+    hook: 'Your startup does not need more polish.',
+    narration_script: 'Start with buyers, not vanity metrics.',
+    commentary_angle: 'Explain why local distribution beats perfect infrastructure.',
+    kenyan_african_localization: 'Use M-Pesa, WhatsApp groups, and estate-level agents.',
+    bible_verse_if_relevant: 'null',
+    on_screen_text_beats: ['Distribution first', 'Talk to buyers', 'Use local channels'],
+    broll_plan: ['Founder on phone', 'M-Pesa payment screen'],
+    editing_style: 'Fast cuts with readable captions',
+    caption: 'Build where buyers already are.',
+    hashtags: ['#KenyanStartups', '#BusinessTips'],
+    cta: 'Follow for practical African startup lessons.',
+    risk_warning: 'Avoid implying guaranteed business results.',
+    originality_checklist: ['Adds local context', 'Uses original narration'],
+  };
+
+  const parsed = parseTransformationPlan(meta, payload);
+
+  assert.equal(parsed.content_thesis, payload.content_thesis);
+  assert.equal(parsed.hook, payload.hook);
+  assert.equal(parsed.narration_script, payload.narration_script);
+  assert.equal(parsed.commentary_angle, payload.commentary_angle);
+  assert.equal(parsed.kenyan_african_localization, payload.kenyan_african_localization);
+  assert.equal(parsed.bible_verse_if_relevant, '');
+  assert.equal(parsed.alternative_titles, 'Build Distribution First\nStop Polishing in Private');
+  assert.equal(parsed.on_screen_text_beats, 'Distribution first\nTalk to buyers\nUse local channels');
+  assert.equal(parsed.broll_plan, 'Founder on phone\nM-Pesa payment screen');
+  assert.equal(parsed.editing_style, payload.editing_style);
+  assert.equal(parsed.hashtags, '#KenyanStartups #BusinessTips');
+  assert.equal(parsed.cta, payload.cta);
+  assert.equal(parsed.risk_warning, payload.risk_warning);
+  assert.equal(parsed.originality_checklist, 'Adds local context\nUses original narration');
+  assert.equal(parsed.review_status, 'NEEDS_REVIEW');
+});
+
+test('WF8b backfills readable transformation columns from existing JSON plans', () => {
+  const rows = backfillTransformationPlanRows([
+    {
+      created_clip_id: 'CC-old',
+      video_id: 'VID-old',
+      niche: 'FINANCE_BUSINESS',
+      transformation_plan: JSON.stringify({
+        content_thesis: 'Old thesis',
+        best_title: 'Old Title',
+        alternative_titles: ['Alt One', 'Alt Two'],
+        hook: 'Old hook',
+        narration_script: 'Old narration',
+        commentary_angle: 'Old angle',
+        kenyan_african_localization: 'Old localization',
+        bible_verse_if_relevant: null,
+        on_screen_text_beats: ['Beat one', 'Beat two'],
+        broll_plan: ['Shot one'],
+        editing_style: 'Clean captions',
+        caption: 'Old caption',
+        hashtags: ['KenyaBusiness', '#Startups'],
+        cta: 'Old CTA',
+        risk_warning: 'Old risk',
+        originality_checklist: ['Original enough'],
+      }),
+      content_thesis: '',
+    },
+    {
+      created_clip_id: 'CC-done',
+      transformation_plan: '{"best_title":"Done"}',
+      content_thesis: 'Already filled',
+    },
+    {
+      created_clip_id: 'CC-bad',
+      transformation_plan: 'not json',
+      content_thesis: '',
+    },
+  ]);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].created_clip_id, 'CC-old');
+  assert.equal(rows[0].content_thesis, 'Old thesis');
+  assert.equal(rows[0].suggested_title, 'Old Title');
+  assert.equal(rows[0].suggested_caption, 'Old caption');
+  assert.equal(rows[0].hashtags, '#KenyaBusiness #Startups');
+  assert.equal(rows[0].alternative_titles, 'Alt One\nAlt Two');
+});
+
 test('WF8 parse flags unrecoverable responses for retry instead of writing blanks', () => {
   const meta = { created_clip_id: 'CC-1', video_id: 'VID-1', niche: 'FINANCE_BUSINESS' };
 
@@ -482,6 +570,19 @@ test('WF8 uses official OpenAI node for planner', () => {
   assert.equal(openAi.parameters.responses.values[1].content, '={{ $json.user_message }}');
   assert.deepEqual(openAi.parameters.builtInTools, {});
   assert(!workflow.nodes.some((node) => node.name === 'Call OpenAI Planner' && node.type === 'n8n-nodes-base.httpRequest'));
+});
+
+test('WF8b one-off backfill workflow parses transformation JSON and updates Created_Clips', () => {
+  const workflow = requireWorkflow('08b', 'created-clips-transform-backfill');
+  const names = workflow.nodes.map((node) => node.name);
+
+  assert(names.includes('Manual Trigger'));
+  assert(names.includes('Read Created_Clips'));
+  assert(names.includes('Backfill Transform Columns'));
+  assert(names.includes('Update Created_Clips'));
+  assert.equal(workflow.connections['Manual Trigger'].main[0][0].node, 'Read Created_Clips');
+  assert.equal(workflow.connections['Read Created_Clips'].main[0][0].node, 'Backfill Transform Columns');
+  assert.equal(workflow.connections['Backfill Transform Columns'].main[0][0].node, 'Update Created_Clips');
 });
 
 test('WF9 digest skips empty queue and groups review links', () => {

@@ -459,8 +459,29 @@ return [{ json: digest, pairedItem: { item: 0 } }];`),
   });
 }
 
+function wf8b() {
+  const h = helper('drive-storage-transform');
+  writeWorkflow('n8n/workflows/08b-created-clips-transform-backfill.json', {
+    name: 'WF8b Created Clips Transform Backfill',
+    nodes: [
+      node('wf8b-001', 'Manual Trigger', 'n8n-nodes-base.manualTrigger', 1, [0, 0], {}),
+      sheetsNode('wf8b-002', 'Read Created_Clips', [220, 0], sheet('read', 'Created_Clips')),
+      codeNode('wf8b-003', 'Backfill Transform Columns', [440, 0], `${h}
+const rows = backfillTransformationPlanRows($input.all().map(i => i.json));
+return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
+      sheetsNode('wf8b-004', 'Update Created_Clips', [660, 0], sheet('appendOrUpdate', 'Created_Clips', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['created_clip_id'] } })),
+    ],
+    connections: {
+      'Manual Trigger': { main: [[{ node: 'Read Created_Clips', type: 'main', index: 0 }]] },
+      'Read Created_Clips': { main: [[{ node: 'Backfill Transform Columns', type: 'main', index: 0 }]] },
+      'Backfill Transform Columns': { main: [[{ node: 'Update Created_Clips', type: 'main', index: 0 }]] },
+    },
+  });
+}
+
 wf6();
 wf7();
 wf7b();
 wf8();
+wf8b();
 wf9();

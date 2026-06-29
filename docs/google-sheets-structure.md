@@ -76,11 +76,14 @@ ssemble_job_id	video_id	clip_moment_id	niche	source_id	source_video_url	start_se
 ## Tab 6: `Created_Clips`
 
 ```
-created_clip_id	ssemble_job_id	video_id	niche	clip_title	clip_url	local_file_name	google_drive_file_id	google_drive_url	duration_seconds	transcript_excerpt	suggested_title	suggested_caption	transformation_plan	review_status	reviewer_notes	created_at
+created_clip_id	ssemble_job_id	video_id	niche	clip_title	clip_url	local_file_name	google_drive_file_id	google_drive_url	duration_seconds	transcript_excerpt	suggested_title	suggested_caption	content_thesis	hook	narration_script	commentary_angle	kenyan_african_localization	bible_verse_if_relevant	alternative_titles	on_screen_text_beats	broll_plan	editing_style	hashtags	cta	risk_warning	originality_checklist	transformation_plan	review_status	reviewer_notes	created_at
 ```
 
 - `review_status`: `AWAITING_DOWNLOAD` → `NEEDS_REVIEW` → `APPROVED` | `REJECTED` (you set the last two manually)
-- `transformation_plan`: JSON from TRANSFORMATION_PLANNER prompt
+- `suggested_title`, `suggested_caption`, `hashtags`, `hook`, `narration_script`, and related planning fields are readable columns for manual review and future posting workflows.
+- `alternative_titles`, `on_screen_text_beats`, `broll_plan`, and `originality_checklist` are newline-separated text lists.
+- `transformation_plan`: raw JSON from the WF8 transformation planner, kept as an audit/debug record.
+- Existing rows that only have `transformation_plan` JSON can be backfilled once with WF8b `Created Clips Transform Backfill`.
 
 ## Tab 7: `Error_Log`
 
