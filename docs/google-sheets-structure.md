@@ -88,7 +88,7 @@ created_clip_id	ssemble_job_id	video_id	niche	clip_title	clip_url	local_file_nam
 ## Tab 7: `Render_Jobs`
 
 ```
-render_id	created_clip_id	niche	source_drive_file_id	source_drive_url	source_file_name	final_drive_folder_id	hook_text	cta_text	cta_start_second	cta_end_second	music_id	music_drive_file_id	music_file_name	music_volume	watermark_drive_file_id	watermark_file_name	progress_bar_color	use_blurred_background	ffmpeg_command	render_status	final_local_path	final_drive_file_id	final_drive_url	warning_message	error_message	created_at	started_at	completed_at
+render_id	created_clip_id	niche	source_drive_file_id	source_drive_url	source_file_name	final_drive_folder_id	hook_text	cta_text	cta_start_second	cta_end_second	music_mood	music_energy_level	music_id	music_drive_file_id	music_file_name	music_volume	watermark_drive_file_id	watermark_file_name	progress_bar_color	use_blurred_background	ffmpeg_command	render_status	final_local_path	final_drive_file_id	final_drive_url	warning_message	error_message	created_at	started_at	completed_at
 ```
 
 - `render_status`: `PENDING` → `DOWNLOADING_ASSETS` → `RENDERING` → `UPLOADING` → `COMPLETED`; terminal failures use `FAILED`; intentional non-work rows can use `SKIPPED`.

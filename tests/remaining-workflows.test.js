@@ -20,8 +20,10 @@ const {
   normalizeStatusResponse,
 } = require('../n8n/workflow-code/ssemble-polling');
 const {
+  buildRenderJobRow,
   buildPlannerRequest,
   backfillTransformationPlanRows,
+  normalizeRenderPlan,
   parseTransformationPlan,
   pickAwaitingDownloads,
 } = require('../n8n/workflow-code/drive-storage-transform');
@@ -426,6 +428,24 @@ test('WF8 planner request carries the strict JSON schema and schema instructions
   assert.match(planner.user_message, /Do not use Markdown code fences/);
 });
 
+test('WF8 planner schema includes render instructions for FFmpeg', () => {
+  const planner = buildPlannerRequest({
+    created_clip_id: 'CC-1',
+    niche: 'FINANCE_BUSINESS',
+    clip_title: 'Money',
+    duration_seconds: 45,
+  });
+  const schema = JSON.parse(planner.transformation_schema);
+
+  assert(schema.required.includes('render'));
+  assert.equal(schema.properties.render.type, 'object');
+  assert(schema.properties.render.required.includes('top_hook_text'));
+  assert(schema.properties.render.required.includes('music_mood'));
+  assert(schema.properties.render.required.includes('progress_bar_color'));
+  assert.match(planner.user_message, /captions are already burned/i);
+  assert.match(planner.user_message, /FFmpeg render plan/i);
+});
+
 test('WF8 parse survives fenced, array, and content-part response shapes', () => {
   const meta = { created_clip_id: 'CC-1', video_id: 'VID-1', niche: 'FINANCE_BUSINESS' };
   const payload = { best_title: 'Stop Wasting M-Pesa', caption: 'Hard truth about money' };
@@ -483,6 +503,59 @@ test('WF8 parse promotes transformation plan fields into readable sheet columns'
   assert.equal(parsed.risk_warning, payload.risk_warning);
   assert.equal(parsed.originality_checklist, 'Adds local context\nUses original narration');
   assert.equal(parsed.review_status, 'NEEDS_REVIEW');
+});
+
+test('WF8 builds normalized Render_Jobs rows from transformation plans', () => {
+  const meta = {
+    created_clip_id: 'CC-99',
+    video_id: 'VID-99',
+    niche: 'FINANCE_BUSINESS',
+    drive_file_id: 'SRC-DRIVE-99',
+    drive_url: 'https://drive/source',
+    file_name: 'FINANCE_BUSINESS_CC-99.mp4',
+    duration_seconds: 45,
+  };
+  const parsed = parseTransformationPlan(meta, {
+    content_thesis: 'Money habits decide the outcome.',
+    best_title: 'Track Your Money',
+    alternative_titles: ['Know Where It Goes', 'Money Needs Direction'],
+    hook: 'You cannot fix money you do not track.',
+    narration_script: 'Track spending before chasing income.',
+    commentary_angle: 'Make this practical for Kenyan earners.',
+    kenyan_african_localization: 'Mention M-Pesa statements and chama discipline.',
+    bible_verse_if_relevant: null,
+    on_screen_text_beats: ['Track it', 'Review weekly'],
+    broll_plan: ['Budget notebook'],
+    editing_style: 'Clean finance education',
+    caption: 'Track first. Optimize second.',
+    hashtags: ['FinanceBusiness'],
+    cta: 'Follow for practical money lessons.',
+    risk_warning: 'No guaranteed results.',
+    originality_checklist: ['Adds original commentary'],
+    render: {
+      top_hook_text: 'Why your money disappears',
+      cta_text: 'Follow for practical money lessons',
+      cta_start_second: 50,
+      cta_end_second: 5,
+      music_mood: 'focused',
+      music_energy_level: 'medium',
+      music_volume: 0.3,
+      use_blurred_background: true,
+      progress_bar_color: '#137546',
+    },
+  });
+
+  const row = buildRenderJobRow(parsed, '2026-06-29T10:00:00.000Z');
+
+  assert.equal(row.render_id, 'RENDER_CC-99');
+  assert.equal(row.created_clip_id, 'CC-99');
+  assert.equal(row.source_drive_file_id, 'SRC-DRIVE-99');
+  assert.equal(row.hook_text, 'Why your money disappears');
+  assert.equal(row.cta_start_second, 42);
+  assert.equal(row.cta_end_second, 45);
+  assert.equal(row.music_volume, 0.14);
+  assert.equal(row.progress_bar_color, '0x137546');
+  assert.equal(row.render_status, 'PENDING');
 });
 
 test('WF8b backfills readable transformation columns from existing JSON plans', () => {

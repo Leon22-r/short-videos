@@ -27,6 +27,32 @@ const TRANSFORMATION_SCHEMA = {
     cta: { type: 'string' },
     risk_warning: { type: 'string' },
     originality_checklist: { type: 'array', items: { type: 'string' } },
+    render: {
+      type: 'object',
+      properties: {
+        top_hook_text: { type: 'string' },
+        cta_text: { type: 'string' },
+        cta_start_second: { type: 'number' },
+        cta_end_second: { type: 'number' },
+        music_mood: { type: 'string' },
+        music_energy_level: { type: 'string' },
+        music_volume: { type: 'number' },
+        use_blurred_background: { type: 'boolean' },
+        progress_bar_color: { type: 'string' },
+      },
+      required: [
+        'top_hook_text',
+        'cta_text',
+        'cta_start_second',
+        'cta_end_second',
+        'music_mood',
+        'music_energy_level',
+        'music_volume',
+        'use_blurred_background',
+        'progress_bar_color',
+      ],
+      additionalProperties: false,
+    },
   },
   required: [
     'content_thesis',
@@ -45,6 +71,7 @@ const TRANSFORMATION_SCHEMA = {
     'cta',
     'risk_warning',
     'originality_checklist',
+    'render',
   ],
   additionalProperties: false,
 };
@@ -90,6 +117,10 @@ function buildSchemaInstructions() {
     'commentary_angle must add an original take so the output is not a reposted podcast clip.',
     'on_screen_text_beats, broll_plan, hashtags, and originality_checklist must be arrays of short strings.',
     'Set bible_verse_if_relevant to null when no verse applies.',
+    'The captions are already burned into the Ssemble video. Do not create subtitle or caption-burn instructions.',
+    'Add a render object for the FFmpeg render plan: top hook text, CTA text/timing, music mood/energy/volume, blurred-background choice, and progress bar color.',
+    'progress_bar_color must use FFmpeg-safe 0xRRGGBB format.',
+    'music_volume must be a decimal between 0.04 and 0.14.',
     'The JSON must conform to this schema:',
     JSON.stringify(TRANSFORMATION_SCHEMA),
   ].join('\n');
@@ -199,6 +230,54 @@ function listValue(value, options = {}) {
   return cleaned.join('\n').slice(0, options.limit || 4000);
 }
 
+function numberValue(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function clampNumber(value, min, max, fallback) {
+  return Math.min(max, Math.max(min, numberValue(value, fallback)));
+}
+
+function normalizeFfmpegColor(value, fallback = '0xFFFFFF') {
+  const raw = String(value || '').trim();
+  const hex = raw.startsWith('#') ? raw.slice(1) : raw.replace(/^0x/i, '');
+  return /^[0-9a-fA-F]{6}$/.test(hex) ? `0x${hex.toUpperCase()}` : fallback;
+}
+
+function boolValue(value, fallback = true) {
+  if (typeof value === 'boolean') return value;
+  const text = String(value || '').trim().toLowerCase();
+  if (['true', 'yes', '1'].includes(text)) return true;
+  if (['false', 'no', '0'].includes(text)) return false;
+  return fallback;
+}
+
+function normalizeRenderPlan(plan = {}, meta = {}) {
+  const duration = Math.max(1, numberValue(meta.duration_seconds, numberValue(meta.clip_duration, 45)));
+  const render = plan && typeof plan.render === 'object' ? plan.render : {};
+  const ctaText = textValue(render.cta_text || plan.cta || 'Follow for more.', 120);
+  const startFallback = Math.max(0, Math.floor(duration - 4));
+  let start = clampNumber(render.cta_start_second, 0, duration, startFallback);
+  let end = clampNumber(render.cta_end_second, 0, duration, duration);
+  if (end <= start) {
+    end = duration;
+    start = Math.max(0, Math.floor(duration - 3));
+  }
+
+  return {
+    top_hook_text: textValue(render.top_hook_text || plan.hook || plan.best_title || meta.suggested_title || meta.clip_title || 'Watch this', 100),
+    cta_text: ctaText,
+    cta_start_second: Math.round(start),
+    cta_end_second: Math.round(end),
+    music_mood: textValue(render.music_mood || 'focused', 80),
+    music_energy_level: textValue(render.music_energy_level || 'medium', 80),
+    music_volume: clampNumber(render.music_volume, 0.04, 0.14, 0.09),
+    use_blurred_background: boolValue(render.use_blurred_background, true),
+    progress_bar_color: normalizeFfmpegColor(render.progress_bar_color, '0xFFFFFF'),
+  };
+}
+
 function parseTransformationPlan(meta, response) {
   let plan;
   let parseError = '';
@@ -214,10 +293,12 @@ function parseTransformationPlan(meta, response) {
   }
 
   const title = String(plan.best_title || '').trim();
+  const render = normalizeRenderPlan(plan, meta);
   return {
     created_clip_id: meta.created_clip_id,
     video_id: meta.video_id,
     niche: meta.niche,
+    duration_seconds: meta.duration_seconds,
     local_file_name: meta.file_name || meta.local_file_name,
     google_drive_file_id: meta.drive_file_id || meta.google_drive_file_id,
     google_drive_url: meta.drive_url || meta.google_drive_url,
@@ -237,8 +318,46 @@ function parseTransformationPlan(meta, response) {
     cta: textValue(plan.cta, 1000),
     risk_warning: textValue(plan.risk_warning, 1000),
     originality_checklist: listValue(plan.originality_checklist, { limit: 3000 }),
+    render_plan: render,
     transformation_plan: JSON.stringify(parseError ? { parse_error: parseError, raw: response } : plan).slice(0, 40000),
     review_status: parseError || !title ? 'NEEDS_RETRY' : 'NEEDS_REVIEW',
+  };
+}
+
+function buildRenderJobRow(parsed, now = new Date().toISOString()) {
+  const render = parsed.render_plan || normalizeRenderPlan({}, parsed);
+  return {
+    render_id: `RENDER_${parsed.created_clip_id}`,
+    created_clip_id: parsed.created_clip_id,
+    niche: parsed.niche,
+    source_drive_file_id: parsed.google_drive_file_id,
+    source_drive_url: parsed.google_drive_url,
+    source_file_name: parsed.local_file_name || `${parsed.niche}_${parsed.created_clip_id}.mp4`,
+    final_drive_folder_id: '',
+    hook_text: render.top_hook_text,
+    cta_text: render.cta_text,
+    cta_start_second: render.cta_start_second,
+    cta_end_second: render.cta_end_second,
+    music_mood: render.music_mood,
+    music_energy_level: render.music_energy_level,
+    music_id: '',
+    music_drive_file_id: '',
+    music_file_name: '',
+    music_volume: render.music_volume,
+    watermark_drive_file_id: '',
+    watermark_file_name: '',
+    progress_bar_color: render.progress_bar_color,
+    use_blurred_background: render.use_blurred_background ? 'TRUE' : 'FALSE',
+    ffmpeg_command: '',
+    render_status: parsed.review_status === 'NEEDS_REVIEW' ? 'PENDING' : 'SKIPPED',
+    final_local_path: '',
+    final_drive_file_id: '',
+    final_drive_url: '',
+    warning_message: '',
+    error_message: parsed.review_status === 'NEEDS_REVIEW' ? '' : 'Transformation plan unavailable; render skipped.',
+    created_at: now,
+    started_at: '',
+    completed_at: '',
   };
 }
 
@@ -282,6 +401,9 @@ module.exports = {
   backfillTransformationPlanRows,
   buildDriveIdUpdate,
   buildPlannerRequest,
+  buildRenderJobRow,
+  normalizeFfmpegColor,
+  normalizeRenderPlan,
   parseAiResponse,
   parseTransformationPlan,
   pickAwaitingDownloads,
