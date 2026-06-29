@@ -4,7 +4,7 @@ Create ONE Google Sheets workbook (the control center). Copy its document ID fro
 (`https://docs.google.com/spreadsheets/d/<DOCUMENT_ID>/edit`) — this is the
 `GOOGLE_SHEETS_DOCUMENT_ID` placeholder used in every workflow.
 
-Create 8 tabs with EXACT names below. Paste each header row into cell A1 of the matching tab
+Create 11 tabs with EXACT names below. Paste each header row into cell A1 of the matching tab
 (values are tab-separated — paste directly, Sheets splits them into columns).
 
 ---
@@ -85,13 +85,45 @@ created_clip_id	ssemble_job_id	video_id	niche	clip_title	clip_url	local_file_nam
 - `transformation_plan`: raw JSON from the WF8 transformation planner, kept as an audit/debug record.
 - Existing rows that only have `transformation_plan` JSON can be backfilled once with WF8b `Created Clips Transform Backfill`.
 
-## Tab 7: `Error_Log`
+## Tab 7: `Render_Jobs`
+
+```
+render_id	created_clip_id	niche	source_drive_file_id	source_drive_url	source_file_name	final_drive_folder_id	hook_text	cta_text	cta_start_second	cta_end_second	music_id	music_drive_file_id	music_file_name	music_volume	watermark_drive_file_id	watermark_file_name	progress_bar_color	use_blurred_background	ffmpeg_command	render_status	final_local_path	final_drive_file_id	final_drive_url	warning_message	error_message	created_at	started_at	completed_at
+```
+
+- `render_status`: `PENDING` → `DOWNLOADING_ASSETS` → `RENDERING` → `UPLOADING` → `COMPLETED`; terminal failures use `FAILED`; intentional non-work rows can use `SKIPPED`.
+- WF8 creates one `PENDING` row after it successfully parses the transformation plan.
+- WF8c processes one pending render per run. It stores the generated FFmpeg command and final Drive URL here.
+- `warning_message` is used for recoverable issues such as missing music. Missing source clip, branding, watermark, FFmpeg failure, and final Drive upload failure use `FAILED`.
+
+## Tab 8: `Music_Library`
+
+```
+music_id	niche	mood	energy_level	track_name	artist_name	source	source_url	license_notes	drive_file_id	duration_seconds	recommended_volume	loop_allowed	active_status	times_used	created_at	last_used_at	notes
+```
+
+- WF8c selects active tracks in this order: `niche + mood + energy_level`, `niche + mood`, `niche + energy_level`, `Channel_Branding.music_default_id`, then no music with a warning.
+- `recommended_volume` is clamped by WF8c to `0.04-0.14`.
+- Music files are downloaded from Google Drive into the per-render `/data/jobs/<render_id>/` workspace.
+
+## Tab 9: `Channel_Branding`
+
+```
+niche	watermark_drive_file_id	primary_color	secondary_color	progress_bar_color	default_cta	music_default_id	active_status	notes
+```
+
+- Branding is niche-level in this phase.
+- WF8c requires exactly one active branding row for the render job's niche.
+- Missing branding or missing watermark is a hard render failure.
+- `progress_bar_color` must use FFmpeg-safe `0xRRGGBB` format.
+
+## Tab 10: `Error_Log`
 
 ```
 error_id	workflow_name	node_name	related_video_id	error_type	error_message	raw_payload	created_at
 ```
 
-## Tab 8: `Approved_For_Posting`
+## Tab 11: `Approved_For_Posting`
 
 ```
 approved_id	created_clip_id	niche	platform	final_title	final_caption	final_description	hashtags	status	scheduled_date	posted_url	performance_notes
@@ -115,6 +147,12 @@ Clip_Moments.ssemble_status:
   AWAITING_MANUAL_APPROVAL ──(you set PENDING)──> picked up by WF6
 Created_Clips.review_status:
   AWAITING_DOWNLOAD ──(WF8)──> NEEDS_REVIEW ──(you)──> APPROVED/REJECTED
+Render_Jobs.render_status:
+  PENDING ──(WF8c picked)──> DOWNLOADING_ASSETS
+  DOWNLOADING_ASSETS ──(assets ready)──> RENDERING
+  RENDERING ──(ffmpeg ok)──> UPLOADING
+  UPLOADING ──(Drive upload ok)──> COMPLETED
+  any step ──(hard failure)──> FAILED
 ```
 
 Fair-share processing:
