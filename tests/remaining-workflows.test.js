@@ -567,6 +567,15 @@ test('WF8 builds normalized Render_Jobs rows from transformation plans', () => {
   assert.equal(row.render_status, 'PENDING');
 });
 
+test('WF8 rejects a created_clip_id that would escape the render path', () => {
+  for (const badId of ['../../etc/passwd', 'cc/99', 'cc 99', 'cc;rm', '']) {
+    assert.throws(
+      () => buildRenderJobRow({ created_clip_id: badId, niche: 'FINANCE_BUSINESS' }, '2026-06-29T10:00:00.000Z'),
+      /Unsafe created_clip_id/,
+    );
+  }
+});
+
 test('WF8b backfills readable transformation columns from existing JSON plans', () => {
   const rows = backfillTransformationPlanRows([
     {
@@ -752,9 +761,10 @@ test('WF8c builds asset plan and fails when branding is missing', () => {
   assert.match(missing.error_message, /branding/i);
 });
 
-test('WF8c FFmpeg command escapes text and uses explicit fontfile', () => {
+test('WF8c FFmpeg command writes text to files and uses explicit fontfile', () => {
   const command = buildFfmpegCommand({
     render_id: 'RENDER-1',
+    workdir: '/data/jobs/RENDER-1',
     input_path: '/data/jobs/RENDER-1/input.mp4',
     watermark_path: '/data/jobs/RENDER-1/watermark.png',
     music_path: '/data/jobs/RENDER-1/music.mp3',
@@ -774,8 +784,16 @@ test('WF8c FFmpeg command escapes text and uses explicit fontfile', () => {
   assert(command.includes("fontfile='/usr/share/fonts/dejavu/DejaVuSans.ttf'"));
   assert.match(command, /amix=inputs=2/);
   assert.match(command, /0x137546/);
-  assert(!command.includes("Don't waste"));
   assert.match(command, /render.log' 2>&1/);
+
+  // Text is drawn via textfile= with expansion disabled — this is what keeps
+  // apostrophes ("Don't") from breaking ffmpeg's quote parsing.
+  assert(command.includes("textfile='/data/jobs/RENDER-1/hook.txt':expansion=none"));
+  assert(command.includes("textfile='/data/jobs/RENDER-1/cta.txt':expansion=none"));
+  assert(command.includes("> '/data/jobs/RENDER-1/hook.txt'"));
+  assert.match(command, /printf %s '[^']*Don'/); // hook written with shell-safe quoting
+  // The raw apostrophe is never left inside a single-quoted ffmpeg text= arg.
+  assert(!command.includes(":text='Don"));
 });
 
 test('WF9 digest skips empty queue and groups review links', () => {

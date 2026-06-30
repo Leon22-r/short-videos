@@ -324,15 +324,26 @@ function parseTransformationPlan(meta, response) {
   };
 }
 
+function safeIdComponent(value) {
+  // render_id becomes a filesystem path (/data/jobs/RENDER_<id>) in WF8c, so the
+  // clip id must not smuggle path separators or `..` traversal into it.
+  const id = String(value || '').trim();
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+    throw new Error(`Unsafe created_clip_id for render path: ${JSON.stringify(value)}`);
+  }
+  return id;
+}
+
 function buildRenderJobRow(parsed, now = new Date().toISOString()) {
   const render = parsed.render_plan || normalizeRenderPlan({}, parsed);
+  const clipId = safeIdComponent(parsed.created_clip_id);
   return {
-    render_id: `RENDER_${parsed.created_clip_id}`,
-    created_clip_id: parsed.created_clip_id,
+    render_id: `RENDER_${clipId}`,
+    created_clip_id: clipId,
     niche: parsed.niche,
     source_drive_file_id: parsed.google_drive_file_id,
     source_drive_url: parsed.google_drive_url,
-    source_file_name: parsed.local_file_name || `${parsed.niche}_${parsed.created_clip_id}.mp4`,
+    source_file_name: parsed.local_file_name || `${parsed.niche}_${clipId}.mp4`,
     final_drive_folder_id: '',
     hook_text: render.top_hook_text,
     cta_text: render.cta_text,

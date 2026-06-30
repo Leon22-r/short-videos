@@ -97,21 +97,19 @@ function shellDoubleQuote(value) {
   return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`')}"`;
 }
 
-function escapeDrawtext(value) {
-  return String(value || '')
-    .replace(/\\/g, '\\\\')
-    .replace(/:/g, '\\:')
-    .replace(/'/g, "\\\\'")
-    .replace(/\n/g, ' ');
-}
-
 function buildFfmpegCommand(options) {
   const fontfile = options.fontfile || DEFAULT_FONTFILE;
   const duration = Math.max(1, Number(options.duration_seconds || 45));
-  const hook = escapeDrawtext(options.hook_text);
-  const cta = escapeDrawtext(options.cta_text);
+  // Text is written to files and read via drawtext `textfile=` so apostrophes
+  // ("Don't", "It's") and other punctuation can't break ffmpeg's quote parsing.
+  // `expansion=none` stops ffmpeg from interpreting %{...} and backslashes in the
+  // rendered copy.
+  const hook = String(options.hook_text || '');
+  const cta = String(options.cta_text || '');
   const progress = options.progress_bar_color || '0xFFFFFF';
   const workdir = options.workdir || `/data/jobs/${options.render_id}`;
+  const hookFile = `${workdir}/hook.txt`;
+  const ctaFile = `${workdir}/cta.txt`;
   const ctaStart = Number(options.cta_start_second || Math.max(0, duration - 4));
   const ctaEnd = Number(options.cta_end_second || duration);
   const hasMusic = Boolean(options.music_path);
@@ -120,9 +118,9 @@ function buildFfmpegCommand(options) {
     '[0:v]scale=950:-1[fg]',
     '[bg][fg]overlay=(W-w)/2:(H-h)/2[base]',
     '[base]drawbox=x=0:y=0:w=1080:h=180:color=black@0.35:t=fill[tbox]',
-    `[tbox]drawtext=fontfile='${fontfile}':text='${hook}':fontcolor=white:fontsize=58:x=(w-text_w)/2:y=60:box=1:boxcolor=black@0.25:boxborderw=18[title]`,
+    `[tbox]drawtext=fontfile='${fontfile}':textfile='${hookFile}':expansion=none:fontcolor=white:fontsize=58:x=(w-text_w)/2:y=60:box=1:boxcolor=black@0.25:boxborderw=18[title]`,
     `[title]drawbox=x=0:y=h-12:w='1080*t/${duration}':h=12:color=${progress}@0.95:t=fill[progress]`,
-    `[progress]drawtext=fontfile='${fontfile}':text='${cta}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=1580:box=1:boxcolor=black@0.45:boxborderw=18:enable='between(t,${ctaStart},${ctaEnd})'[cta]`,
+    `[progress]drawtext=fontfile='${fontfile}':textfile='${ctaFile}':expansion=none:fontcolor=white:fontsize=48:x=(w-text_w)/2:y=1580:box=1:boxcolor=black@0.45:boxborderw=18:enable='between(t,${ctaStart},${ctaEnd})'[cta]`,
     '[1:v]scale=110:-1[wm]',
     '[cta][wm]overlay=x=W-w-35:y=35[vout]',
   ];
@@ -138,6 +136,16 @@ function buildFfmpegCommand(options) {
   return [
     'mkdir -p',
     shellQuote(workdir),
+    '&&',
+    'printf %s',
+    shellQuote(hook),
+    '>',
+    shellQuote(hookFile),
+    '&&',
+    'printf %s',
+    shellQuote(cta),
+    '>',
+    shellQuote(ctaFile),
     '&&',
     'ffmpeg -y',
     inputs,
