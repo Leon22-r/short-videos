@@ -5,5 +5,7 @@ __pycache__/
 *.py[cod]
 
 # n8n FFmpeg render runtime data
-n8n/render-data/*
+n8n/render-data/**
+!n8n/render-data/**/
+!n8n/render-data/**/.gitkeep
 !n8n/render-data/.gitkeep
