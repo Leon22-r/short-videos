@@ -20,7 +20,7 @@ function clampNumber(value, min, max, fallback) {
 
 function pickPendingRenderJob(rows) {
   return (rows || [])
-    .filter((row) => String(row.render_status || '').toUpperCase() === 'PENDING')
+    .filter((row) => String(row.render_status || '').trim().toUpperCase() === 'PENDING')
     .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0] || null;
 }
 
