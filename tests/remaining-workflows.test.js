@@ -21,6 +21,7 @@ const {
 } = require('../n8n/workflow-code/ssemble-polling');
 const {
   buildRenderJobRow,
+  buildRenderJobBackfillRows,
   buildPlannerRequest,
   backfillTransformationPlanRows,
   normalizeRenderPlan,
@@ -574,6 +575,40 @@ test('WF8 rejects a created_clip_id that would escape the render path', () => {
       /Unsafe created_clip_id/,
     );
   }
+});
+
+test('WF8d backfills PENDING render jobs for created clips missing one', () => {
+  const validPlan = JSON.stringify({ best_title: 'Track Your Money', render: { top_hook_text: 'Why money disappears', cta_text: 'Follow' } });
+  const created = [
+    // Ready: has plan + drive file, no existing render job -> PENDING job created.
+    { created_clip_id: 'CC-1', niche: 'FINANCE_BUSINESS', google_drive_file_id: 'SRC-1', transformation_plan: validPlan },
+    // Already has a render job -> skipped (not recreated).
+    { created_clip_id: 'CC-2', niche: 'FINANCE_BUSINESS', google_drive_file_id: 'SRC-2', transformation_plan: validPlan },
+    // Not uploaded to Drive yet -> skipped (nothing to render).
+    { created_clip_id: 'CC-3', niche: 'FINANCE_BUSINESS', transformation_plan: validPlan },
+    // Unparseable plan -> skipped.
+    { created_clip_id: 'CC-4', niche: 'FINANCE_BUSINESS', google_drive_file_id: 'SRC-4', transformation_plan: '{not json' },
+    // No plan at all -> skipped.
+    { created_clip_id: 'CC-5', niche: 'FINANCE_BUSINESS', google_drive_file_id: 'SRC-5' },
+  ];
+  const existing = [{ render_id: 'RENDER_CC-2', render_status: 'COMPLETED' }];
+
+  const jobs = buildRenderJobBackfillRows(created, existing, '2026-06-30T00:00:00.000Z');
+
+  assert.deepEqual(jobs.map((j) => j.render_id), ['RENDER_CC-1']);
+  assert.equal(jobs[0].render_status, 'PENDING');
+  assert.equal(jobs[0].source_drive_file_id, 'SRC-1');
+  assert.equal(jobs[0].hook_text, 'Why money disappears');
+  assert.equal(jobs[0].created_at, '2026-06-30T00:00:00.000Z');
+});
+
+test('WF8d is idempotent and does not duplicate within one batch', () => {
+  const validPlan = JSON.stringify({ best_title: 'T', render: {} });
+  const created = [
+    { created_clip_id: 'CC-9', niche: 'FINANCE_BUSINESS', google_drive_file_id: 'SRC-9', transformation_plan: validPlan },
+    { created_clip_id: 'CC-9', niche: 'FINANCE_BUSINESS', google_drive_file_id: 'SRC-9', transformation_plan: validPlan },
+  ];
+  assert.equal(buildRenderJobBackfillRows(created, []).length, 1);
 });
 
 test('WF8b backfills readable transformation columns from existing JSON plans', () => {

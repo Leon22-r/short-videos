@@ -407,9 +407,50 @@ function backfillTransformationPlanRows(rows) {
   return updates;
 }
 
+// Backfill: turn already-created Created_Clips rows into PENDING Render_Jobs rows
+// for clips that don't have a render job yet. Skips clips with no parseable plan,
+// no uploaded Drive file (nothing to render), or an unsafe id, and never recreates
+// a render job that already exists (so a COMPLETED/RENDERING job is left untouched).
+function buildRenderJobBackfillRows(createdClipsRows, existingRenderJobRows = [], now = new Date().toISOString()) {
+  const existingIds = new Set(
+    (existingRenderJobRows || [])
+      .map((row) => String(row.render_id || '').trim())
+      .filter(Boolean),
+  );
+
+  const jobs = [];
+  const seen = new Set();
+  for (const row of createdClipsRows || []) {
+    if (!row.created_clip_id || !row.transformation_plan) continue;
+
+    let plan;
+    try {
+      plan = JSON.parse(stripJsonFence(row.transformation_plan));
+    } catch {
+      continue;
+    }
+    if (!plan || typeof plan !== 'object' || Array.isArray(plan) || plan.parse_error) continue;
+
+    const parsed = parseTransformationPlan(row, plan);
+    if (!parsed.google_drive_file_id) continue; // clip not on Drive yet; nothing to render
+
+    let job;
+    try {
+      job = buildRenderJobRow(parsed, now);
+    } catch {
+      continue; // unsafe created_clip_id
+    }
+    if (existingIds.has(job.render_id) || seen.has(job.render_id)) continue;
+    seen.add(job.render_id);
+    jobs.push(job);
+  }
+  return jobs;
+}
+
 module.exports = {
   TRANSFORMATION_SCHEMA,
   backfillTransformationPlanRows,
+  buildRenderJobBackfillRows,
   buildDriveIdUpdate,
   buildPlannerRequest,
   buildRenderJobRow,

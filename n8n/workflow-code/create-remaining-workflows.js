@@ -485,6 +485,30 @@ return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`)
   });
 }
 
+function wf8d() {
+  const h = helper('drive-storage-transform');
+  writeWorkflow('n8n/workflows/08d-render-jobs-backfill.json', {
+    name: 'WF8d Render Jobs Backfill',
+    nodes: [
+      node('wf8d-001', 'Manual Trigger', 'n8n-nodes-base.manualTrigger', 1, [0, 0], {}),
+      sheetsNode('wf8d-002', 'Read Created_Clips', [220, 0], sheet('read', 'Created_Clips')),
+      sheetsNode('wf8d-003', 'Read Render_Jobs', [440, 0], sheet('read', 'Render_Jobs'), { alwaysOutputData: true }),
+      codeNode('wf8d-004', 'Build Render Jobs', [660, 0], `${h}
+const created = $('Read Created_Clips').all().map(i => i.json);
+const existing = $('Read Render_Jobs').all().map(i => i.json);
+const rows = buildRenderJobBackfillRows(created, existing);
+return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
+      sheetsNode('wf8d-005', 'Append Render Jobs', [880, 0], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+    ],
+    connections: {
+      'Manual Trigger': { main: [[{ node: 'Read Created_Clips', type: 'main', index: 0 }]] },
+      'Read Created_Clips': { main: [[{ node: 'Read Render_Jobs', type: 'main', index: 0 }]] },
+      'Read Render_Jobs': { main: [[{ node: 'Build Render Jobs', type: 'main', index: 0 }]] },
+      'Build Render Jobs': { main: [[{ node: 'Append Render Jobs', type: 'main', index: 0 }]] },
+    },
+  });
+}
+
 function wf8c() {
   const h = helper('ffmpeg-render');
   const finalFolders = `{
@@ -596,4 +620,5 @@ wf7b();
 wf8();
 wf8b();
 wf8c();
+wf8d();
 wf9();
