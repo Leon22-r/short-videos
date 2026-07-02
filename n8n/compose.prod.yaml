@@ -51,6 +51,10 @@ services:
       # to run FFmpeg) loads. n8n 2.0+ disables it by default. Single-tenant only —
       # this node runs arbitrary shell in the container.
       - "NODES_EXCLUDE=[]"
+      # n8n 2.x defaults N8N_RESTRICT_FILE_ACCESS_TO to "~/.n8n-files", which blocks
+      # readWriteFile nodes from writing/reading the /data render volume ("... is not
+      # writable"). Scope allowed file access to the mounted work dirs instead.
+      - N8N_RESTRICT_FILE_ACCESS_TO=/data;/files
       - N8N_HOST=${SUBDOMAIN}.${DOMAIN_NAME}
       - N8N_PORT=5678
       - N8N_PROTOCOL=https

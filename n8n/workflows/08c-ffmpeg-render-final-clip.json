@@ -189,11 +189,24 @@
     },
     {
       "id": "wf8c-009",
+      "name": "Create Render Workspace",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1760,
+        -120
+      ],
+      "parameters": {
+        "command": "={{ \"mkdir -p /data/jobs/\" + $(\"Build Asset Plan\").first().json.render_id }}"
+      }
+    },
+    {
+      "id": "wf8c-010",
       "name": "Download Source Clip",
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
       "position": [
-        1760,
+        1980,
         -120
       ],
       "parameters": {
@@ -202,7 +215,7 @@
         "fileId": {
           "__rl": true,
           "mode": "id",
-          "value": "={{ $json.source_drive_file_id }}"
+          "value": "={{ $(\"Build Asset Plan\").first().json.source_drive_file_id }}"
         },
         "options": {
           "binaryPropertyName": "source"
@@ -210,12 +223,12 @@
       }
     },
     {
-      "id": "wf8c-010",
+      "id": "wf8c-011",
       "name": "Write Source Clip",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
       "position": [
-        1980,
+        2200,
         -120
       ],
       "parameters": {
@@ -226,12 +239,12 @@
       }
     },
     {
-      "id": "wf8c-011",
+      "id": "wf8c-012",
       "name": "Download Watermark",
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
       "position": [
-        2200,
+        2420,
         -120
       ],
       "parameters": {
@@ -248,12 +261,12 @@
       }
     },
     {
-      "id": "wf8c-012",
+      "id": "wf8c-013",
       "name": "Write Watermark",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
       "position": [
-        2420,
+        2640,
         -120
       ],
       "parameters": {
@@ -264,12 +277,12 @@
       }
     },
     {
-      "id": "wf8c-013",
+      "id": "wf8c-014",
       "name": "Download Music",
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
       "position": [
-        2640,
+        2860,
         -120
       ],
       "parameters": {
@@ -287,12 +300,12 @@
       "onError": "continueRegularOutput"
     },
     {
-      "id": "wf8c-014",
+      "id": "wf8c-015",
       "name": "Write Music",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
       "position": [
-        2860,
+        3080,
         -120
       ],
       "parameters": {
@@ -304,26 +317,26 @@
       "onError": "continueRegularOutput"
     },
     {
-      "id": "wf8c-015",
+      "id": "wf8c-016",
       "name": "Build FFmpeg Command",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3080,
+        3300,
         -120
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const FINAL_FOLDER_BY_NICHE = {\n  CHRISTIAN_CONTENT: 'GOOGLE_DRIVE_FINAL_FOLDER_CHRISTIAN_CONTENT',\n  MOTIVATION_DISCIPLINE: 'GOOGLE_DRIVE_FINAL_FOLDER_MOTIVATION_DISCIPLINE',\n  FINANCE_BUSINESS: 'GOOGLE_DRIVE_FINAL_FOLDER_FINANCE_BUSINESS',\n  LIFE_VALUES_RELATIONSHIPS: 'GOOGLE_DRIVE_FINAL_FOLDER_LIFE_VALUES_RELATIONSHIPS',\n  AFRICAN_KENYAN_SUCCESS: 'GOOGLE_DRIVE_FINAL_FOLDER_AFRICAN_KENYAN_SUCCESS',\n};\n\nconst DEFAULT_FONTFILE = '/usr/share/fonts/dejavu/DejaVuSans.ttf';\n\nfunction active(row) {\n  return ['true', 'active', 'yes', '1'].includes(String(row.active_status || '').trim().toLowerCase());\n}\n\nfunction clampNumber(value, min, max, fallback) {\n  const number = Number(value);\n  const safe = Number.isFinite(number) ? number : fallback;\n  return Math.min(max, Math.max(min, safe));\n}\n\nfunction pickPendingRenderJob(rows) {\n  return (rows || [])\n    .filter((row) => String(row.render_status || '').trim().toUpperCase() === 'PENDING')\n    .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0] || null;\n}\n\nfunction selectMusicTrack(job, rows, branding = {}) {\n  const activeRows = (rows || []).filter(active).filter((row) => row.niche === job.niche);\n  const mood = String(job.music_mood || '').toLowerCase();\n  const energy = String(job.music_energy_level || '').toLowerCase();\n  const tests = [\n    (row) => String(row.mood || '').toLowerCase() === mood && String(row.energy_level || '').toLowerCase() === energy,\n    (row) => String(row.mood || '').toLowerCase() === mood,\n    (row) => String(row.energy_level || '').toLowerCase() === energy,\n    (row) => row.music_id && row.music_id === branding.music_default_id,\n  ];\n  const picked = tests.map((fn) => activeRows.find(fn)).find(Boolean);\n  if (!picked) return null;\n\n  return {\n    music_id: picked.music_id,\n    music_drive_file_id: picked.drive_file_id,\n    music_file_name: `${picked.music_id || 'music'}.mp3`,\n    music_volume: clampNumber(job.music_volume || picked.recommended_volume, 0.04, 0.14, 0.09),\n  };\n}\n\nfunction buildRenderStatusUpdate(job, status, now = new Date().toISOString(), extra = {}) {\n  return {\n    render_id: job.render_id,\n    render_status: status,\n    started_at: status === 'DOWNLOADING_ASSETS' ? now : (job.started_at || ''),\n    completed_at: ['COMPLETED', 'FAILED', 'SKIPPED'].includes(status) ? now : (job.completed_at || ''),\n    ...extra,\n  };\n}\n\nfunction buildRenderFailureUpdate(job, message, now = new Date().toISOString()) {\n  return buildRenderStatusUpdate(job, 'FAILED', now, {\n    error_message: String(message || 'Render failed').slice(0, 2000),\n  });\n}\n\nfunction buildAssetDownloadPlan(job, brandingRows, musicRows, finalFolders = FINAL_FOLDER_BY_NICHE, now = new Date().toISOString()) {\n  if (!job || !job.render_id) return buildRenderFailureUpdate({ render_id: '' }, 'Missing render job', now);\n  if (!job.source_drive_file_id) return buildRenderFailureUpdate(job, 'Missing source Drive file ID', now);\n\n  const matchingBranding = (brandingRows || []).filter(active).filter((row) => row.niche === job.niche);\n  if (matchingBranding.length !== 1) {\n    return buildRenderFailureUpdate(job, `Missing active Channel_Branding row for niche ${job.niche}`, now);\n  }\n\n  const branding = matchingBranding[0];\n  if (!branding.watermark_drive_file_id) {\n    return buildRenderFailureUpdate(job, `Missing watermark Drive file ID for niche ${job.niche}`, now);\n  }\n\n  const music = selectMusicTrack(job, musicRows, branding);\n  const warning = music ? '' : 'No active matching music found; rendering without background music.';\n\n  return buildRenderStatusUpdate(job, 'DOWNLOADING_ASSETS', now, {\n    final_drive_folder_id: finalFolders[job.niche] || '',\n    watermark_drive_file_id: branding.watermark_drive_file_id,\n    watermark_file_name: `${job.niche}_watermark.png`,\n    progress_bar_color: job.progress_bar_color || branding.progress_bar_color || '0xFFFFFF',\n    cta_text: job.cta_text || branding.default_cta || '',\n    warning_message: warning,\n    ...(music || { music_id: '', music_drive_file_id: '', music_file_name: '', music_volume: '' }),\n  });\n}\n\nfunction shellQuote(value) {\n  return `'${String(value).replace(/'/g, `'\\\\''`)}'`;\n}\n\nfunction shellDoubleQuote(value) {\n  return `\"${String(value).replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"').replace(/\\$/g, '\\\\$').replace(/`/g, '\\\\`')}\"`;\n}\n\nfunction buildFfmpegCommand(options) {\n  const fontfile = options.fontfile || DEFAULT_FONTFILE;\n  const duration = Math.max(1, Number(options.duration_seconds || 45));\n  // Text is written to files and read via drawtext `textfile=` so apostrophes\n  // (\"Don't\", \"It's\") and other punctuation can't break ffmpeg's quote parsing.\n  // `expansion=none` stops ffmpeg from interpreting %{...} and backslashes in the\n  // rendered copy.\n  const hook = String(options.hook_text || '');\n  const cta = String(options.cta_text || '');\n  const progress = options.progress_bar_color || '0xFFFFFF';\n  const workdir = options.workdir || `/data/jobs/${options.render_id}`;\n  const hookFile = `${workdir}/hook.txt`;\n  const ctaFile = `${workdir}/cta.txt`;\n  const ctaStart = Number(options.cta_start_second || Math.max(0, duration - 4));\n  const ctaEnd = Number(options.cta_end_second || duration);\n  const hasMusic = Boolean(options.music_path);\n  const baseFilters = [\n    '[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:1[bg]',\n    '[0:v]scale=950:-1[fg]',\n    '[bg][fg]overlay=(W-w)/2:(H-h)/2[base]',\n    '[base]drawbox=x=0:y=0:w=1080:h=180:color=black@0.35:t=fill[tbox]',\n    `[tbox]drawtext=fontfile='${fontfile}':textfile='${hookFile}':expansion=none:fontcolor=white:fontsize=58:x=(w-text_w)/2:y=60:box=1:boxcolor=black@0.25:boxborderw=18[title]`,\n    `[title]drawbox=x=0:y=h-12:w='1080*t/${duration}':h=12:color=${progress}@0.95:t=fill[progress]`,\n    `[progress]drawtext=fontfile='${fontfile}':textfile='${ctaFile}':expansion=none:fontcolor=white:fontsize=48:x=(w-text_w)/2:y=1580:box=1:boxcolor=black@0.45:boxborderw=18:enable='between(t,${ctaStart},${ctaEnd})'[cta]`,\n    '[1:v]scale=110:-1[wm]',\n    '[cta][wm]overlay=x=W-w-35:y=35[vout]',\n  ];\n  const audioFilters = hasMusic\n    ? `;[0:a]volume=1.0[a0];[2:a]volume=${clampNumber(options.music_volume, 0.04, 0.14, 0.09)},aloop=loop=-1:size=2e+09[bgm];[a0][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]`\n    : ';[0:a]volume=1.0[aout]';\n  const inputs = [\n    `-i ${shellQuote(options.input_path)}`,\n    `-i ${shellQuote(options.watermark_path)}`,\n    hasMusic ? `-i ${shellQuote(options.music_path)}` : '',\n  ].filter(Boolean).join(' ');\n\n  return [\n    'mkdir -p',\n    shellQuote(workdir),\n    '&&',\n    'printf %s',\n    shellQuote(hook),\n    '>',\n    shellQuote(hookFile),\n    '&&',\n    'printf %s',\n    shellQuote(cta),\n    '>',\n    shellQuote(ctaFile),\n    '&&',\n    'ffmpeg -y',\n    inputs,\n    '-filter_complex',\n    shellDoubleQuote(`${baseFilters.join(';')}${audioFilters}`),\n    '-map \"[vout]\" -map \"[aout]\" -c:v libx264 -preset veryfast -crf 23 -c:a aac -b:a 128k -shortest',\n    shellQuote(options.output_path),\n    '>',\n    shellQuote(options.log_path),\n    '2>&1',\n  ].join(' ');\n}\n\nfunction buildCompletedRenderUpdate(job, drive, now = new Date().toISOString()) {\n  return buildRenderStatusUpdate(job, 'COMPLETED', now, {\n    final_drive_file_id: drive.id,\n    final_drive_url: drive.webViewLink || `https://drive.google.com/file/d/${drive.id}/view`,\n    final_local_path: job.final_local_path || `/data/jobs/${job.render_id}/output.mp4`,\n    error_message: '',\n  });\n}\n\n\nconst job = $('Build Asset Plan').first().json;\nconst workdir = `/data/jobs/${job.render_id}`;\nconst hasMusic = Boolean(job.music_drive_file_id);\nconst command = buildFfmpegCommand({\n  ...job,\n  workdir,\n  input_path: `${workdir}/input.mp4`,\n  watermark_path: `${workdir}/watermark.png`,\n  music_path: hasMusic ? `${workdir}/music.mp3` : '',\n  output_path: `${workdir}/output.mp4`,\n  log_path: `${workdir}/render.log`,\n});\nreturn [{\n  json: {\n    ...buildRenderStatusUpdate(job, 'RENDERING', new Date().toISOString(), {\n      ffmpeg_command: command,\n      final_local_path: `${workdir}/output.mp4`,\n    }),\n    command,\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "const FINAL_FOLDER_BY_NICHE = {\n  CHRISTIAN_CONTENT: 'GOOGLE_DRIVE_FINAL_FOLDER_CHRISTIAN_CONTENT',\n  MOTIVATION_DISCIPLINE: 'GOOGLE_DRIVE_FINAL_FOLDER_MOTIVATION_DISCIPLINE',\n  FINANCE_BUSINESS: 'GOOGLE_DRIVE_FINAL_FOLDER_FINANCE_BUSINESS',\n  LIFE_VALUES_RELATIONSHIPS: 'GOOGLE_DRIVE_FINAL_FOLDER_LIFE_VALUES_RELATIONSHIPS',\n  AFRICAN_KENYAN_SUCCESS: 'GOOGLE_DRIVE_FINAL_FOLDER_AFRICAN_KENYAN_SUCCESS',\n};\n\nconst DEFAULT_FONTFILE = '/usr/share/fonts/dejavu/DejaVuSans.ttf';\n\nfunction active(row) {\n  return ['true', 'active', 'yes', '1'].includes(String(row.active_status || '').trim().toLowerCase());\n}\n\nfunction clampNumber(value, min, max, fallback) {\n  const number = Number(value);\n  const safe = Number.isFinite(number) ? number : fallback;\n  return Math.min(max, Math.max(min, safe));\n}\n\nfunction pickPendingRenderJob(rows) {\n  return (rows || [])\n    .filter((row) => String(row.render_status || '').trim().toUpperCase() === 'PENDING')\n    .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0] || null;\n}\n\nfunction selectMusicTrack(job, rows, branding = {}) {\n  const activeRows = (rows || []).filter(active).filter((row) => row.niche === job.niche);\n  const mood = String(job.music_mood || '').toLowerCase();\n  const energy = String(job.music_energy_level || '').toLowerCase();\n  const tests = [\n    (row) => String(row.mood || '').toLowerCase() === mood && String(row.energy_level || '').toLowerCase() === energy,\n    (row) => String(row.mood || '').toLowerCase() === mood,\n    (row) => String(row.energy_level || '').toLowerCase() === energy,\n    (row) => row.music_id && row.music_id === branding.music_default_id,\n  ];\n  const picked = tests.map((fn) => activeRows.find(fn)).find(Boolean);\n  if (!picked) return null;\n\n  return {\n    music_id: picked.music_id,\n    music_drive_file_id: picked.drive_file_id,\n    music_file_name: `${picked.music_id || 'music'}.mp3`,\n    music_volume: clampNumber(job.music_volume || picked.recommended_volume, 0.04, 0.14, 0.09),\n  };\n}\n\nfunction buildRenderStatusUpdate(job, status, now = new Date().toISOString(), extra = {}) {\n  return {\n    render_id: job.render_id,\n    render_status: status,\n    started_at: status === 'DOWNLOADING_ASSETS' ? now : (job.started_at || ''),\n    completed_at: ['COMPLETED', 'FAILED', 'SKIPPED'].includes(status) ? now : (job.completed_at || ''),\n    ...extra,\n  };\n}\n\nfunction buildRenderFailureUpdate(job, message, now = new Date().toISOString()) {\n  return buildRenderStatusUpdate(job, 'FAILED', now, {\n    error_message: String(message || 'Render failed').slice(0, 2000),\n  });\n}\n\nfunction buildAssetDownloadPlan(job, brandingRows, musicRows, finalFolders = FINAL_FOLDER_BY_NICHE, now = new Date().toISOString()) {\n  if (!job || !job.render_id) return buildRenderFailureUpdate({ render_id: '' }, 'Missing render job', now);\n  if (!job.source_drive_file_id) return buildRenderFailureUpdate(job, 'Missing source Drive file ID', now);\n\n  const matchingBranding = (brandingRows || []).filter(active).filter((row) => row.niche === job.niche);\n  if (matchingBranding.length !== 1) {\n    return buildRenderFailureUpdate(job, `Missing active Channel_Branding row for niche ${job.niche}`, now);\n  }\n\n  const branding = matchingBranding[0];\n  if (!branding.watermark_drive_file_id) {\n    return buildRenderFailureUpdate(job, `Missing watermark Drive file ID for niche ${job.niche}`, now);\n  }\n\n  const music = selectMusicTrack(job, musicRows, branding);\n  const warning = music ? '' : 'No active matching music found; rendering without background music.';\n\n  return buildRenderStatusUpdate(job, 'DOWNLOADING_ASSETS', now, {\n    final_drive_folder_id: finalFolders[job.niche] || '',\n    watermark_drive_file_id: branding.watermark_drive_file_id,\n    watermark_file_name: `${job.niche}_watermark.png`,\n    progress_bar_color: job.progress_bar_color || branding.progress_bar_color || '0xFFFFFF',\n    cta_text: job.cta_text || branding.default_cta || '',\n    warning_message: warning,\n    ...(music || { music_id: '', music_drive_file_id: '', music_file_name: '', music_volume: '' }),\n  });\n}\n\nfunction shellQuote(value) {\n  return `'${String(value).replace(/'/g, `'\\\\''`)}'`;\n}\n\nfunction shellDoubleQuote(value) {\n  return `\"${String(value).replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"').replace(/\\$/g, '\\\\$').replace(/`/g, '\\\\`')}\"`;\n}\n\nfunction buildFfmpegCommand(options) {\n  const fontfile = options.fontfile || DEFAULT_FONTFILE;\n  const duration = Math.max(1, Number(options.duration_seconds || 45));\n  // Text is written to files and read via drawtext `textfile=` so apostrophes\n  // (\"Don't\", \"It's\") and other punctuation can't break ffmpeg's quote parsing.\n  // `expansion=none` stops ffmpeg from interpreting %{...} and backslashes in the\n  // rendered copy.\n  const rawHook = String(options.hook_text || '');\n  // drawtext does not auto-wrap; render the title across multiple lines so long\n  // hooks stay inside the 1080px frame instead of clipping off both edges.\n  const wrapText = (text, maxChars) => {\n    const words = String(text).trim().split(/\\s+/).filter(Boolean);\n    const lines = [];\n    let line = '';\n    for (const word of words) {\n      if (!line) line = word;\n      else if ((line + ' ' + word).length <= maxChars) line += ' ' + word;\n      else { lines.push(line); line = word; }\n    }\n    if (line) lines.push(line);\n    return lines.join('\\n');\n  };\n  const hook = wrapText(rawHook, 22);\n  const hookLineCount = hook ? hook.split('\\n').length : 0;\n  const titleFontSize = hookLineCount >= 3 ? 44 : 54;\n  const titleLineSpacing = 10;\n  const titleY = 48;\n  const topBarHeight = Math.max(180, titleY + hookLineCount * Math.round(titleFontSize * 1.3) + 40);\n  const cta = String(options.cta_text || '');\n  const progress = options.progress_bar_color || '0xFFFFFF';\n  const workdir = options.workdir || `/data/jobs/${options.render_id}`;\n  const hookFile = `${workdir}/hook.txt`;\n  const ctaFile = `${workdir}/cta.txt`;\n  const ctaStart = Number(options.cta_start_second || Math.max(0, duration - 4));\n  const ctaEnd = Number(options.cta_end_second || duration);\n  const hasMusic = Boolean(options.music_path);\n  // Progress bar is a solid color lavfi input (last input) revealed by a sliding\n  // overlay; drawbox width does not animate per-frame in ffmpeg 6.x.\n  const progressInputIndex = hasMusic ? 3 : 2;\n  const baseFilters = [\n    '[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:1[bg]',\n    '[0:v]scale=950:-1[fg]',\n    '[bg][fg]overlay=(W-w)/2:(H-h)/2[base]',\n    `[base]drawbox=x=0:y=0:w=1080:h=${topBarHeight}:color=black@0.35:t=fill:enable='between(t,0,4)'[tbox]`,\n    `[tbox]drawtext=fontfile='${fontfile}':textfile='${hookFile}':expansion=none:fontcolor=white:fontsize=${titleFontSize}:line_spacing=${titleLineSpacing}:x=(w-text_w)/2:y=${titleY}:box=1:boxcolor=black@0.25:boxborderw=18:enable='between(t,0,4)'[title]`,\n    `[title]drawbox=x=0:y=ih-16:w=iw:h=16:color=black@0.5:t=fill[trk]`,\n    `[trk][${progressInputIndex}:v]overlay=x='W*t/${duration}-W':y=H-16[progress]`,\n    `[progress]drawtext=fontfile='${fontfile}':textfile='${ctaFile}':expansion=none:fontcolor=0xF0F0F0:fontsize=42:x=(w-text_w)/2:y=1360:box=1:boxcolor=black@0.30:boxborderw=14:enable='between(t,${ctaStart},${ctaEnd})'[cta]`,\n    // Watermark rendered larger and mirrored into both top-right and bottom-left\n    // corners; split the scaled logo so a single input feeds two overlays.\n    '[1:v]scale=170:-1,split=2[wmtr][wmbl]',\n    '[cta][wmtr]overlay=x=W-w-35:y=35[wmtop]',\n    '[wmtop][wmbl]overlay=x=45:y=H-h-110[vout]',\n  ];\n  const audioFilters = hasMusic\n    ? `;[0:a]volume=1.0[a0];[2:a]volume=${clampNumber(options.music_volume, 0.04, 0.14, 0.09)},aloop=loop=-1:size=2e+09[bgm];[a0][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]`\n    : ';[0:a]volume=1.0[aout]';\n  const inputs = [\n    `-i ${shellQuote(options.input_path)}`,\n    `-i ${shellQuote(options.watermark_path)}`,\n    hasMusic ? `-i ${shellQuote(options.music_path)}` : '',\n    `-f lavfi -i ${shellQuote(`color=c=${progress}:s=1080x16:d=${duration}`)}`,\n  ].filter(Boolean).join(' ');\n\n  return [\n    'mkdir -p',\n    shellQuote(workdir),\n    '&&',\n    'printf %s',\n    shellQuote(hook),\n    '>',\n    shellQuote(hookFile),\n    '&&',\n    'printf %s',\n    shellQuote(cta),\n    '>',\n    shellQuote(ctaFile),\n    '&&',\n    'ffmpeg -y',\n    inputs,\n    '-filter_complex',\n    shellDoubleQuote(`${baseFilters.join(';')}${audioFilters}`),\n    '-map \"[vout]\" -map \"[aout]\" -c:v libx264 -preset veryfast -crf 23 -c:a aac -b:a 128k -shortest',\n    shellQuote(options.output_path),\n    '>',\n    shellQuote(options.log_path),\n    '2>&1',\n  ].join(' ');\n}\n\nfunction buildCompletedRenderUpdate(job, drive, now = new Date().toISOString()) {\n  return buildRenderStatusUpdate(job, 'COMPLETED', now, {\n    final_drive_file_id: drive.id,\n    final_drive_url: drive.webViewLink || `https://drive.google.com/file/d/${drive.id}/view`,\n    final_local_path: job.final_local_path || `/data/jobs/${job.render_id}/output.mp4`,\n    error_message: '',\n  });\n}\n\n\nconst job = $('Build Asset Plan').first().json;\nconst workdir = `/data/jobs/${job.render_id}`;\nconst hasMusic = Boolean(job.music_drive_file_id);\nconst command = buildFfmpegCommand({\n  ...job,\n  workdir,\n  input_path: `${workdir}/input.mp4`,\n  watermark_path: `${workdir}/watermark.png`,\n  music_path: hasMusic ? `${workdir}/music.mp3` : '',\n  output_path: `${workdir}/output.mp4`,\n  log_path: `${workdir}/render.log`,\n});\nreturn [{\n  json: {\n    ...buildRenderStatusUpdate(job, 'RENDERING', new Date().toISOString(), {\n      ffmpeg_command: command,\n      final_local_path: `${workdir}/output.mp4`,\n    }),\n    command,\n  },\n  pairedItem: { item: 0 },\n}];"
       }
     },
     {
-      "id": "wf8c-016",
+      "id": "wf8c-017",
       "name": "Mark Rendering",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
       "position": [
-        3300,
+        3520,
         -120
       ],
       "parameters": {
@@ -349,12 +362,12 @@
       }
     },
     {
-      "id": "wf8c-017",
+      "id": "wf8c-018",
       "name": "Run FFmpeg",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
-        3520,
+        3740,
         -120
       ],
       "parameters": {
@@ -363,12 +376,12 @@
       "onError": "continueRegularOutput"
     },
     {
-      "id": "wf8c-018",
+      "id": "wf8c-019",
       "name": "Mark Uploading",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3740,
+        3960,
         -120
       ],
       "parameters": {
@@ -377,12 +390,12 @@
       }
     },
     {
-      "id": "wf8c-019",
+      "id": "wf8c-020",
       "name": "Save Uploading",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
       "position": [
-        3960,
+        4180,
         -120
       ],
       "parameters": {
@@ -408,12 +421,12 @@
       }
     },
     {
-      "id": "wf8c-020",
+      "id": "wf8c-021",
       "name": "Read Final Output",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
       "position": [
-        4180,
+        4400,
         -120
       ],
       "parameters": {
@@ -425,12 +438,12 @@
       }
     },
     {
-      "id": "wf8c-021",
+      "id": "wf8c-022",
       "name": "Upload Final To Drive",
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
       "position": [
-        4400,
+        4620,
         -120
       ],
       "parameters": {
@@ -452,12 +465,12 @@
       }
     },
     {
-      "id": "wf8c-022",
+      "id": "wf8c-023",
       "name": "Build Completed Update",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4620,
+        4840,
         -120
       ],
       "parameters": {
@@ -466,12 +479,12 @@
       }
     },
     {
-      "id": "wf8c-023",
+      "id": "wf8c-024",
       "name": "Mark Render Completed",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
       "position": [
-        4840,
+        5060,
         -120
       ],
       "parameters": {
@@ -497,7 +510,7 @@
       }
     },
     {
-      "id": "wf8c-024",
+      "id": "wf8c-025",
       "name": "Build Asset Failure",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -511,7 +524,7 @@
       }
     },
     {
-      "id": "wf8c-025",
+      "id": "wf8c-026",
       "name": "Mark Asset Failure",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
@@ -624,7 +637,7 @@
       "main": [
         [
           {
-            "node": "Download Source Clip",
+            "node": "Create Render Workspace",
             "type": "main",
             "index": 0
           }
@@ -632,6 +645,17 @@
         [
           {
             "node": "Build Asset Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Render Workspace": {
+      "main": [
+        [
+          {
+            "node": "Download Source Clip",
             "type": "main",
             "index": 0
           }
