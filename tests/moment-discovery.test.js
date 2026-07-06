@@ -5,6 +5,8 @@ const {
   pickHeatmapPeaks,
   extractTimestampsFromComments,
   clusterCommentTimestamps,
+  extractChapters,
+  scoreCandidateWindows,
 } = require('../n8n/workflow-code/moment-discovery');
 
 test('parseHeatmap maps yt-dlp heatmap entries to seconds and intensity', () => {
@@ -125,4 +127,111 @@ test('clusterCommentTimestamps respects custom windowSec and minMentions', () =>
 
   assert.equal(clusters.length, 1);
   assert.equal(clusters[0].mentions, 2);
+});
+
+test('extractChapters maps yt-dlp chapters and handles missing field', () => {
+  const infoJson = {
+    chapters: [
+      { start_time: 0, end_time: 300, title: 'Intro' },
+      { start_time: 300, end_time: 1200, title: 'The big story' },
+    ],
+  };
+
+  assert.deepEqual(extractChapters(infoJson), [
+    { startSec: 0, endSec: 300, title: 'Intro' },
+    { startSec: 300, endSec: 1200, title: 'The big story' },
+  ]);
+  assert.deepEqual(extractChapters({}), []);
+  assert.deepEqual(extractChapters(null), []);
+});
+
+test('scoreCandidateWindows scores standalone heatmap peak by intensity', () => {
+  const windows = scoreCandidateWindows({
+    peaks: [{ startSec: 600, endSec: 660, intensity: 0.85 }],
+    clusters: [],
+    chapters: [],
+    durationSec: 7200,
+  });
+
+  assert.equal(windows.length, 1);
+  assert.equal(windows[0].score, 0.85);
+  assert.deepEqual(windows[0].signals, ['heatmap']);
+  assert.equal(windows[0].startSec, 510); // 600 - 90
+  assert.equal(windows[0].endSec, 750); // 660 + 90
+  assert.equal(windows[0].evidence.heatIntensity, 0.85);
+  assert.equal(windows[0].evidence.commentMentions, null);
+});
+
+test('scoreCandidateWindows scores standalone comment cluster as min(1, mentions/6)', () => {
+  const windows = scoreCandidateWindows({
+    peaks: [],
+    clusters: [{ startSec: 2000, endSec: 2100, mentions: 3, sampleComments: ['x'], introFlag: false }],
+    chapters: [],
+    durationSec: 7200,
+  });
+
+  assert.equal(windows.length, 1);
+  assert.equal(windows[0].score, 0.5); // 3/6
+  assert.deepEqual(windows[0].signals, ['comments']);
+  assert.deepEqual(windows[0].evidence.sampleComments, ['x']);
+});
+
+test('scoreCandidateWindows merges overlapping heatmap and comment signals with bonus', () => {
+  const windows = scoreCandidateWindows({
+    peaks: [{ startSec: 2000, endSec: 2060, intensity: 0.8 }],
+    clusters: [{ startSec: 2050, endSec: 2150, mentions: 6, sampleComments: ['fire'], introFlag: false }],
+    chapters: [],
+    durationSec: 7200,
+  });
+
+  assert.equal(windows.length, 1);
+  // 0.5 + 0.5 * (0.8 + 1.0) / 2 = 0.95
+  assert.equal(windows[0].score, 0.95);
+  assert.deepEqual(windows[0].signals, ['heatmap', 'comments']);
+  assert.equal(windows[0].startSec, 1910); // 2000 - 90
+  assert.equal(windows[0].endSec, 2240); // 2150 + 90
+  assert.equal(windows[0].evidence.heatIntensity, 0.8);
+  assert.equal(windows[0].evidence.commentMentions, 6);
+});
+
+test('scoreCandidateWindows adds chapter bonus capped at 1.0 and records title', () => {
+  const windows = scoreCandidateWindows({
+    peaks: [{ startSec: 600, endSec: 660, intensity: 0.95 }],
+    clusters: [],
+    chapters: [{ startSec: 500, endSec: 900, title: 'The big story' }],
+    durationSec: 7200,
+  });
+
+  assert.equal(windows[0].score, 1); // min(1, 0.95 + 0.1)
+  assert.deepEqual(windows[0].signals, ['heatmap', 'chapter']);
+  assert.equal(windows[0].evidence.chapterTitle, 'The big story');
+});
+
+test('scoreCandidateWindows clamps padding to video bounds and sorts by score desc', () => {
+  const windows = scoreCandidateWindows({
+    peaks: [
+      { startSec: 100, endSec: 130, intensity: 0.7 },
+      { startSec: 7150, endSec: 7190, intensity: 0.9 },
+    ],
+    clusters: [],
+    chapters: [],
+    durationSec: 7200,
+  });
+
+  assert.equal(windows.length, 2);
+  assert.equal(windows[0].score, 0.9);
+  assert.equal(windows[0].endSec, 7200); // clamped to duration
+  assert.equal(windows[1].startSec, 10); // 100 - 90
+});
+
+test('scoreCandidateWindows propagates introFlag from clusters', () => {
+  const windows = scoreCandidateWindows({
+    peaks: [],
+    clusters: [{ startSec: 30, endSec: 60, mentions: 4, sampleComments: ['intro'], introFlag: true }],
+    chapters: [],
+    durationSec: 7200,
+  });
+
+  assert.equal(windows[0].introFlag, true);
+  assert.equal(windows[0].startSec, 0); // 30 - 90 clamped
 });
