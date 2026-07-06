@@ -9,3 +9,4 @@ n8n/render-data/**
 !n8n/render-data/**/
 !n8n/render-data/**/.gitkeep
 !n8n/render-data/.gitkeep
+reports/
