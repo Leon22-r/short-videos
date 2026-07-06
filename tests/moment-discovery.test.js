@@ -3,6 +3,8 @@ const test = require('node:test');
 const {
   parseHeatmap,
   pickHeatmapPeaks,
+  extractTimestampsFromComments,
+  clusterCommentTimestamps,
 } = require('../n8n/workflow-code/moment-discovery');
 
 test('parseHeatmap maps yt-dlp heatmap entries to seconds and intensity', () => {
@@ -58,4 +60,69 @@ test('pickHeatmapPeaks respects custom options', () => {
   });
 
   assert.deepEqual(peaks, [{ startSec: 10, endSec: 110, intensity: 0.6 }]);
+});
+
+test('extractTimestampsFromComments parses mm:ss and h:mm:ss, skips invalid times', () => {
+  const comments = [
+    { text: '34:20 had me in tears', author: 'a' },
+    { text: 'the story at 1:12:00 and again at 1:15:30 🔥', author: 'b' },
+    { text: 'no timestamp here', author: 'c' },
+    { text: 'fake time 99:99', author: 'd' },
+  ];
+
+  assert.deepEqual(extractTimestampsFromComments(comments), [
+    { sec: 2060, text: '34:20 had me in tears', author: 'a' },
+    { sec: 4320, text: 'the story at 1:12:00 and again at 1:15:30 🔥', author: 'b' },
+    { sec: 4530, text: 'the story at 1:12:00 and again at 1:15:30 🔥', author: 'b' },
+  ]);
+});
+
+test('extractTimestampsFromComments handles empty/missing input', () => {
+  assert.deepEqual(extractTimestampsFromComments([]), []);
+  assert.deepEqual(extractTimestampsFromComments(null), []);
+  assert.deepEqual(extractTimestampsFromComments([{ author: 'x' }]), []);
+});
+
+test('clusterCommentTimestamps groups hits within window and enforces minMentions', () => {
+  const hits = [
+    { sec: 2000, text: 'first', author: 'a' },
+    { sec: 2060, text: 'second', author: 'b' },
+    { sec: 2100, text: 'third', author: 'c' },
+    { sec: 2110, text: 'fourth', author: 'd' },
+    { sec: 5000, text: 'lonely', author: 'e' }, // only 1 mention — dropped
+  ];
+
+  const clusters = clusterCommentTimestamps(hits);
+
+  assert.equal(clusters.length, 1);
+  assert.equal(clusters[0].startSec, 2000);
+  assert.equal(clusters[0].endSec, 2110);
+  assert.equal(clusters[0].mentions, 4);
+  assert.deepEqual(clusters[0].sampleComments, ['first', 'second', 'third']);
+  assert.equal(clusters[0].introFlag, false);
+});
+
+test('clusterCommentTimestamps flags intro clusters instead of dropping them', () => {
+  const hits = [
+    { sec: 10, text: 'intro a', author: 'a' },
+    { sec: 20, text: 'intro b', author: 'b' },
+    { sec: 30, text: 'intro c', author: 'c' },
+  ];
+
+  const clusters = clusterCommentTimestamps(hits);
+
+  assert.equal(clusters.length, 1);
+  assert.equal(clusters[0].introFlag, true);
+});
+
+test('clusterCommentTimestamps respects custom windowSec and minMentions', () => {
+  const hits = [
+    { sec: 100, text: 'a', author: 'a' },
+    { sec: 500, text: 'b', author: 'b' },
+  ];
+
+  const clusters = clusterCommentTimestamps(hits, { windowSec: 600, minMentions: 2, ignoreFirstSec: 0 });
+
+  assert.equal(clusters.length, 1);
+  assert.equal(clusters[0].mentions, 2);
 });

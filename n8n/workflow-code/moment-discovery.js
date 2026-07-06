@@ -35,7 +35,56 @@ function pickHeatmapPeaks(segments, options = {}) {
   return peaks;
 }
 
+const TIMESTAMP_RE = /\b(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\b/g;
+
+function extractTimestampsFromComments(comments) {
+  const hits = [];
+  for (const comment of comments || []) {
+    const text = String((comment && comment.text) || '');
+    const author = String((comment && comment.author) || '');
+    if (!text) continue;
+    for (const match of text.matchAll(TIMESTAMP_RE)) {
+      const hours = match[1] ? Number(match[1]) : 0;
+      const minutes = Number(match[2]);
+      const seconds = Number(match[3]);
+      if (minutes >= 60 || seconds >= 60) continue;
+      hits.push({ sec: hours * 3600 + minutes * 60 + seconds, text, author });
+    }
+  }
+  return hits;
+}
+
+function clusterCommentTimestamps(hits, options = {}) {
+  const windowSec = options.windowSec ?? 120;
+  const minMentions = options.minMentions ?? 3;
+  const ignoreFirstSec = options.ignoreFirstSec ?? 90;
+
+  const sorted = [...(hits || [])].sort((a, b) => a.sec - b.sec);
+  const clusters = [];
+  for (const hit of sorted) {
+    const last = clusters[clusters.length - 1];
+    if (last && hit.sec - last.startSec <= windowSec) {
+      last.endSec = Math.max(last.endSec, hit.sec);
+      last.mentions += 1;
+      if (last.sampleComments.length < 3 && !last.sampleComments.includes(hit.text)) {
+        last.sampleComments.push(hit.text);
+      }
+    } else {
+      clusters.push({
+        startSec: hit.sec,
+        endSec: hit.sec,
+        mentions: 1,
+        sampleComments: [hit.text],
+        introFlag: hit.sec < ignoreFirstSec,
+      });
+    }
+  }
+  return clusters.filter((cluster) => cluster.mentions >= minMentions);
+}
+
 module.exports = {
   parseHeatmap,
   pickHeatmapPeaks,
+  extractTimestampsFromComments,
+  clusterCommentTimestamps,
 };
