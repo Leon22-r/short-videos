@@ -28,6 +28,9 @@ const sheetsNode = (id, name, position, parameters, extra = {}) => ({
   type: 'n8n-nodes-base.googleSheets',
   typeVersion: 4.5,
   position,
+  retryOnFail: true,
+  maxTries: 3,
+  waitBetweenTries: 5000,
   ...(parameters.operation === 'read' ? { executeOnce: true } : {}),
   ...extra,
 });
@@ -53,6 +56,7 @@ const node = (id, name, type, typeVersion, position, parameters, extra = {}) => 
 
 const workflow = {
   name: 'WF4 Transcript Fetch',
+  description: 'Fetches timestamped transcripts for valid candidates and persists both analysis rows and full transcript files. It separates provider failures from content failures so infrastructure issues remain retryable.',
   nodes: [
     {
       parameters: { rule: { interval: [{ field: 'hours', hoursInterval: 1 }] } },
@@ -89,10 +93,8 @@ return pending.map((row, idx) => ({ json: row, pairedItem: { item: idx } }));`),
       parameters: {
         method: 'POST',
         url: 'TRANSCRIPT_SERVICE_URL',
-        sendHeaders: true,
-        headerParameters: {
-          parameters: [{ name: 'x-api-key', value: 'TRANSCRIPT_API_KEY' }],
-        },
+        authentication: 'genericCredentialType',
+        genericAuthType: 'httpHeaderAuth',
         sendBody: true,
         specifyBody: 'json',
         jsonBody: "={{ JSON.stringify({ youtube_url: $json.video_url, language_preferences: ['en','en-US','en-GB','sw'] }) }}",
@@ -103,6 +105,9 @@ return pending.map((row, idx) => ({ json: row, pairedItem: { item: idx } }));`),
       type: 'n8n-nodes-base.httpRequest',
       typeVersion: 4.2,
       position: [880, 120],
+      retryOnFail: true,
+      maxTries: 3,
+      waitBetweenTries: 5000,
       onError: 'continueRegularOutput',
     },
     {

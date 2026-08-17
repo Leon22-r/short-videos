@@ -37,7 +37,11 @@ function analysis(overrides = {}) {
       why_this_window: 'This section contains a dense set of useful lessons.',
       estimated_number_of_good_clips: 5,
     },
-    exact_clips: [],
+    exact_clips: [
+      exactClip({ rank: 1, start_sec: 60, end_sec: 120 }),
+      exactClip({ rank: 2, start_sec: 180, end_sec: 250, clip_score: 8 }),
+      exactClip({ rank: 3, start_sec: 420, end_sec: 500, clip_score: 8 }),
+    ],
     risk_notes: 'low',
     ...overrides,
   };

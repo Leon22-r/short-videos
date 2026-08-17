@@ -10,3 +10,12 @@ n8n/render-data/**
 !n8n/render-data/**/.gitkeep
 !n8n/render-data/.gitkeep
 reports/
+
+# Local n8n configuration and runtime state
+n8n/.env
+n8n/local-files/
+n8n/.n8n/
+
+# Graphify output is reproducible local analysis state
+graphify-out/
+.graphify/

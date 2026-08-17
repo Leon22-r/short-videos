@@ -1,0 +1,765 @@
+{
+  "name": "WF6 yt-dlp Clip Download",
+  "nodes": [
+    {
+      "id": "wf6-001",
+      "name": "Schedule 15m",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf6-002",
+      "name": "Read Clip_Moments",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Clip_Moments"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "wf6-003",
+      "name": "Read Created_Clips",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Created_Clips"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "wf6-004",
+      "name": "Plan yt-dlp Downloads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function defaultCompare(sortKey) {\n  return (a, b) => {\n    const av = String(a[sortKey] || '');\n    const bv = String(b[sortKey] || '');\n    if (av && bv && av !== bv) return av.localeCompare(bv);\n    if (av && !bv) return -1;\n    if (!av && bv) return 1;\n    return 0;\n  };\n}\n\nfunction pickFairBySource(rows, options = {}) {\n  const limit = Number(options.limit || rows.length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const sourceKey = options.sourceKey || 'source_id';\n  const fallbackKeys = options.fallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const buckets = new Map();\n  for (const row of rows || []) {\n    const keyValues = [sourceKey, ...fallbackKeys].map((key) => row[key]).filter(Boolean);\n    const source = String(keyValues[0] || '__unknown__');\n    if (!buckets.has(source)) buckets.set(source, []);\n    buckets.get(source).push(row);\n  }\n\n  const sourceOrder = [...buckets.keys()];\n  for (const source of sourceOrder) {\n    buckets.get(source).sort(compare);\n  }\n\n  const picked = [];\n  const pickedBySource = {};\n  let madeProgress = true;\n\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const source of sourceOrder) {\n      if (picked.length >= limit) break;\n      pickedBySource[source] = pickedBySource[source] || 0;\n      if (pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      picked.push(bucket.shift());\n      pickedBySource[source] += 1;\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\nfunction pickFairByGroup(rows, options = {}) {\n  const limit = Number(options.limit || (rows || []).length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const groupKey = options.groupKey || 'niche';\n  const groupFallbackKeys = options.groupFallbackKeys || [];\n  const sourceKey = options.sourceKey || 'source_id';\n  const sourceFallbackKeys = options.sourceFallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const groups = new Map();\n  for (const row of rows || []) {\n    const groupValues = [groupKey, ...groupFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const sourceValues = [sourceKey, ...sourceFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const group = String(groupValues[0] || '__unknown_group__');\n    const source = String(sourceValues[0] || '__unknown_source__');\n\n    if (!groups.has(group)) {\n      groups.set(group, {\n        sourceOrder: [],\n        buckets: new Map(),\n        pickedBySource: {},\n        nextSourceIndex: 0,\n      });\n    }\n    const groupBucket = groups.get(group);\n    if (!groupBucket.buckets.has(source)) {\n      groupBucket.buckets.set(source, []);\n      groupBucket.sourceOrder.push(source);\n    }\n    groupBucket.buckets.get(source).push(row);\n  }\n\n  const groupOrder = [...groups.keys()];\n  for (const group of groupOrder) {\n    const groupBucket = groups.get(group);\n    for (const source of groupBucket.sourceOrder) {\n      groupBucket.buckets.get(source).sort(compare);\n    }\n  }\n\n  function pickFromGroup(groupBucket) {\n    const totalSources = groupBucket.sourceOrder.length;\n    if (totalSources === 0) return null;\n\n    for (let attempts = 0; attempts < totalSources; attempts += 1) {\n      const index = (groupBucket.nextSourceIndex + attempts) % totalSources;\n      const source = groupBucket.sourceOrder[index];\n      groupBucket.pickedBySource[source] = groupBucket.pickedBySource[source] || 0;\n      if (groupBucket.pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = groupBucket.buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      groupBucket.nextSourceIndex = (index + 1) % totalSources;\n      groupBucket.pickedBySource[source] += 1;\n      return bucket.shift();\n    }\n\n    return null;\n  }\n\n  const picked = [];\n  let madeProgress = true;\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const group of groupOrder) {\n      if (picked.length >= limit) break;\n      const row = pickFromGroup(groups.get(group));\n      if (!row) continue;\n      picked.push(row);\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\n\nfunction shellQuote(value) {\n  return `'${String(value).replace(/'/g, `'\\\\''`)}'`;\n}\n\nfunction safeIdComponent(value) {\n  const id = String(value || '').trim();\n  if (!/^[A-Za-z0-9_-]+$/.test(id)) {\n    throw new Error(`Unsafe id for yt-dlp path: ${JSON.stringify(value)}`);\n  }\n  return id;\n}\n\nfunction normalizeTimeRange(moment) {\n  const start = Math.max(0, Math.floor(Number(moment.start_sec)));\n  const end = Math.floor(Number(moment.end_sec));\n  const duration = end - start;\n  if (!Number.isFinite(start) || !Number.isFinite(end) || duration < 45 || duration > 90) {\n    throw new Error(`Invalid yt-dlp clip range for ${moment.clip_moment_id || 'unknown'}: ${moment.start_sec}-${moment.end_sec}`);\n  }\n  return { start, end, duration };\n}\n\nfunction createdClipIdForMoment(moment) {\n  return `CC-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction ytdlpJobIdForMoment(moment) {\n  return `YTDLP-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction hasCreatedClip(moment, clips) {\n  const createdId = createdClipIdForMoment(moment);\n  const jobId = ytdlpJobIdForMoment(moment);\n  return (clips || []).some((clip) => (\n    String(clip.created_clip_id || '') === createdId ||\n    String(clip.ssemble_job_id || '') === jobId\n  ));\n}\n\nfunction planYtDlpDownloads(moments, createdClips, folders = {}, options = {}) {\n  const limit = Number(options.limit || 5);\n  const perSourceLimit = Number(options.perSourceLimit || 1);\n  const pending = [];\n\n  for (const moment of moments || []) {\n    if (String(moment.ssemble_status || '') !== 'PENDING') continue;\n    if (!moment.clip_moment_id || !moment.source_video_url) continue;\n\n    let range;\n    let createdClipId;\n    let ytdlpJobId;\n    try {\n      range = normalizeTimeRange(moment);\n      createdClipId = createdClipIdForMoment(moment);\n      ytdlpJobId = ytdlpJobIdForMoment(moment);\n    } catch {\n      continue;\n    }\n    if (hasCreatedClip(moment, createdClips)) continue;\n\n    const workdir = `/data/jobs/${createdClipId}`;\n    pending.push({\n      clip_moment_id: moment.clip_moment_id,\n      created_clip_id: createdClipId,\n      ssemble_job_id: ytdlpJobId,\n      video_id: moment.video_id,\n      niche: moment.niche,\n      source_id: moment.source_id || '',\n      source_video_url: moment.source_video_url,\n      start_sec: range.start,\n      end_sec: range.end,\n      duration_seconds: range.duration,\n      clip_score: Number(moment.clip_score || 0),\n      clip_title: moment.suggested_title || moment.core_idea || createdClipId,\n      file_name: `${moment.niche}_${createdClipId}.mp4`,\n      drive_folder_id: folders[moment.niche] || '',\n      workdir,\n      local_path: `${workdir}/source.mp4`,\n      portrait_path: `${workdir}/portrait.mp4`,\n      portrait_log_path: `${workdir}/ffmpeg-portrait.log`,\n      log_path: `${workdir}/yt-dlp.log`,\n      core_idea: moment.core_idea || '',\n      suggested_title: moment.suggested_title || '',\n      suggested_caption: moment.suggested_caption || '',\n      reviewer_notes: [\n        `provider=yt-dlp`,\n        `strategy=${moment.strategy || ''}`,\n        `clip_moment_id=${moment.clip_moment_id}`,\n      ].join('; '),\n      created_at: moment.created_at || '',\n    });\n  }\n\n  return pickFairByGroup(pending, {\n    limit,\n    perSourceLimit,\n    groupKey: 'niche',\n    sourceKey: 'source_id',\n    sourceFallbackKeys: ['niche'],\n    compare: (a, b) => {\n      const scoreDelta = Number(b.clip_score || 0) - Number(a.clip_score || 0);\n      if (scoreDelta !== 0) return scoreDelta;\n      return String(a.created_at || '').localeCompare(String(b.created_at || ''));\n    },\n  });\n}\n\nfunction buildYtDlpCommand(request) {\n  safeIdComponent(request.created_clip_id);\n  const range = normalizeTimeRange(request);\n  const section = `*${range.start}-${range.end}`;\n  return [\n    'mkdir -p',\n    shellQuote(request.workdir),\n    '&&',\n    'python3 -m yt_dlp',\n    '--no-playlist',\n    '--force-overwrites',\n    '--download-sections',\n    shellQuote(section),\n    '--force-keyframes-at-cuts',\n    '-f',\n    shellQuote('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'),\n    '--merge-output-format',\n    'mp4',\n    '-o',\n    shellQuote(`${request.workdir}/source.%(ext)s`),\n    shellQuote(request.source_video_url),\n    '>',\n    shellQuote(request.log_path),\n    '2>&1',\n    '&&',\n    'test -s',\n    shellQuote(request.local_path),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0',\n    shellQuote(request.local_path),\n    '|',\n    \"grep -q '^video$'\",\n  ].join(' ');\n}\n\nfunction buildMomentStatus(request, status, extra = {}) {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: request.ssemble_job_id || '',\n    ...extra,\n  };\n}\n\nfunction buildCreatedClipRow(request, drive, now = new Date().toISOString()) {\n  return {\n    created_clip_id: request.created_clip_id,\n    ssemble_job_id: request.ssemble_job_id,\n    video_id: request.video_id,\n    niche: request.niche,\n    clip_title: String(request.clip_title || ''),\n    clip_url: '',\n    local_file_name: request.file_name,\n    google_drive_file_id: drive.id || '',\n    google_drive_url: drive.webViewLink || (drive.id ? `https://drive.google.com/file/d/${drive.id}/view` : ''),\n    duration_seconds: request.duration_seconds,\n    transcript_excerpt: '',\n    suggested_title: String(request.suggested_title || ''),\n    suggested_caption: String(request.suggested_caption || ''),\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: request.reviewer_notes || 'provider=yt-dlp',\n    created_at: now,\n  };\n}\n\nfunction buildPortraitCommand(request) {\n  const inputPath = request.local_path;\n  const outputPath = request.portrait_path;\n  const logPath = request.portrait_log_path;\n  const vf = 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(iw-1080)/2:(ih-1920)/2,setsar=1';\n  return [\n    'ffmpeg -y',\n    '-i', shellQuote(inputPath),\n    '-map 0:v:0',\n    '-map 0:a:0?',\n    '-vf', shellQuote(vf),\n    '-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p',\n    '-c:a aac -b:a 128k',\n    '-movflags +faststart',\n    shellQuote(outputPath),\n    '>', shellQuote(logPath), '2>&1',\n    '&&', 'test -s', shellQuote(outputPath),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0',\n    shellQuote(outputPath),\n    '|',\n    \"grep -qx '1080x1920'\",\n  ].join(' ');\n}\n\n\nconst requests = planYtDlpDownloads(\n  $('Read Clip_Moments').all().map(i => i.json),\n  $('Read Created_Clips').all().map(i => i.json),\n  {\n  CHRISTIAN_CONTENT: 'GOOGLE_DRIVE_FOLDER_CHRISTIAN_CONTENT',\n  MOTIVATION_DISCIPLINE: 'GOOGLE_DRIVE_FOLDER_MOTIVATION_DISCIPLINE',\n  FINANCE_BUSINESS: 'GOOGLE_DRIVE_FOLDER_FINANCE_BUSINESS',\n  LIFE_VALUES_RELATIONSHIPS: 'GOOGLE_DRIVE_FOLDER_LIFE_VALUES_RELATIONSHIPS',\n  AFRICAN_KENYAN_SUCCESS: 'GOOGLE_DRIVE_FOLDER_AFRICAN_KENYAN_SUCCESS',\n},\n  { limit: 5, perSourceLimit: 1 },\n);\nreturn requests.map((request, index) => ({ json: request, pairedItem: { item: index } }));"
+      }
+    },
+    {
+      "id": "wf6-005",
+      "name": "Download Loop",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "wf6-006",
+      "name": "Build yt-dlp Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function defaultCompare(sortKey) {\n  return (a, b) => {\n    const av = String(a[sortKey] || '');\n    const bv = String(b[sortKey] || '');\n    if (av && bv && av !== bv) return av.localeCompare(bv);\n    if (av && !bv) return -1;\n    if (!av && bv) return 1;\n    return 0;\n  };\n}\n\nfunction pickFairBySource(rows, options = {}) {\n  const limit = Number(options.limit || rows.length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const sourceKey = options.sourceKey || 'source_id';\n  const fallbackKeys = options.fallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const buckets = new Map();\n  for (const row of rows || []) {\n    const keyValues = [sourceKey, ...fallbackKeys].map((key) => row[key]).filter(Boolean);\n    const source = String(keyValues[0] || '__unknown__');\n    if (!buckets.has(source)) buckets.set(source, []);\n    buckets.get(source).push(row);\n  }\n\n  const sourceOrder = [...buckets.keys()];\n  for (const source of sourceOrder) {\n    buckets.get(source).sort(compare);\n  }\n\n  const picked = [];\n  const pickedBySource = {};\n  let madeProgress = true;\n\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const source of sourceOrder) {\n      if (picked.length >= limit) break;\n      pickedBySource[source] = pickedBySource[source] || 0;\n      if (pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      picked.push(bucket.shift());\n      pickedBySource[source] += 1;\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\nfunction pickFairByGroup(rows, options = {}) {\n  const limit = Number(options.limit || (rows || []).length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const groupKey = options.groupKey || 'niche';\n  const groupFallbackKeys = options.groupFallbackKeys || [];\n  const sourceKey = options.sourceKey || 'source_id';\n  const sourceFallbackKeys = options.sourceFallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const groups = new Map();\n  for (const row of rows || []) {\n    const groupValues = [groupKey, ...groupFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const sourceValues = [sourceKey, ...sourceFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const group = String(groupValues[0] || '__unknown_group__');\n    const source = String(sourceValues[0] || '__unknown_source__');\n\n    if (!groups.has(group)) {\n      groups.set(group, {\n        sourceOrder: [],\n        buckets: new Map(),\n        pickedBySource: {},\n        nextSourceIndex: 0,\n      });\n    }\n    const groupBucket = groups.get(group);\n    if (!groupBucket.buckets.has(source)) {\n      groupBucket.buckets.set(source, []);\n      groupBucket.sourceOrder.push(source);\n    }\n    groupBucket.buckets.get(source).push(row);\n  }\n\n  const groupOrder = [...groups.keys()];\n  for (const group of groupOrder) {\n    const groupBucket = groups.get(group);\n    for (const source of groupBucket.sourceOrder) {\n      groupBucket.buckets.get(source).sort(compare);\n    }\n  }\n\n  function pickFromGroup(groupBucket) {\n    const totalSources = groupBucket.sourceOrder.length;\n    if (totalSources === 0) return null;\n\n    for (let attempts = 0; attempts < totalSources; attempts += 1) {\n      const index = (groupBucket.nextSourceIndex + attempts) % totalSources;\n      const source = groupBucket.sourceOrder[index];\n      groupBucket.pickedBySource[source] = groupBucket.pickedBySource[source] || 0;\n      if (groupBucket.pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = groupBucket.buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      groupBucket.nextSourceIndex = (index + 1) % totalSources;\n      groupBucket.pickedBySource[source] += 1;\n      return bucket.shift();\n    }\n\n    return null;\n  }\n\n  const picked = [];\n  let madeProgress = true;\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const group of groupOrder) {\n      if (picked.length >= limit) break;\n      const row = pickFromGroup(groups.get(group));\n      if (!row) continue;\n      picked.push(row);\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\n\nfunction shellQuote(value) {\n  return `'${String(value).replace(/'/g, `'\\\\''`)}'`;\n}\n\nfunction safeIdComponent(value) {\n  const id = String(value || '').trim();\n  if (!/^[A-Za-z0-9_-]+$/.test(id)) {\n    throw new Error(`Unsafe id for yt-dlp path: ${JSON.stringify(value)}`);\n  }\n  return id;\n}\n\nfunction normalizeTimeRange(moment) {\n  const start = Math.max(0, Math.floor(Number(moment.start_sec)));\n  const end = Math.floor(Number(moment.end_sec));\n  const duration = end - start;\n  if (!Number.isFinite(start) || !Number.isFinite(end) || duration < 45 || duration > 90) {\n    throw new Error(`Invalid yt-dlp clip range for ${moment.clip_moment_id || 'unknown'}: ${moment.start_sec}-${moment.end_sec}`);\n  }\n  return { start, end, duration };\n}\n\nfunction createdClipIdForMoment(moment) {\n  return `CC-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction ytdlpJobIdForMoment(moment) {\n  return `YTDLP-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction hasCreatedClip(moment, clips) {\n  const createdId = createdClipIdForMoment(moment);\n  const jobId = ytdlpJobIdForMoment(moment);\n  return (clips || []).some((clip) => (\n    String(clip.created_clip_id || '') === createdId ||\n    String(clip.ssemble_job_id || '') === jobId\n  ));\n}\n\nfunction planYtDlpDownloads(moments, createdClips, folders = {}, options = {}) {\n  const limit = Number(options.limit || 5);\n  const perSourceLimit = Number(options.perSourceLimit || 1);\n  const pending = [];\n\n  for (const moment of moments || []) {\n    if (String(moment.ssemble_status || '') !== 'PENDING') continue;\n    if (!moment.clip_moment_id || !moment.source_video_url) continue;\n\n    let range;\n    let createdClipId;\n    let ytdlpJobId;\n    try {\n      range = normalizeTimeRange(moment);\n      createdClipId = createdClipIdForMoment(moment);\n      ytdlpJobId = ytdlpJobIdForMoment(moment);\n    } catch {\n      continue;\n    }\n    if (hasCreatedClip(moment, createdClips)) continue;\n\n    const workdir = `/data/jobs/${createdClipId}`;\n    pending.push({\n      clip_moment_id: moment.clip_moment_id,\n      created_clip_id: createdClipId,\n      ssemble_job_id: ytdlpJobId,\n      video_id: moment.video_id,\n      niche: moment.niche,\n      source_id: moment.source_id || '',\n      source_video_url: moment.source_video_url,\n      start_sec: range.start,\n      end_sec: range.end,\n      duration_seconds: range.duration,\n      clip_score: Number(moment.clip_score || 0),\n      clip_title: moment.suggested_title || moment.core_idea || createdClipId,\n      file_name: `${moment.niche}_${createdClipId}.mp4`,\n      drive_folder_id: folders[moment.niche] || '',\n      workdir,\n      local_path: `${workdir}/source.mp4`,\n      portrait_path: `${workdir}/portrait.mp4`,\n      portrait_log_path: `${workdir}/ffmpeg-portrait.log`,\n      log_path: `${workdir}/yt-dlp.log`,\n      core_idea: moment.core_idea || '',\n      suggested_title: moment.suggested_title || '',\n      suggested_caption: moment.suggested_caption || '',\n      reviewer_notes: [\n        `provider=yt-dlp`,\n        `strategy=${moment.strategy || ''}`,\n        `clip_moment_id=${moment.clip_moment_id}`,\n      ].join('; '),\n      created_at: moment.created_at || '',\n    });\n  }\n\n  return pickFairByGroup(pending, {\n    limit,\n    perSourceLimit,\n    groupKey: 'niche',\n    sourceKey: 'source_id',\n    sourceFallbackKeys: ['niche'],\n    compare: (a, b) => {\n      const scoreDelta = Number(b.clip_score || 0) - Number(a.clip_score || 0);\n      if (scoreDelta !== 0) return scoreDelta;\n      return String(a.created_at || '').localeCompare(String(b.created_at || ''));\n    },\n  });\n}\n\nfunction buildYtDlpCommand(request) {\n  safeIdComponent(request.created_clip_id);\n  const range = normalizeTimeRange(request);\n  const section = `*${range.start}-${range.end}`;\n  return [\n    'mkdir -p',\n    shellQuote(request.workdir),\n    '&&',\n    'python3 -m yt_dlp',\n    '--no-playlist',\n    '--force-overwrites',\n    '--download-sections',\n    shellQuote(section),\n    '--force-keyframes-at-cuts',\n    '-f',\n    shellQuote('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'),\n    '--merge-output-format',\n    'mp4',\n    '-o',\n    shellQuote(`${request.workdir}/source.%(ext)s`),\n    shellQuote(request.source_video_url),\n    '>',\n    shellQuote(request.log_path),\n    '2>&1',\n    '&&',\n    'test -s',\n    shellQuote(request.local_path),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0',\n    shellQuote(request.local_path),\n    '|',\n    \"grep -q '^video$'\",\n  ].join(' ');\n}\n\nfunction buildMomentStatus(request, status, extra = {}) {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: request.ssemble_job_id || '',\n    ...extra,\n  };\n}\n\nfunction buildCreatedClipRow(request, drive, now = new Date().toISOString()) {\n  return {\n    created_clip_id: request.created_clip_id,\n    ssemble_job_id: request.ssemble_job_id,\n    video_id: request.video_id,\n    niche: request.niche,\n    clip_title: String(request.clip_title || ''),\n    clip_url: '',\n    local_file_name: request.file_name,\n    google_drive_file_id: drive.id || '',\n    google_drive_url: drive.webViewLink || (drive.id ? `https://drive.google.com/file/d/${drive.id}/view` : ''),\n    duration_seconds: request.duration_seconds,\n    transcript_excerpt: '',\n    suggested_title: String(request.suggested_title || ''),\n    suggested_caption: String(request.suggested_caption || ''),\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: request.reviewer_notes || 'provider=yt-dlp',\n    created_at: now,\n  };\n}\n\nfunction buildPortraitCommand(request) {\n  const inputPath = request.local_path;\n  const outputPath = request.portrait_path;\n  const logPath = request.portrait_log_path;\n  const vf = 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(iw-1080)/2:(ih-1920)/2,setsar=1';\n  return [\n    'ffmpeg -y',\n    '-i', shellQuote(inputPath),\n    '-map 0:v:0',\n    '-map 0:a:0?',\n    '-vf', shellQuote(vf),\n    '-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p',\n    '-c:a aac -b:a 128k',\n    '-movflags +faststart',\n    shellQuote(outputPath),\n    '>', shellQuote(logPath), '2>&1',\n    '&&', 'test -s', shellQuote(outputPath),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0',\n    shellQuote(outputPath),\n    '|',\n    \"grep -qx '1080x1920'\",\n  ].join(' ');\n}\n\n\nconst req = $('Download Loop').first().json;\nconst command = buildYtDlpCommand(req);\nreturn [{ json: { ...req, command }, pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf6-007",
+      "name": "Mark Moment Downloading",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function defaultCompare(sortKey) {\n  return (a, b) => {\n    const av = String(a[sortKey] || '');\n    const bv = String(b[sortKey] || '');\n    if (av && bv && av !== bv) return av.localeCompare(bv);\n    if (av && !bv) return -1;\n    if (!av && bv) return 1;\n    return 0;\n  };\n}\n\nfunction pickFairBySource(rows, options = {}) {\n  const limit = Number(options.limit || rows.length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const sourceKey = options.sourceKey || 'source_id';\n  const fallbackKeys = options.fallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const buckets = new Map();\n  for (const row of rows || []) {\n    const keyValues = [sourceKey, ...fallbackKeys].map((key) => row[key]).filter(Boolean);\n    const source = String(keyValues[0] || '__unknown__');\n    if (!buckets.has(source)) buckets.set(source, []);\n    buckets.get(source).push(row);\n  }\n\n  const sourceOrder = [...buckets.keys()];\n  for (const source of sourceOrder) {\n    buckets.get(source).sort(compare);\n  }\n\n  const picked = [];\n  const pickedBySource = {};\n  let madeProgress = true;\n\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const source of sourceOrder) {\n      if (picked.length >= limit) break;\n      pickedBySource[source] = pickedBySource[source] || 0;\n      if (pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      picked.push(bucket.shift());\n      pickedBySource[source] += 1;\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\nfunction pickFairByGroup(rows, options = {}) {\n  const limit = Number(options.limit || (rows || []).length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const groupKey = options.groupKey || 'niche';\n  const groupFallbackKeys = options.groupFallbackKeys || [];\n  const sourceKey = options.sourceKey || 'source_id';\n  const sourceFallbackKeys = options.sourceFallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const groups = new Map();\n  for (const row of rows || []) {\n    const groupValues = [groupKey, ...groupFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const sourceValues = [sourceKey, ...sourceFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const group = String(groupValues[0] || '__unknown_group__');\n    const source = String(sourceValues[0] || '__unknown_source__');\n\n    if (!groups.has(group)) {\n      groups.set(group, {\n        sourceOrder: [],\n        buckets: new Map(),\n        pickedBySource: {},\n        nextSourceIndex: 0,\n      });\n    }\n    const groupBucket = groups.get(group);\n    if (!groupBucket.buckets.has(source)) {\n      groupBucket.buckets.set(source, []);\n      groupBucket.sourceOrder.push(source);\n    }\n    groupBucket.buckets.get(source).push(row);\n  }\n\n  const groupOrder = [...groups.keys()];\n  for (const group of groupOrder) {\n    const groupBucket = groups.get(group);\n    for (const source of groupBucket.sourceOrder) {\n      groupBucket.buckets.get(source).sort(compare);\n    }\n  }\n\n  function pickFromGroup(groupBucket) {\n    const totalSources = groupBucket.sourceOrder.length;\n    if (totalSources === 0) return null;\n\n    for (let attempts = 0; attempts < totalSources; attempts += 1) {\n      const index = (groupBucket.nextSourceIndex + attempts) % totalSources;\n      const source = groupBucket.sourceOrder[index];\n      groupBucket.pickedBySource[source] = groupBucket.pickedBySource[source] || 0;\n      if (groupBucket.pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = groupBucket.buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      groupBucket.nextSourceIndex = (index + 1) % totalSources;\n      groupBucket.pickedBySource[source] += 1;\n      return bucket.shift();\n    }\n\n    return null;\n  }\n\n  const picked = [];\n  let madeProgress = true;\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const group of groupOrder) {\n      if (picked.length >= limit) break;\n      const row = pickFromGroup(groups.get(group));\n      if (!row) continue;\n      picked.push(row);\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\n\nfunction shellQuote(value) {\n  return `'${String(value).replace(/'/g, `'\\\\''`)}'`;\n}\n\nfunction safeIdComponent(value) {\n  const id = String(value || '').trim();\n  if (!/^[A-Za-z0-9_-]+$/.test(id)) {\n    throw new Error(`Unsafe id for yt-dlp path: ${JSON.stringify(value)}`);\n  }\n  return id;\n}\n\nfunction normalizeTimeRange(moment) {\n  const start = Math.max(0, Math.floor(Number(moment.start_sec)));\n  const end = Math.floor(Number(moment.end_sec));\n  const duration = end - start;\n  if (!Number.isFinite(start) || !Number.isFinite(end) || duration < 45 || duration > 90) {\n    throw new Error(`Invalid yt-dlp clip range for ${moment.clip_moment_id || 'unknown'}: ${moment.start_sec}-${moment.end_sec}`);\n  }\n  return { start, end, duration };\n}\n\nfunction createdClipIdForMoment(moment) {\n  return `CC-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction ytdlpJobIdForMoment(moment) {\n  return `YTDLP-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction hasCreatedClip(moment, clips) {\n  const createdId = createdClipIdForMoment(moment);\n  const jobId = ytdlpJobIdForMoment(moment);\n  return (clips || []).some((clip) => (\n    String(clip.created_clip_id || '') === createdId ||\n    String(clip.ssemble_job_id || '') === jobId\n  ));\n}\n\nfunction planYtDlpDownloads(moments, createdClips, folders = {}, options = {}) {\n  const limit = Number(options.limit || 5);\n  const perSourceLimit = Number(options.perSourceLimit || 1);\n  const pending = [];\n\n  for (const moment of moments || []) {\n    if (String(moment.ssemble_status || '') !== 'PENDING') continue;\n    if (!moment.clip_moment_id || !moment.source_video_url) continue;\n\n    let range;\n    let createdClipId;\n    let ytdlpJobId;\n    try {\n      range = normalizeTimeRange(moment);\n      createdClipId = createdClipIdForMoment(moment);\n      ytdlpJobId = ytdlpJobIdForMoment(moment);\n    } catch {\n      continue;\n    }\n    if (hasCreatedClip(moment, createdClips)) continue;\n\n    const workdir = `/data/jobs/${createdClipId}`;\n    pending.push({\n      clip_moment_id: moment.clip_moment_id,\n      created_clip_id: createdClipId,\n      ssemble_job_id: ytdlpJobId,\n      video_id: moment.video_id,\n      niche: moment.niche,\n      source_id: moment.source_id || '',\n      source_video_url: moment.source_video_url,\n      start_sec: range.start,\n      end_sec: range.end,\n      duration_seconds: range.duration,\n      clip_score: Number(moment.clip_score || 0),\n      clip_title: moment.suggested_title || moment.core_idea || createdClipId,\n      file_name: `${moment.niche}_${createdClipId}.mp4`,\n      drive_folder_id: folders[moment.niche] || '',\n      workdir,\n      local_path: `${workdir}/source.mp4`,\n      portrait_path: `${workdir}/portrait.mp4`,\n      portrait_log_path: `${workdir}/ffmpeg-portrait.log`,\n      log_path: `${workdir}/yt-dlp.log`,\n      core_idea: moment.core_idea || '',\n      suggested_title: moment.suggested_title || '',\n      suggested_caption: moment.suggested_caption || '',\n      reviewer_notes: [\n        `provider=yt-dlp`,\n        `strategy=${moment.strategy || ''}`,\n        `clip_moment_id=${moment.clip_moment_id}`,\n      ].join('; '),\n      created_at: moment.created_at || '',\n    });\n  }\n\n  return pickFairByGroup(pending, {\n    limit,\n    perSourceLimit,\n    groupKey: 'niche',\n    sourceKey: 'source_id',\n    sourceFallbackKeys: ['niche'],\n    compare: (a, b) => {\n      const scoreDelta = Number(b.clip_score || 0) - Number(a.clip_score || 0);\n      if (scoreDelta !== 0) return scoreDelta;\n      return String(a.created_at || '').localeCompare(String(b.created_at || ''));\n    },\n  });\n}\n\nfunction buildYtDlpCommand(request) {\n  safeIdComponent(request.created_clip_id);\n  const range = normalizeTimeRange(request);\n  const section = `*${range.start}-${range.end}`;\n  return [\n    'mkdir -p',\n    shellQuote(request.workdir),\n    '&&',\n    'python3 -m yt_dlp',\n    '--no-playlist',\n    '--force-overwrites',\n    '--download-sections',\n    shellQuote(section),\n    '--force-keyframes-at-cuts',\n    '-f',\n    shellQuote('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'),\n    '--merge-output-format',\n    'mp4',\n    '-o',\n    shellQuote(`${request.workdir}/source.%(ext)s`),\n    shellQuote(request.source_video_url),\n    '>',\n    shellQuote(request.log_path),\n    '2>&1',\n    '&&',\n    'test -s',\n    shellQuote(request.local_path),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0',\n    shellQuote(request.local_path),\n    '|',\n    \"grep -q '^video$'\",\n  ].join(' ');\n}\n\nfunction buildMomentStatus(request, status, extra = {}) {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: request.ssemble_job_id || '',\n    ...extra,\n  };\n}\n\nfunction buildCreatedClipRow(request, drive, now = new Date().toISOString()) {\n  return {\n    created_clip_id: request.created_clip_id,\n    ssemble_job_id: request.ssemble_job_id,\n    video_id: request.video_id,\n    niche: request.niche,\n    clip_title: String(request.clip_title || ''),\n    clip_url: '',\n    local_file_name: request.file_name,\n    google_drive_file_id: drive.id || '',\n    google_drive_url: drive.webViewLink || (drive.id ? `https://drive.google.com/file/d/${drive.id}/view` : ''),\n    duration_seconds: request.duration_seconds,\n    transcript_excerpt: '',\n    suggested_title: String(request.suggested_title || ''),\n    suggested_caption: String(request.suggested_caption || ''),\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: request.reviewer_notes || 'provider=yt-dlp',\n    created_at: now,\n  };\n}\n\nfunction buildPortraitCommand(request) {\n  const inputPath = request.local_path;\n  const outputPath = request.portrait_path;\n  const logPath = request.portrait_log_path;\n  const vf = 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(iw-1080)/2:(ih-1920)/2,setsar=1';\n  return [\n    'ffmpeg -y',\n    '-i', shellQuote(inputPath),\n    '-map 0:v:0',\n    '-map 0:a:0?',\n    '-vf', shellQuote(vf),\n    '-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p',\n    '-c:a aac -b:a 128k',\n    '-movflags +faststart',\n    shellQuote(outputPath),\n    '>', shellQuote(logPath), '2>&1',\n    '&&', 'test -s', shellQuote(outputPath),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0',\n    shellQuote(outputPath),\n    '|',\n    \"grep -qx '1080x1920'\",\n  ].join(' ');\n}\n\n\nconst req = $('Download Loop').first().json;\nreturn [{ json: buildMomentStatus(req, 'SUBMITTED'), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf6-008",
+      "name": "Update Moment Downloading",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1540,
+        120
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Clip_Moments"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "clip_moment_id"
+          ]
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "wf6-009",
+      "name": "Run yt-dlp",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1760,
+        120
+      ],
+      "parameters": {
+        "command": "={{ $(\"Build yt-dlp Command\").first().json.command }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "wf6-010",
+      "name": "Download Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.exitCode }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "wf6-011",
+      "name": "Build Portrait Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function defaultCompare(sortKey) {\n  return (a, b) => {\n    const av = String(a[sortKey] || '');\n    const bv = String(b[sortKey] || '');\n    if (av && bv && av !== bv) return av.localeCompare(bv);\n    if (av && !bv) return -1;\n    if (!av && bv) return 1;\n    return 0;\n  };\n}\n\nfunction pickFairBySource(rows, options = {}) {\n  const limit = Number(options.limit || rows.length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const sourceKey = options.sourceKey || 'source_id';\n  const fallbackKeys = options.fallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const buckets = new Map();\n  for (const row of rows || []) {\n    const keyValues = [sourceKey, ...fallbackKeys].map((key) => row[key]).filter(Boolean);\n    const source = String(keyValues[0] || '__unknown__');\n    if (!buckets.has(source)) buckets.set(source, []);\n    buckets.get(source).push(row);\n  }\n\n  const sourceOrder = [...buckets.keys()];\n  for (const source of sourceOrder) {\n    buckets.get(source).sort(compare);\n  }\n\n  const picked = [];\n  const pickedBySource = {};\n  let madeProgress = true;\n\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const source of sourceOrder) {\n      if (picked.length >= limit) break;\n      pickedBySource[source] = pickedBySource[source] || 0;\n      if (pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      picked.push(bucket.shift());\n      pickedBySource[source] += 1;\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\nfunction pickFairByGroup(rows, options = {}) {\n  const limit = Number(options.limit || (rows || []).length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const groupKey = options.groupKey || 'niche';\n  const groupFallbackKeys = options.groupFallbackKeys || [];\n  const sourceKey = options.sourceKey || 'source_id';\n  const sourceFallbackKeys = options.sourceFallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const groups = new Map();\n  for (const row of rows || []) {\n    const groupValues = [groupKey, ...groupFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const sourceValues = [sourceKey, ...sourceFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const group = String(groupValues[0] || '__unknown_group__');\n    const source = String(sourceValues[0] || '__unknown_source__');\n\n    if (!groups.has(group)) {\n      groups.set(group, {\n        sourceOrder: [],\n        buckets: new Map(),\n        pickedBySource: {},\n        nextSourceIndex: 0,\n      });\n    }\n    const groupBucket = groups.get(group);\n    if (!groupBucket.buckets.has(source)) {\n      groupBucket.buckets.set(source, []);\n      groupBucket.sourceOrder.push(source);\n    }\n    groupBucket.buckets.get(source).push(row);\n  }\n\n  const groupOrder = [...groups.keys()];\n  for (const group of groupOrder) {\n    const groupBucket = groups.get(group);\n    for (const source of groupBucket.sourceOrder) {\n      groupBucket.buckets.get(source).sort(compare);\n    }\n  }\n\n  function pickFromGroup(groupBucket) {\n    const totalSources = groupBucket.sourceOrder.length;\n    if (totalSources === 0) return null;\n\n    for (let attempts = 0; attempts < totalSources; attempts += 1) {\n      const index = (groupBucket.nextSourceIndex + attempts) % totalSources;\n      const source = groupBucket.sourceOrder[index];\n      groupBucket.pickedBySource[source] = groupBucket.pickedBySource[source] || 0;\n      if (groupBucket.pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = groupBucket.buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      groupBucket.nextSourceIndex = (index + 1) % totalSources;\n      groupBucket.pickedBySource[source] += 1;\n      return bucket.shift();\n    }\n\n    return null;\n  }\n\n  const picked = [];\n  let madeProgress = true;\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const group of groupOrder) {\n      if (picked.length >= limit) break;\n      const row = pickFromGroup(groups.get(group));\n      if (!row) continue;\n      picked.push(row);\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\n\nfunction shellQuote(value) {\n  return `'${String(value).replace(/'/g, `'\\\\''`)}'`;\n}\n\nfunction safeIdComponent(value) {\n  const id = String(value || '').trim();\n  if (!/^[A-Za-z0-9_-]+$/.test(id)) {\n    throw new Error(`Unsafe id for yt-dlp path: ${JSON.stringify(value)}`);\n  }\n  return id;\n}\n\nfunction normalizeTimeRange(moment) {\n  const start = Math.max(0, Math.floor(Number(moment.start_sec)));\n  const end = Math.floor(Number(moment.end_sec));\n  const duration = end - start;\n  if (!Number.isFinite(start) || !Number.isFinite(end) || duration < 45 || duration > 90) {\n    throw new Error(`Invalid yt-dlp clip range for ${moment.clip_moment_id || 'unknown'}: ${moment.start_sec}-${moment.end_sec}`);\n  }\n  return { start, end, duration };\n}\n\nfunction createdClipIdForMoment(moment) {\n  return `CC-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction ytdlpJobIdForMoment(moment) {\n  return `YTDLP-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction hasCreatedClip(moment, clips) {\n  const createdId = createdClipIdForMoment(moment);\n  const jobId = ytdlpJobIdForMoment(moment);\n  return (clips || []).some((clip) => (\n    String(clip.created_clip_id || '') === createdId ||\n    String(clip.ssemble_job_id || '') === jobId\n  ));\n}\n\nfunction planYtDlpDownloads(moments, createdClips, folders = {}, options = {}) {\n  const limit = Number(options.limit || 5);\n  const perSourceLimit = Number(options.perSourceLimit || 1);\n  const pending = [];\n\n  for (const moment of moments || []) {\n    if (String(moment.ssemble_status || '') !== 'PENDING') continue;\n    if (!moment.clip_moment_id || !moment.source_video_url) continue;\n\n    let range;\n    let createdClipId;\n    let ytdlpJobId;\n    try {\n      range = normalizeTimeRange(moment);\n      createdClipId = createdClipIdForMoment(moment);\n      ytdlpJobId = ytdlpJobIdForMoment(moment);\n    } catch {\n      continue;\n    }\n    if (hasCreatedClip(moment, createdClips)) continue;\n\n    const workdir = `/data/jobs/${createdClipId}`;\n    pending.push({\n      clip_moment_id: moment.clip_moment_id,\n      created_clip_id: createdClipId,\n      ssemble_job_id: ytdlpJobId,\n      video_id: moment.video_id,\n      niche: moment.niche,\n      source_id: moment.source_id || '',\n      source_video_url: moment.source_video_url,\n      start_sec: range.start,\n      end_sec: range.end,\n      duration_seconds: range.duration,\n      clip_score: Number(moment.clip_score || 0),\n      clip_title: moment.suggested_title || moment.core_idea || createdClipId,\n      file_name: `${moment.niche}_${createdClipId}.mp4`,\n      drive_folder_id: folders[moment.niche] || '',\n      workdir,\n      local_path: `${workdir}/source.mp4`,\n      portrait_path: `${workdir}/portrait.mp4`,\n      portrait_log_path: `${workdir}/ffmpeg-portrait.log`,\n      log_path: `${workdir}/yt-dlp.log`,\n      core_idea: moment.core_idea || '',\n      suggested_title: moment.suggested_title || '',\n      suggested_caption: moment.suggested_caption || '',\n      reviewer_notes: [\n        `provider=yt-dlp`,\n        `strategy=${moment.strategy || ''}`,\n        `clip_moment_id=${moment.clip_moment_id}`,\n      ].join('; '),\n      created_at: moment.created_at || '',\n    });\n  }\n\n  return pickFairByGroup(pending, {\n    limit,\n    perSourceLimit,\n    groupKey: 'niche',\n    sourceKey: 'source_id',\n    sourceFallbackKeys: ['niche'],\n    compare: (a, b) => {\n      const scoreDelta = Number(b.clip_score || 0) - Number(a.clip_score || 0);\n      if (scoreDelta !== 0) return scoreDelta;\n      return String(a.created_at || '').localeCompare(String(b.created_at || ''));\n    },\n  });\n}\n\nfunction buildYtDlpCommand(request) {\n  safeIdComponent(request.created_clip_id);\n  const range = normalizeTimeRange(request);\n  const section = `*${range.start}-${range.end}`;\n  return [\n    'mkdir -p',\n    shellQuote(request.workdir),\n    '&&',\n    'python3 -m yt_dlp',\n    '--no-playlist',\n    '--force-overwrites',\n    '--download-sections',\n    shellQuote(section),\n    '--force-keyframes-at-cuts',\n    '-f',\n    shellQuote('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'),\n    '--merge-output-format',\n    'mp4',\n    '-o',\n    shellQuote(`${request.workdir}/source.%(ext)s`),\n    shellQuote(request.source_video_url),\n    '>',\n    shellQuote(request.log_path),\n    '2>&1',\n    '&&',\n    'test -s',\n    shellQuote(request.local_path),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0',\n    shellQuote(request.local_path),\n    '|',\n    \"grep -q '^video$'\",\n  ].join(' ');\n}\n\nfunction buildMomentStatus(request, status, extra = {}) {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: request.ssemble_job_id || '',\n    ...extra,\n  };\n}\n\nfunction buildCreatedClipRow(request, drive, now = new Date().toISOString()) {\n  return {\n    created_clip_id: request.created_clip_id,\n    ssemble_job_id: request.ssemble_job_id,\n    video_id: request.video_id,\n    niche: request.niche,\n    clip_title: String(request.clip_title || ''),\n    clip_url: '',\n    local_file_name: request.file_name,\n    google_drive_file_id: drive.id || '',\n    google_drive_url: drive.webViewLink || (drive.id ? `https://drive.google.com/file/d/${drive.id}/view` : ''),\n    duration_seconds: request.duration_seconds,\n    transcript_excerpt: '',\n    suggested_title: String(request.suggested_title || ''),\n    suggested_caption: String(request.suggested_caption || ''),\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: request.reviewer_notes || 'provider=yt-dlp',\n    created_at: now,\n  };\n}\n\nfunction buildPortraitCommand(request) {\n  const inputPath = request.local_path;\n  const outputPath = request.portrait_path;\n  const logPath = request.portrait_log_path;\n  const vf = 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(iw-1080)/2:(ih-1920)/2,setsar=1';\n  return [\n    'ffmpeg -y',\n    '-i', shellQuote(inputPath),\n    '-map 0:v:0',\n    '-map 0:a:0?',\n    '-vf', shellQuote(vf),\n    '-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p',\n    '-c:a aac -b:a 128k',\n    '-movflags +faststart',\n    shellQuote(outputPath),\n    '>', shellQuote(logPath), '2>&1',\n    '&&', 'test -s', shellQuote(outputPath),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0',\n    shellQuote(outputPath),\n    '|',\n    \"grep -qx '1080x1920'\",\n  ].join(' ');\n}\n\n\nconst req = $('Download Loop').first().json;\nconst command = buildPortraitCommand(req);\nreturn [{ json: { ...req, command }, pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf6-012",
+      "name": "Run FFmpeg Portrait",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2420,
+        40
+      ],
+      "parameters": {
+        "command": "={{ $(\"Build Portrait Command\").first().json.command }}"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "wf6-013",
+      "name": "Portrait Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.exitCode }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "wf6-014",
+      "name": "Read Downloaded Clip",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        2860,
+        -40
+      ],
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ $(\"Download Loop\").first().json.portrait_path }}",
+        "options": {
+          "dataPropertyName": "data"
+        }
+      }
+    },
+    {
+      "id": "wf6-015",
+      "name": "Upload Clip To Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        3080,
+        -40
+      ],
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $(\"Download Loop\").first().json.file_name }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $(\"Download Loop\").first().json.drive_folder_id }}"
+        },
+        "inputDataFieldName": "data",
+        "options": {}
+      }
+    },
+    {
+      "id": "wf6-016",
+      "name": "Build Created Clip Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3300,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function defaultCompare(sortKey) {\n  return (a, b) => {\n    const av = String(a[sortKey] || '');\n    const bv = String(b[sortKey] || '');\n    if (av && bv && av !== bv) return av.localeCompare(bv);\n    if (av && !bv) return -1;\n    if (!av && bv) return 1;\n    return 0;\n  };\n}\n\nfunction pickFairBySource(rows, options = {}) {\n  const limit = Number(options.limit || rows.length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const sourceKey = options.sourceKey || 'source_id';\n  const fallbackKeys = options.fallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const buckets = new Map();\n  for (const row of rows || []) {\n    const keyValues = [sourceKey, ...fallbackKeys].map((key) => row[key]).filter(Boolean);\n    const source = String(keyValues[0] || '__unknown__');\n    if (!buckets.has(source)) buckets.set(source, []);\n    buckets.get(source).push(row);\n  }\n\n  const sourceOrder = [...buckets.keys()];\n  for (const source of sourceOrder) {\n    buckets.get(source).sort(compare);\n  }\n\n  const picked = [];\n  const pickedBySource = {};\n  let madeProgress = true;\n\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const source of sourceOrder) {\n      if (picked.length >= limit) break;\n      pickedBySource[source] = pickedBySource[source] || 0;\n      if (pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      picked.push(bucket.shift());\n      pickedBySource[source] += 1;\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\nfunction pickFairByGroup(rows, options = {}) {\n  const limit = Number(options.limit || (rows || []).length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const groupKey = options.groupKey || 'niche';\n  const groupFallbackKeys = options.groupFallbackKeys || [];\n  const sourceKey = options.sourceKey || 'source_id';\n  const sourceFallbackKeys = options.sourceFallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const groups = new Map();\n  for (const row of rows || []) {\n    const groupValues = [groupKey, ...groupFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const sourceValues = [sourceKey, ...sourceFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const group = String(groupValues[0] || '__unknown_group__');\n    const source = String(sourceValues[0] || '__unknown_source__');\n\n    if (!groups.has(group)) {\n      groups.set(group, {\n        sourceOrder: [],\n        buckets: new Map(),\n        pickedBySource: {},\n        nextSourceIndex: 0,\n      });\n    }\n    const groupBucket = groups.get(group);\n    if (!groupBucket.buckets.has(source)) {\n      groupBucket.buckets.set(source, []);\n      groupBucket.sourceOrder.push(source);\n    }\n    groupBucket.buckets.get(source).push(row);\n  }\n\n  const groupOrder = [...groups.keys()];\n  for (const group of groupOrder) {\n    const groupBucket = groups.get(group);\n    for (const source of groupBucket.sourceOrder) {\n      groupBucket.buckets.get(source).sort(compare);\n    }\n  }\n\n  function pickFromGroup(groupBucket) {\n    const totalSources = groupBucket.sourceOrder.length;\n    if (totalSources === 0) return null;\n\n    for (let attempts = 0; attempts < totalSources; attempts += 1) {\n      const index = (groupBucket.nextSourceIndex + attempts) % totalSources;\n      const source = groupBucket.sourceOrder[index];\n      groupBucket.pickedBySource[source] = groupBucket.pickedBySource[source] || 0;\n      if (groupBucket.pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = groupBucket.buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      groupBucket.nextSourceIndex = (index + 1) % totalSources;\n      groupBucket.pickedBySource[source] += 1;\n      return bucket.shift();\n    }\n\n    return null;\n  }\n\n  const picked = [];\n  let madeProgress = true;\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const group of groupOrder) {\n      if (picked.length >= limit) break;\n      const row = pickFromGroup(groups.get(group));\n      if (!row) continue;\n      picked.push(row);\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\n\nfunction shellQuote(value) {\n  return `'${String(value).replace(/'/g, `'\\\\''`)}'`;\n}\n\nfunction safeIdComponent(value) {\n  const id = String(value || '').trim();\n  if (!/^[A-Za-z0-9_-]+$/.test(id)) {\n    throw new Error(`Unsafe id for yt-dlp path: ${JSON.stringify(value)}`);\n  }\n  return id;\n}\n\nfunction normalizeTimeRange(moment) {\n  const start = Math.max(0, Math.floor(Number(moment.start_sec)));\n  const end = Math.floor(Number(moment.end_sec));\n  const duration = end - start;\n  if (!Number.isFinite(start) || !Number.isFinite(end) || duration < 45 || duration > 90) {\n    throw new Error(`Invalid yt-dlp clip range for ${moment.clip_moment_id || 'unknown'}: ${moment.start_sec}-${moment.end_sec}`);\n  }\n  return { start, end, duration };\n}\n\nfunction createdClipIdForMoment(moment) {\n  return `CC-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction ytdlpJobIdForMoment(moment) {\n  return `YTDLP-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction hasCreatedClip(moment, clips) {\n  const createdId = createdClipIdForMoment(moment);\n  const jobId = ytdlpJobIdForMoment(moment);\n  return (clips || []).some((clip) => (\n    String(clip.created_clip_id || '') === createdId ||\n    String(clip.ssemble_job_id || '') === jobId\n  ));\n}\n\nfunction planYtDlpDownloads(moments, createdClips, folders = {}, options = {}) {\n  const limit = Number(options.limit || 5);\n  const perSourceLimit = Number(options.perSourceLimit || 1);\n  const pending = [];\n\n  for (const moment of moments || []) {\n    if (String(moment.ssemble_status || '') !== 'PENDING') continue;\n    if (!moment.clip_moment_id || !moment.source_video_url) continue;\n\n    let range;\n    let createdClipId;\n    let ytdlpJobId;\n    try {\n      range = normalizeTimeRange(moment);\n      createdClipId = createdClipIdForMoment(moment);\n      ytdlpJobId = ytdlpJobIdForMoment(moment);\n    } catch {\n      continue;\n    }\n    if (hasCreatedClip(moment, createdClips)) continue;\n\n    const workdir = `/data/jobs/${createdClipId}`;\n    pending.push({\n      clip_moment_id: moment.clip_moment_id,\n      created_clip_id: createdClipId,\n      ssemble_job_id: ytdlpJobId,\n      video_id: moment.video_id,\n      niche: moment.niche,\n      source_id: moment.source_id || '',\n      source_video_url: moment.source_video_url,\n      start_sec: range.start,\n      end_sec: range.end,\n      duration_seconds: range.duration,\n      clip_score: Number(moment.clip_score || 0),\n      clip_title: moment.suggested_title || moment.core_idea || createdClipId,\n      file_name: `${moment.niche}_${createdClipId}.mp4`,\n      drive_folder_id: folders[moment.niche] || '',\n      workdir,\n      local_path: `${workdir}/source.mp4`,\n      portrait_path: `${workdir}/portrait.mp4`,\n      portrait_log_path: `${workdir}/ffmpeg-portrait.log`,\n      log_path: `${workdir}/yt-dlp.log`,\n      core_idea: moment.core_idea || '',\n      suggested_title: moment.suggested_title || '',\n      suggested_caption: moment.suggested_caption || '',\n      reviewer_notes: [\n        `provider=yt-dlp`,\n        `strategy=${moment.strategy || ''}`,\n        `clip_moment_id=${moment.clip_moment_id}`,\n      ].join('; '),\n      created_at: moment.created_at || '',\n    });\n  }\n\n  return pickFairByGroup(pending, {\n    limit,\n    perSourceLimit,\n    groupKey: 'niche',\n    sourceKey: 'source_id',\n    sourceFallbackKeys: ['niche'],\n    compare: (a, b) => {\n      const scoreDelta = Number(b.clip_score || 0) - Number(a.clip_score || 0);\n      if (scoreDelta !== 0) return scoreDelta;\n      return String(a.created_at || '').localeCompare(String(b.created_at || ''));\n    },\n  });\n}\n\nfunction buildYtDlpCommand(request) {\n  safeIdComponent(request.created_clip_id);\n  const range = normalizeTimeRange(request);\n  const section = `*${range.start}-${range.end}`;\n  return [\n    'mkdir -p',\n    shellQuote(request.workdir),\n    '&&',\n    'python3 -m yt_dlp',\n    '--no-playlist',\n    '--force-overwrites',\n    '--download-sections',\n    shellQuote(section),\n    '--force-keyframes-at-cuts',\n    '-f',\n    shellQuote('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'),\n    '--merge-output-format',\n    'mp4',\n    '-o',\n    shellQuote(`${request.workdir}/source.%(ext)s`),\n    shellQuote(request.source_video_url),\n    '>',\n    shellQuote(request.log_path),\n    '2>&1',\n    '&&',\n    'test -s',\n    shellQuote(request.local_path),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0',\n    shellQuote(request.local_path),\n    '|',\n    \"grep -q '^video$'\",\n  ].join(' ');\n}\n\nfunction buildMomentStatus(request, status, extra = {}) {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: request.ssemble_job_id || '',\n    ...extra,\n  };\n}\n\nfunction buildCreatedClipRow(request, drive, now = new Date().toISOString()) {\n  return {\n    created_clip_id: request.created_clip_id,\n    ssemble_job_id: request.ssemble_job_id,\n    video_id: request.video_id,\n    niche: request.niche,\n    clip_title: String(request.clip_title || ''),\n    clip_url: '',\n    local_file_name: request.file_name,\n    google_drive_file_id: drive.id || '',\n    google_drive_url: drive.webViewLink || (drive.id ? `https://drive.google.com/file/d/${drive.id}/view` : ''),\n    duration_seconds: request.duration_seconds,\n    transcript_excerpt: '',\n    suggested_title: String(request.suggested_title || ''),\n    suggested_caption: String(request.suggested_caption || ''),\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: request.reviewer_notes || 'provider=yt-dlp',\n    created_at: now,\n  };\n}\n\nfunction buildPortraitCommand(request) {\n  const inputPath = request.local_path;\n  const outputPath = request.portrait_path;\n  const logPath = request.portrait_log_path;\n  const vf = 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(iw-1080)/2:(ih-1920)/2,setsar=1';\n  return [\n    'ffmpeg -y',\n    '-i', shellQuote(inputPath),\n    '-map 0:v:0',\n    '-map 0:a:0?',\n    '-vf', shellQuote(vf),\n    '-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p',\n    '-c:a aac -b:a 128k',\n    '-movflags +faststart',\n    shellQuote(outputPath),\n    '>', shellQuote(logPath), '2>&1',\n    '&&', 'test -s', shellQuote(outputPath),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0',\n    shellQuote(outputPath),\n    '|',\n    \"grep -qx '1080x1920'\",\n  ].join(' ');\n}\n\n\nconst req = $('Download Loop').first().json;\nconst drive = $input.first().json;\nreturn [{ json: buildCreatedClipRow(req, drive), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf6-017",
+      "name": "Save Created Clip",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3520,
+        -40
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Created_Clips"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "created_clip_id"
+          ]
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "wf6-018",
+      "name": "Mark Moment Completed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3740,
+        -40
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function defaultCompare(sortKey) {\n  return (a, b) => {\n    const av = String(a[sortKey] || '');\n    const bv = String(b[sortKey] || '');\n    if (av && bv && av !== bv) return av.localeCompare(bv);\n    if (av && !bv) return -1;\n    if (!av && bv) return 1;\n    return 0;\n  };\n}\n\nfunction pickFairBySource(rows, options = {}) {\n  const limit = Number(options.limit || rows.length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const sourceKey = options.sourceKey || 'source_id';\n  const fallbackKeys = options.fallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const buckets = new Map();\n  for (const row of rows || []) {\n    const keyValues = [sourceKey, ...fallbackKeys].map((key) => row[key]).filter(Boolean);\n    const source = String(keyValues[0] || '__unknown__');\n    if (!buckets.has(source)) buckets.set(source, []);\n    buckets.get(source).push(row);\n  }\n\n  const sourceOrder = [...buckets.keys()];\n  for (const source of sourceOrder) {\n    buckets.get(source).sort(compare);\n  }\n\n  const picked = [];\n  const pickedBySource = {};\n  let madeProgress = true;\n\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const source of sourceOrder) {\n      if (picked.length >= limit) break;\n      pickedBySource[source] = pickedBySource[source] || 0;\n      if (pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      picked.push(bucket.shift());\n      pickedBySource[source] += 1;\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\nfunction pickFairByGroup(rows, options = {}) {\n  const limit = Number(options.limit || (rows || []).length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const groupKey = options.groupKey || 'niche';\n  const groupFallbackKeys = options.groupFallbackKeys || [];\n  const sourceKey = options.sourceKey || 'source_id';\n  const sourceFallbackKeys = options.sourceFallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const groups = new Map();\n  for (const row of rows || []) {\n    const groupValues = [groupKey, ...groupFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const sourceValues = [sourceKey, ...sourceFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const group = String(groupValues[0] || '__unknown_group__');\n    const source = String(sourceValues[0] || '__unknown_source__');\n\n    if (!groups.has(group)) {\n      groups.set(group, {\n        sourceOrder: [],\n        buckets: new Map(),\n        pickedBySource: {},\n        nextSourceIndex: 0,\n      });\n    }\n    const groupBucket = groups.get(group);\n    if (!groupBucket.buckets.has(source)) {\n      groupBucket.buckets.set(source, []);\n      groupBucket.sourceOrder.push(source);\n    }\n    groupBucket.buckets.get(source).push(row);\n  }\n\n  const groupOrder = [...groups.keys()];\n  for (const group of groupOrder) {\n    const groupBucket = groups.get(group);\n    for (const source of groupBucket.sourceOrder) {\n      groupBucket.buckets.get(source).sort(compare);\n    }\n  }\n\n  function pickFromGroup(groupBucket) {\n    const totalSources = groupBucket.sourceOrder.length;\n    if (totalSources === 0) return null;\n\n    for (let attempts = 0; attempts < totalSources; attempts += 1) {\n      const index = (groupBucket.nextSourceIndex + attempts) % totalSources;\n      const source = groupBucket.sourceOrder[index];\n      groupBucket.pickedBySource[source] = groupBucket.pickedBySource[source] || 0;\n      if (groupBucket.pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = groupBucket.buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      groupBucket.nextSourceIndex = (index + 1) % totalSources;\n      groupBucket.pickedBySource[source] += 1;\n      return bucket.shift();\n    }\n\n    return null;\n  }\n\n  const picked = [];\n  let madeProgress = true;\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const group of groupOrder) {\n      if (picked.length >= limit) break;\n      const row = pickFromGroup(groups.get(group));\n      if (!row) continue;\n      picked.push(row);\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\n\nfunction shellQuote(value) {\n  return `'${String(value).replace(/'/g, `'\\\\''`)}'`;\n}\n\nfunction safeIdComponent(value) {\n  const id = String(value || '').trim();\n  if (!/^[A-Za-z0-9_-]+$/.test(id)) {\n    throw new Error(`Unsafe id for yt-dlp path: ${JSON.stringify(value)}`);\n  }\n  return id;\n}\n\nfunction normalizeTimeRange(moment) {\n  const start = Math.max(0, Math.floor(Number(moment.start_sec)));\n  const end = Math.floor(Number(moment.end_sec));\n  const duration = end - start;\n  if (!Number.isFinite(start) || !Number.isFinite(end) || duration < 45 || duration > 90) {\n    throw new Error(`Invalid yt-dlp clip range for ${moment.clip_moment_id || 'unknown'}: ${moment.start_sec}-${moment.end_sec}`);\n  }\n  return { start, end, duration };\n}\n\nfunction createdClipIdForMoment(moment) {\n  return `CC-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction ytdlpJobIdForMoment(moment) {\n  return `YTDLP-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction hasCreatedClip(moment, clips) {\n  const createdId = createdClipIdForMoment(moment);\n  const jobId = ytdlpJobIdForMoment(moment);\n  return (clips || []).some((clip) => (\n    String(clip.created_clip_id || '') === createdId ||\n    String(clip.ssemble_job_id || '') === jobId\n  ));\n}\n\nfunction planYtDlpDownloads(moments, createdClips, folders = {}, options = {}) {\n  const limit = Number(options.limit || 5);\n  const perSourceLimit = Number(options.perSourceLimit || 1);\n  const pending = [];\n\n  for (const moment of moments || []) {\n    if (String(moment.ssemble_status || '') !== 'PENDING') continue;\n    if (!moment.clip_moment_id || !moment.source_video_url) continue;\n\n    let range;\n    let createdClipId;\n    let ytdlpJobId;\n    try {\n      range = normalizeTimeRange(moment);\n      createdClipId = createdClipIdForMoment(moment);\n      ytdlpJobId = ytdlpJobIdForMoment(moment);\n    } catch {\n      continue;\n    }\n    if (hasCreatedClip(moment, createdClips)) continue;\n\n    const workdir = `/data/jobs/${createdClipId}`;\n    pending.push({\n      clip_moment_id: moment.clip_moment_id,\n      created_clip_id: createdClipId,\n      ssemble_job_id: ytdlpJobId,\n      video_id: moment.video_id,\n      niche: moment.niche,\n      source_id: moment.source_id || '',\n      source_video_url: moment.source_video_url,\n      start_sec: range.start,\n      end_sec: range.end,\n      duration_seconds: range.duration,\n      clip_score: Number(moment.clip_score || 0),\n      clip_title: moment.suggested_title || moment.core_idea || createdClipId,\n      file_name: `${moment.niche}_${createdClipId}.mp4`,\n      drive_folder_id: folders[moment.niche] || '',\n      workdir,\n      local_path: `${workdir}/source.mp4`,\n      portrait_path: `${workdir}/portrait.mp4`,\n      portrait_log_path: `${workdir}/ffmpeg-portrait.log`,\n      log_path: `${workdir}/yt-dlp.log`,\n      core_idea: moment.core_idea || '',\n      suggested_title: moment.suggested_title || '',\n      suggested_caption: moment.suggested_caption || '',\n      reviewer_notes: [\n        `provider=yt-dlp`,\n        `strategy=${moment.strategy || ''}`,\n        `clip_moment_id=${moment.clip_moment_id}`,\n      ].join('; '),\n      created_at: moment.created_at || '',\n    });\n  }\n\n  return pickFairByGroup(pending, {\n    limit,\n    perSourceLimit,\n    groupKey: 'niche',\n    sourceKey: 'source_id',\n    sourceFallbackKeys: ['niche'],\n    compare: (a, b) => {\n      const scoreDelta = Number(b.clip_score || 0) - Number(a.clip_score || 0);\n      if (scoreDelta !== 0) return scoreDelta;\n      return String(a.created_at || '').localeCompare(String(b.created_at || ''));\n    },\n  });\n}\n\nfunction buildYtDlpCommand(request) {\n  safeIdComponent(request.created_clip_id);\n  const range = normalizeTimeRange(request);\n  const section = `*${range.start}-${range.end}`;\n  return [\n    'mkdir -p',\n    shellQuote(request.workdir),\n    '&&',\n    'python3 -m yt_dlp',\n    '--no-playlist',\n    '--force-overwrites',\n    '--download-sections',\n    shellQuote(section),\n    '--force-keyframes-at-cuts',\n    '-f',\n    shellQuote('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'),\n    '--merge-output-format',\n    'mp4',\n    '-o',\n    shellQuote(`${request.workdir}/source.%(ext)s`),\n    shellQuote(request.source_video_url),\n    '>',\n    shellQuote(request.log_path),\n    '2>&1',\n    '&&',\n    'test -s',\n    shellQuote(request.local_path),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0',\n    shellQuote(request.local_path),\n    '|',\n    \"grep -q '^video$'\",\n  ].join(' ');\n}\n\nfunction buildMomentStatus(request, status, extra = {}) {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: request.ssemble_job_id || '',\n    ...extra,\n  };\n}\n\nfunction buildCreatedClipRow(request, drive, now = new Date().toISOString()) {\n  return {\n    created_clip_id: request.created_clip_id,\n    ssemble_job_id: request.ssemble_job_id,\n    video_id: request.video_id,\n    niche: request.niche,\n    clip_title: String(request.clip_title || ''),\n    clip_url: '',\n    local_file_name: request.file_name,\n    google_drive_file_id: drive.id || '',\n    google_drive_url: drive.webViewLink || (drive.id ? `https://drive.google.com/file/d/${drive.id}/view` : ''),\n    duration_seconds: request.duration_seconds,\n    transcript_excerpt: '',\n    suggested_title: String(request.suggested_title || ''),\n    suggested_caption: String(request.suggested_caption || ''),\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: request.reviewer_notes || 'provider=yt-dlp',\n    created_at: now,\n  };\n}\n\nfunction buildPortraitCommand(request) {\n  const inputPath = request.local_path;\n  const outputPath = request.portrait_path;\n  const logPath = request.portrait_log_path;\n  const vf = 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(iw-1080)/2:(ih-1920)/2,setsar=1';\n  return [\n    'ffmpeg -y',\n    '-i', shellQuote(inputPath),\n    '-map 0:v:0',\n    '-map 0:a:0?',\n    '-vf', shellQuote(vf),\n    '-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p',\n    '-c:a aac -b:a 128k',\n    '-movflags +faststart',\n    shellQuote(outputPath),\n    '>', shellQuote(logPath), '2>&1',\n    '&&', 'test -s', shellQuote(outputPath),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0',\n    shellQuote(outputPath),\n    '|',\n    \"grep -qx '1080x1920'\",\n  ].join(' ');\n}\n\n\nconst req = $('Download Loop').first().json;\nreturn [{ json: buildMomentStatus(req, 'COMPLETED'), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf6-019",
+      "name": "Update Moment Completed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3960,
+        -40
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Clip_Moments"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "clip_moment_id"
+          ]
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "wf6-020",
+      "name": "Mark Moment Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        240
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function defaultCompare(sortKey) {\n  return (a, b) => {\n    const av = String(a[sortKey] || '');\n    const bv = String(b[sortKey] || '');\n    if (av && bv && av !== bv) return av.localeCompare(bv);\n    if (av && !bv) return -1;\n    if (!av && bv) return 1;\n    return 0;\n  };\n}\n\nfunction pickFairBySource(rows, options = {}) {\n  const limit = Number(options.limit || rows.length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const sourceKey = options.sourceKey || 'source_id';\n  const fallbackKeys = options.fallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const buckets = new Map();\n  for (const row of rows || []) {\n    const keyValues = [sourceKey, ...fallbackKeys].map((key) => row[key]).filter(Boolean);\n    const source = String(keyValues[0] || '__unknown__');\n    if (!buckets.has(source)) buckets.set(source, []);\n    buckets.get(source).push(row);\n  }\n\n  const sourceOrder = [...buckets.keys()];\n  for (const source of sourceOrder) {\n    buckets.get(source).sort(compare);\n  }\n\n  const picked = [];\n  const pickedBySource = {};\n  let madeProgress = true;\n\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const source of sourceOrder) {\n      if (picked.length >= limit) break;\n      pickedBySource[source] = pickedBySource[source] || 0;\n      if (pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      picked.push(bucket.shift());\n      pickedBySource[source] += 1;\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\nfunction pickFairByGroup(rows, options = {}) {\n  const limit = Number(options.limit || (rows || []).length || 0);\n  const perSourceLimit = Number(options.perSourceLimit || limit || 1);\n  const groupKey = options.groupKey || 'niche';\n  const groupFallbackKeys = options.groupFallbackKeys || [];\n  const sourceKey = options.sourceKey || 'source_id';\n  const sourceFallbackKeys = options.sourceFallbackKeys || [];\n  const compare = options.compare || defaultCompare(options.sortKey || 'created_at');\n\n  if (limit <= 0 || perSourceLimit <= 0) return [];\n\n  const groups = new Map();\n  for (const row of rows || []) {\n    const groupValues = [groupKey, ...groupFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const sourceValues = [sourceKey, ...sourceFallbackKeys].map((key) => row[key]).filter(Boolean);\n    const group = String(groupValues[0] || '__unknown_group__');\n    const source = String(sourceValues[0] || '__unknown_source__');\n\n    if (!groups.has(group)) {\n      groups.set(group, {\n        sourceOrder: [],\n        buckets: new Map(),\n        pickedBySource: {},\n        nextSourceIndex: 0,\n      });\n    }\n    const groupBucket = groups.get(group);\n    if (!groupBucket.buckets.has(source)) {\n      groupBucket.buckets.set(source, []);\n      groupBucket.sourceOrder.push(source);\n    }\n    groupBucket.buckets.get(source).push(row);\n  }\n\n  const groupOrder = [...groups.keys()];\n  for (const group of groupOrder) {\n    const groupBucket = groups.get(group);\n    for (const source of groupBucket.sourceOrder) {\n      groupBucket.buckets.get(source).sort(compare);\n    }\n  }\n\n  function pickFromGroup(groupBucket) {\n    const totalSources = groupBucket.sourceOrder.length;\n    if (totalSources === 0) return null;\n\n    for (let attempts = 0; attempts < totalSources; attempts += 1) {\n      const index = (groupBucket.nextSourceIndex + attempts) % totalSources;\n      const source = groupBucket.sourceOrder[index];\n      groupBucket.pickedBySource[source] = groupBucket.pickedBySource[source] || 0;\n      if (groupBucket.pickedBySource[source] >= perSourceLimit) continue;\n\n      const bucket = groupBucket.buckets.get(source);\n      if (!bucket || bucket.length === 0) continue;\n\n      groupBucket.nextSourceIndex = (index + 1) % totalSources;\n      groupBucket.pickedBySource[source] += 1;\n      return bucket.shift();\n    }\n\n    return null;\n  }\n\n  const picked = [];\n  let madeProgress = true;\n  while (picked.length < limit && madeProgress) {\n    madeProgress = false;\n    for (const group of groupOrder) {\n      if (picked.length >= limit) break;\n      const row = pickFromGroup(groups.get(group));\n      if (!row) continue;\n      picked.push(row);\n      madeProgress = true;\n    }\n  }\n\n  return picked;\n}\n\n\nfunction shellQuote(value) {\n  return `'${String(value).replace(/'/g, `'\\\\''`)}'`;\n}\n\nfunction safeIdComponent(value) {\n  const id = String(value || '').trim();\n  if (!/^[A-Za-z0-9_-]+$/.test(id)) {\n    throw new Error(`Unsafe id for yt-dlp path: ${JSON.stringify(value)}`);\n  }\n  return id;\n}\n\nfunction normalizeTimeRange(moment) {\n  const start = Math.max(0, Math.floor(Number(moment.start_sec)));\n  const end = Math.floor(Number(moment.end_sec));\n  const duration = end - start;\n  if (!Number.isFinite(start) || !Number.isFinite(end) || duration < 45 || duration > 90) {\n    throw new Error(`Invalid yt-dlp clip range for ${moment.clip_moment_id || 'unknown'}: ${moment.start_sec}-${moment.end_sec}`);\n  }\n  return { start, end, duration };\n}\n\nfunction createdClipIdForMoment(moment) {\n  return `CC-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction ytdlpJobIdForMoment(moment) {\n  return `YTDLP-${safeIdComponent(moment.clip_moment_id)}`;\n}\n\nfunction hasCreatedClip(moment, clips) {\n  const createdId = createdClipIdForMoment(moment);\n  const jobId = ytdlpJobIdForMoment(moment);\n  return (clips || []).some((clip) => (\n    String(clip.created_clip_id || '') === createdId ||\n    String(clip.ssemble_job_id || '') === jobId\n  ));\n}\n\nfunction planYtDlpDownloads(moments, createdClips, folders = {}, options = {}) {\n  const limit = Number(options.limit || 5);\n  const perSourceLimit = Number(options.perSourceLimit || 1);\n  const pending = [];\n\n  for (const moment of moments || []) {\n    if (String(moment.ssemble_status || '') !== 'PENDING') continue;\n    if (!moment.clip_moment_id || !moment.source_video_url) continue;\n\n    let range;\n    let createdClipId;\n    let ytdlpJobId;\n    try {\n      range = normalizeTimeRange(moment);\n      createdClipId = createdClipIdForMoment(moment);\n      ytdlpJobId = ytdlpJobIdForMoment(moment);\n    } catch {\n      continue;\n    }\n    if (hasCreatedClip(moment, createdClips)) continue;\n\n    const workdir = `/data/jobs/${createdClipId}`;\n    pending.push({\n      clip_moment_id: moment.clip_moment_id,\n      created_clip_id: createdClipId,\n      ssemble_job_id: ytdlpJobId,\n      video_id: moment.video_id,\n      niche: moment.niche,\n      source_id: moment.source_id || '',\n      source_video_url: moment.source_video_url,\n      start_sec: range.start,\n      end_sec: range.end,\n      duration_seconds: range.duration,\n      clip_score: Number(moment.clip_score || 0),\n      clip_title: moment.suggested_title || moment.core_idea || createdClipId,\n      file_name: `${moment.niche}_${createdClipId}.mp4`,\n      drive_folder_id: folders[moment.niche] || '',\n      workdir,\n      local_path: `${workdir}/source.mp4`,\n      portrait_path: `${workdir}/portrait.mp4`,\n      portrait_log_path: `${workdir}/ffmpeg-portrait.log`,\n      log_path: `${workdir}/yt-dlp.log`,\n      core_idea: moment.core_idea || '',\n      suggested_title: moment.suggested_title || '',\n      suggested_caption: moment.suggested_caption || '',\n      reviewer_notes: [\n        `provider=yt-dlp`,\n        `strategy=${moment.strategy || ''}`,\n        `clip_moment_id=${moment.clip_moment_id}`,\n      ].join('; '),\n      created_at: moment.created_at || '',\n    });\n  }\n\n  return pickFairByGroup(pending, {\n    limit,\n    perSourceLimit,\n    groupKey: 'niche',\n    sourceKey: 'source_id',\n    sourceFallbackKeys: ['niche'],\n    compare: (a, b) => {\n      const scoreDelta = Number(b.clip_score || 0) - Number(a.clip_score || 0);\n      if (scoreDelta !== 0) return scoreDelta;\n      return String(a.created_at || '').localeCompare(String(b.created_at || ''));\n    },\n  });\n}\n\nfunction buildYtDlpCommand(request) {\n  safeIdComponent(request.created_clip_id);\n  const range = normalizeTimeRange(request);\n  const section = `*${range.start}-${range.end}`;\n  return [\n    'mkdir -p',\n    shellQuote(request.workdir),\n    '&&',\n    'python3 -m yt_dlp',\n    '--no-playlist',\n    '--force-overwrites',\n    '--download-sections',\n    shellQuote(section),\n    '--force-keyframes-at-cuts',\n    '-f',\n    shellQuote('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best'),\n    '--merge-output-format',\n    'mp4',\n    '-o',\n    shellQuote(`${request.workdir}/source.%(ext)s`),\n    shellQuote(request.source_video_url),\n    '>',\n    shellQuote(request.log_path),\n    '2>&1',\n    '&&',\n    'test -s',\n    shellQuote(request.local_path),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0',\n    shellQuote(request.local_path),\n    '|',\n    \"grep -q '^video$'\",\n  ].join(' ');\n}\n\nfunction buildMomentStatus(request, status, extra = {}) {\n  return {\n    clip_moment_id: request.clip_moment_id,\n    ssemble_status: status,\n    ssemble_job_id: request.ssemble_job_id || '',\n    ...extra,\n  };\n}\n\nfunction buildCreatedClipRow(request, drive, now = new Date().toISOString()) {\n  return {\n    created_clip_id: request.created_clip_id,\n    ssemble_job_id: request.ssemble_job_id,\n    video_id: request.video_id,\n    niche: request.niche,\n    clip_title: String(request.clip_title || ''),\n    clip_url: '',\n    local_file_name: request.file_name,\n    google_drive_file_id: drive.id || '',\n    google_drive_url: drive.webViewLink || (drive.id ? `https://drive.google.com/file/d/${drive.id}/view` : ''),\n    duration_seconds: request.duration_seconds,\n    transcript_excerpt: '',\n    suggested_title: String(request.suggested_title || ''),\n    suggested_caption: String(request.suggested_caption || ''),\n    transformation_plan: '',\n    review_status: 'AWAITING_DOWNLOAD',\n    reviewer_notes: request.reviewer_notes || 'provider=yt-dlp',\n    created_at: now,\n  };\n}\n\nfunction buildPortraitCommand(request) {\n  const inputPath = request.local_path;\n  const outputPath = request.portrait_path;\n  const logPath = request.portrait_log_path;\n  const vf = 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(iw-1080)/2:(ih-1920)/2,setsar=1';\n  return [\n    'ffmpeg -y',\n    '-i', shellQuote(inputPath),\n    '-map 0:v:0',\n    '-map 0:a:0?',\n    '-vf', shellQuote(vf),\n    '-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p',\n    '-c:a aac -b:a 128k',\n    '-movflags +faststart',\n    shellQuote(outputPath),\n    '>', shellQuote(logPath), '2>&1',\n    '&&', 'test -s', shellQuote(outputPath),\n    '&&',\n    'ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0',\n    shellQuote(outputPath),\n    '|',\n    \"grep -qx '1080x1920'\",\n  ].join(' ');\n}\n\n\nconst req = $('Download Loop').first().json;\nconst out = $input.first().json;\nreturn [{ json: buildMomentStatus(req, 'ERROR', { error_message: String(out.stderr || out.error || out.message || 'yt-dlp download failed').slice(0, 1000) }), pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf6-021",
+      "name": "Update Moment Error",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2420,
+        240
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Clip_Moments"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "clip_moment_id"
+          ]
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "wf6-022",
+      "name": "Wait 2s Completed",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        4180,
+        -40
+      ],
+      "parameters": {
+        "amount": 2
+      }
+    },
+    {
+      "id": "wf6-023",
+      "name": "Wait 2s Failed",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2640,
+        240
+      ],
+      "parameters": {
+        "amount": 2
+      }
+    }
+  ],
+  "connections": {
+    "Schedule 15m": {
+      "main": [
+        [
+          {
+            "node": "Read Clip_Moments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Clip_Moments": {
+      "main": [
+        [
+          {
+            "node": "Read Created_Clips",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Created_Clips": {
+      "main": [
+        [
+          {
+            "node": "Plan yt-dlp Downloads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan yt-dlp Downloads": {
+      "main": [
+        [
+          {
+            "node": "Download Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Loop": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Build yt-dlp Command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build yt-dlp Command": {
+      "main": [
+        [
+          {
+            "node": "Mark Moment Downloading",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Moment Downloading": {
+      "main": [
+        [
+          {
+            "node": "Update Moment Downloading",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Moment Downloading": {
+      "main": [
+        [
+          {
+            "node": "Run yt-dlp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run yt-dlp": {
+      "main": [
+        [
+          {
+            "node": "Download Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Build Portrait Command",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Moment Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Portrait Command": {
+      "main": [
+        [
+          {
+            "node": "Run FFmpeg Portrait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run FFmpeg Portrait": {
+      "main": [
+        [
+          {
+            "node": "Portrait Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Portrait Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Read Downloaded Clip",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Moment Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Downloaded Clip": {
+      "main": [
+        [
+          {
+            "node": "Upload Clip To Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Clip To Drive": {
+      "main": [
+        [
+          {
+            "node": "Build Created Clip Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Created Clip Row": {
+      "main": [
+        [
+          {
+            "node": "Save Created Clip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Created Clip": {
+      "main": [
+        [
+          {
+            "node": "Mark Moment Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Moment Completed": {
+      "main": [
+        [
+          {
+            "node": "Update Moment Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Moment Completed": {
+      "main": [
+        [
+          {
+            "node": "Wait 2s Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2s Completed": {
+      "main": [
+        [
+          {
+            "node": "Download Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Moment Error": {
+      "main": [
+        [
+          {
+            "node": "Update Moment Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Moment Error": {
+      "main": [
+        [
+          {
+            "node": "Wait 2s Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2s Failed": {
+      "main": [
+        [
+          {
+            "node": "Download Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}

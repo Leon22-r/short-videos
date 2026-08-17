@@ -26,22 +26,35 @@ const sheetsNode = (id, name, position, parameters, extra = {}) => ({
   type: 'n8n-nodes-base.googleSheets',
   typeVersion: 4.5,
   position,
+  retryOnFail: true,
+  maxTries: 3,
+  waitBetweenTries: 5000,
   ...(parameters.operation === 'read' ? { executeOnce: true } : {}),
   ...extra,
 });
 
 const httpNode = (id, name, position, url, extra = {}) => ({
-  parameters: { method: 'GET', url, options: {} },
+  parameters: {
+    method: 'GET',
+    url,
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpQueryAuth',
+    options: {},
+  },
   id,
   name,
   type: 'n8n-nodes-base.httpRequest',
   typeVersion: 4.2,
   position,
+  retryOnFail: true,
+  maxTries: 3,
+  waitBetweenTries: 5000,
   ...extra,
 });
 
 const workflow = {
   name: 'WF2 Video Fetch',
+  description: 'Fetches recent and backfill uploads fairly across active source channels. It keeps discovery resumable and prevents one channel from monopolizing the candidate queue.',
   nodes: [
     {
       parameters: { rule: { interval: [{ field: 'hours', hoursInterval: 6 }] } },
@@ -94,7 +107,7 @@ return out;`),
       'a1b2c3d4-0002-4000-8000-000000000007',
       'Fetch Uploads',
       [1320, 120],
-      "={{ 'https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=50&playlistId=' + $json.uploads_playlist_id + ($json.page_token ? '&pageToken=' + $json.page_token : '') + '&key=YOUTUBE_API_KEY' }}",
+      "={{ 'https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=50&playlistId=' + $json.uploads_playlist_id + ($json.page_token ? '&pageToken=' + $json.page_token : '') }}",
     ),
     codeNode('a1b2c3d4-0002-4000-8000-000000000008', 'Build Videos Lookup', [1540, 120], `const requests = $('Build Fetch Requests').all();
 const out = [];
@@ -132,7 +145,7 @@ function channelMeta(c) {
       'a1b2c3d4-0002-4000-8000-000000000009',
       'Fetch Video Details',
       [1760, 120],
-      "=https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id={{ $json.video_ids || 'dQw4w9WgXcQ' }}&key=YOUTUBE_API_KEY",
+      "=https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id={{ $json.video_ids || 'dQw4w9WgXcQ' }}",
       { alwaysOutputData: true },
     ),
     codeNode('a1b2c3d4-0002-4000-8000-000000000010', 'Build Candidate Rows', [1980, 120], `const sd = $getWorkflowStaticData('global');

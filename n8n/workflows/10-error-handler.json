@@ -1,5 +1,6 @@
 {
   "name": "WF10 Error Handler",
+  "description": "Normalizes unattended workflow failures and appends them to the shared Error_Log sheet. It provides the central failure sink that scheduled workflows should select in n8n Workflow Settings after import.",
   "nodes": [
     {
       "parameters": {},
@@ -53,7 +54,10 @@
       "position": [
         440,
         0
-      ]
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     }
   ],
   "connections": {

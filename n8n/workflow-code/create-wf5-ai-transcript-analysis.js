@@ -13,22 +13,11 @@ const embeddedHealthHelper = healthHelperSource.replace(/module\.exports = \{[\s
 
 const sheet = (operation, sheetName, extra = {}) => ({
   operation,
-  documentId: { __rl: true, mode: 'id', value: getExistingDocumentId() },
+  documentId: { __rl: true, mode: 'id', value: 'GOOGLE_SHEETS_DOCUMENT_ID' },
   sheetName: { __rl: true, mode: 'name', value: sheetName },
   options: {},
   ...extra,
 });
-
-function getExistingDocumentId() {
-  if (!fs.existsSync(workflowPath)) return 'GOOGLE_SHEETS_DOCUMENT_ID';
-  try {
-    const existing = JSON.parse(fs.readFileSync(workflowPath, 'utf8'));
-    const sheetsNode = existing.nodes?.find((node) => node.parameters?.documentId?.value);
-    return sheetsNode?.parameters?.documentId?.value || 'GOOGLE_SHEETS_DOCUMENT_ID';
-  } catch {
-    return 'GOOGLE_SHEETS_DOCUMENT_ID';
-  }
-}
 
 const codeNode = (id, name, position, jsCode) => ({
   parameters: { mode: 'runOnceForAllItems', jsCode },
@@ -46,6 +35,9 @@ const sheetsNode = (id, name, position, parameters, extra = {}) => ({
   type: 'n8n-nodes-base.googleSheets',
   typeVersion: 4.5,
   position,
+  retryOnFail: true,
+  maxTries: 3,
+  waitBetweenTries: 5000,
   ...(parameters.operation === 'read' ? { executeOnce: true } : {}),
   ...extra,
 });
@@ -76,11 +68,15 @@ const openAiNode = (id, name, position) => ({
   type: '@n8n/n8n-nodes-langchain.openAi',
   typeVersion: 2,
   position,
+  retryOnFail: true,
+  maxTries: 3,
+  waitBetweenTries: 5000,
   onError: 'continueRegularOutput',
 });
 
 const workflow = {
   name: 'WF5 AI Transcript Analysis',
+  description: 'Scores transcripts, emits exact clip moments, and updates source health using bounded fair-share selection. It keeps download recommendations reviewable and avoids spending downstream work on unsafe or weak moments.',
   nodes: [
     {
       parameters: { rule: { interval: [{ field: 'hours', hoursInterval: 1 }] } },

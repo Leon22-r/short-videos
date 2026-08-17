@@ -4,6 +4,7 @@
   "private": true,
   "description": "n8n short-form video automation pipeline (workflow code + tests)",
   "scripts": {
+    "channel:engagement": "node scripts/youtube-channel-engagement.js",
     "test": "node --test tests/*.test.js"
   }
 }

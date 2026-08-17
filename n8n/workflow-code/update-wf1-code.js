@@ -1,36 +1,25 @@
 const fs = require('node:fs');
 
 const workflowPath = process.argv[2];
-const keyMode = process.argv[3] || 'preserve';
-
 if (!workflowPath) {
-  console.error('Usage: node n8n/workflow-code/update-wf1-code.js <workflow.json> [preserve|placeholder]');
+  console.error('Usage: node n8n/workflow-code/update-wf1-code.js <workflow.json>');
   process.exit(1);
 }
 
 const workflows = JSON.parse(fs.readFileSync(workflowPath, 'utf8'));
 const workflow = Array.isArray(workflows) ? workflows[0] : workflows;
 
+workflow.description = 'Resolves human-entered YouTube channel URLs into stable channel and uploads-playlist IDs. It keeps source registration explicit while giving downstream discovery a cheap, deterministic playlist input.';
+
 const pickNode = workflow.nodes.find((node) => node.name === 'Pick Unresolved');
+const resolveNode = workflow.nodes.find((node) => node.name === 'Resolve Channel');
 const parseNode = workflow.nodes.find((node) => node.name === 'Parse Channel Response');
 
-if (!pickNode || !parseNode) {
-  throw new Error('Expected Pick Unresolved and Parse Channel Response nodes');
+if (!pickNode || !resolveNode || !parseNode) {
+  throw new Error('Expected Pick Unresolved, Resolve Channel, and Parse Channel Response nodes');
 }
-
-function extractKeyLine(jsCode) {
-  const match = jsCode.match(/const KEY = .*?;/);
-  if (!match) return "const KEY = 'YOUTUBE_API_KEY';";
-  return match[0];
-}
-
-const keyLine = keyMode === 'placeholder'
-  ? "const KEY = 'YOUTUBE_API_KEY';"
-  : extractKeyLine(pickNode.parameters.jsCode);
 
 pickNode.parameters.jsCode = `// Rows with a URL but no resolved channel id; build a YouTube API lookup URL per row.
-${keyLine}
-
 function extractYouTubeVideoId(url) {
   const patterns = [
     /(?:youtube\\.com|m\\.youtube\\.com)\\/watch\\?[^#]*\\bv=([A-Za-z0-9_-]{11})/,
@@ -48,13 +37,12 @@ function extractYouTubeVideoId(url) {
   return null;
 }
 
-function buildLookup(row, key) {
+function buildLookup(row) {
   if (!row.youtube_channel_url || row.youtube_channel_id) return null;
 
   const url = String(row.youtube_channel_url).trim();
   if (!url) return null;
 
-  const encodedKey = encodeURIComponent(key);
   const channelMatch = url.match(/\\/channel\\/(UC[A-Za-z0-9_-]{22})(?:[/?#]|$)/);
   if (channelMatch) {
     const channelId = channelMatch[1];
@@ -62,7 +50,7 @@ function buildLookup(row, key) {
       ...row,
       lookup_type: 'channel_id',
       lookup_value: channelId,
-      lookup_url: \`https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&id=\${encodeURIComponent(channelId)}&key=\${encodedKey}\`,
+      lookup_url: \`https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&id=\${encodeURIComponent(channelId)}\`,
     };
   }
 
@@ -73,7 +61,7 @@ function buildLookup(row, key) {
       ...row,
       lookup_type: 'handle',
       lookup_value: handle,
-      lookup_url: \`https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forHandle=\${encodeURIComponent(handle)}&key=\${encodedKey}\`,
+      lookup_url: \`https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forHandle=\${encodeURIComponent(handle)}\`,
     };
   }
 
@@ -84,7 +72,7 @@ function buildLookup(row, key) {
       ...row,
       lookup_type: 'username',
       lookup_value: username,
-      lookup_url: \`https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forUsername=\${encodeURIComponent(username)}&key=\${encodedKey}\`,
+      lookup_url: \`https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forUsername=\${encodeURIComponent(username)}\`,
     };
   }
 
@@ -95,7 +83,7 @@ function buildLookup(row, key) {
       ...row,
       lookup_type: 'custom_url_search',
       lookup_value: customName,
-      lookup_url: \`https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=1&q=\${encodeURIComponent(customName)}&key=\${encodedKey}\`,
+      lookup_url: \`https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=1&q=\${encodeURIComponent(customName)}\`,
     };
   }
 
@@ -105,7 +93,7 @@ function buildLookup(row, key) {
       ...row,
       lookup_type: 'video',
       lookup_value: videoId,
-      lookup_url: \`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=\${encodeURIComponent(videoId)}&key=\${encodedKey}\`,
+      lookup_url: \`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=\${encodeURIComponent(videoId)}\`,
     };
   }
 
@@ -114,12 +102,27 @@ function buildLookup(row, key) {
 
 const out = [];
 $input.all().forEach((item, index) => {
-  const lookup = buildLookup(item.json, KEY);
+  const lookup = buildLookup(item.json);
   if (!lookup) return;
   out.push({ json: lookup, pairedItem: { item: index } });
 });
 
 return out;`;
+
+resolveNode.parameters = {
+  ...resolveNode.parameters,
+  authentication: 'genericCredentialType',
+  genericAuthType: 'httpQueryAuth',
+};
+resolveNode.retryOnFail = true;
+resolveNode.maxTries = 3;
+resolveNode.waitBetweenTries = 5000;
+
+for (const node of workflow.nodes.filter((candidate) => candidate.type === 'n8n-nodes-base.googleSheets')) {
+  node.retryOnFail = true;
+  node.maxTries = 3;
+  node.waitBetweenTries = 5000;
+}
 
 parseNode.parameters.jsCode = `// Pair API responses back with source rows (same order, 1:1).
 function uploadsPlaylistFromChannelId(channelId) {

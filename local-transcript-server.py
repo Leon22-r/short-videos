@@ -1,6 +1,17 @@
+import argparse
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+
+parser = argparse.ArgumentParser(description="Local transcript service (wraps lamba-function/handler.py)")
+parser.add_argument("--api-key", default=os.environ.get("TRANSCRIPT_API_KEY", "local-dev"),
+                    help="value handler checks the x-api-key header against (default: env TRANSCRIPT_API_KEY or 'local-dev')")
+parser.add_argument("--port", type=int, default=8787, help="port to listen on (default: 8787)")
+args = parser.parse_args()
+
+# handler.handler() reads TRANSCRIPT_API_KEY from the environment at request time.
+os.environ["TRANSCRIPT_API_KEY"] = args.api_key
 
 sys.path.insert(0, str(Path("lamba-function").resolve()))
 import handler
@@ -25,5 +36,5 @@ class Handler(BaseHTTPRequestHandler):
           self.end_headers()
           self.wfile.write(payload)
 
-print("Listening on http://0.0.0.0:8787/transcript")
-HTTPServer(("0.0.0.0", 8787), Handler).serve_forever()
+print(f"Listening on http://0.0.0.0:{args.port}/  (x-api-key: {args.api_key})")
+HTTPServer(("0.0.0.0", args.port), Handler).serve_forever()

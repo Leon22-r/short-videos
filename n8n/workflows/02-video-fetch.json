@@ -1,5 +1,6 @@
 {
   "name": "WF2 Video Fetch",
+  "description": "Fetches recent and backfill uploads fairly across active source channels. It keeps discovery resumable and prevents one channel from monopolizing the candidate queue.",
   "nodes": [
     {
       "parameters": {
@@ -44,6 +45,9 @@
         220,
         0
       ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
       "executeOnce": true
     },
     {
@@ -69,6 +73,9 @@
         440,
         0
       ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
       "executeOnce": true,
       "alwaysOutputData": true
     },
@@ -117,7 +124,9 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "={{ 'https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=50&playlistId=' + $json.uploads_playlist_id + ($json.page_token ? '&pageToken=' + $json.page_token : '') + '&key=YOUTUBE_API_KEY' }}",
+        "url": "={{ 'https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=50&playlistId=' + $json.uploads_playlist_id + ($json.page_token ? '&pageToken=' + $json.page_token : '') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
         "options": {}
       },
       "id": "a1b2c3d4-0002-4000-8000-000000000007",
@@ -127,7 +136,10 @@
       "position": [
         1320,
         120
-      ]
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -146,7 +158,9 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "=https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id={{ $json.video_ids || 'dQw4w9WgXcQ' }}&key=YOUTUBE_API_KEY",
+        "url": "=https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,liveStreamingDetails&id={{ $json.video_ids || 'dQw4w9WgXcQ' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
         "options": {}
       },
       "id": "a1b2c3d4-0002-4000-8000-000000000009",
@@ -157,6 +171,9 @@
         1760,
         120
       ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
       "alwaysOutputData": true
     },
     {
@@ -228,7 +245,10 @@
       "position": [
         2640,
         20
-      ]
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -273,7 +293,10 @@
       "position": [
         1320,
         -160
-      ]
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     }
   ],
   "connections": {

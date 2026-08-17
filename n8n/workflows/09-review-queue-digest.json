@@ -39,7 +39,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
         },
         "sheetName": {
           "__rl": true,
@@ -48,7 +48,10 @@
         },
         "options": {}
       },
-      "executeOnce": true
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "id": "wf9-002",
@@ -64,7 +67,7 @@
         "documentId": {
           "__rl": true,
           "mode": "id",
-          "value": "1oieljeCRBZ4gCJ6KCwDUP1RMmd2x3MyEObhAx3CWd_k"
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
         },
         "sheetName": {
           "__rl": true,
@@ -73,7 +76,10 @@
         },
         "options": {}
       },
-      "executeOnce": true
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "id": "wf9-003",

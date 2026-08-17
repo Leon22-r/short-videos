@@ -1,0 +1,13 @@
+{
+  "name": "short-videos-provider-uploader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Docker-internal streaming adapter for YouTube resumable uploads",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

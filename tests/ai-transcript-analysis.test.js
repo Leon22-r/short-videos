@@ -167,10 +167,10 @@ test('builds OpenAI app node analysis inputs', () => {
   assert.equal(result.openai_model, 'gpt-4o-mini');
   assert.deepEqual(JSON.parse(result.analysis_schema), ANALYSIS_SCHEMA);
   assert.match(result.system_message, /content strategist/);
-  assert.match(result.system_message, /Prioritize USE_20_MIN_WINDOW/);
-  assert.match(result.system_message, /at least 3 strong clips within a single 60-1200 second window/);
-  assert.match(result.system_message, /USE_EXACT_CLIPS_ONLY only when the good moments are scattered far apart/);
-  assert.match(result.system_message, /Ssemble credits are spent more efficiently on high-density windows/);
+  assert.match(result.system_message, /Default to USE_EXACT_CLIPS_ONLY/);
+  assert.match(result.system_message, /Return the best exact 45-90 second clips directly/);
+  assert.match(result.system_message, /USE_20_MIN_WINDOW only as optional analysis context/);
+  assert.match(result.system_message, /yt-dlp, which only downloads exact time ranges/);
   assert.match(result.user_message, /FINANCE_BUSINESS/);
   assert.match(result.user_message, /"overall_episode_score"/);
   assert.match(result.user_message, /Return the bare analysis object/);
@@ -180,8 +180,9 @@ test('builds OpenAI app node analysis inputs', () => {
   assert.match(result.user_message, /raw seconds from the beginning/);
   assert.match(result.user_message, /minute 5.*300/i);
   assert.match(result.user_message, /USE_20_MIN_WINDOW.*best_20_min_windows/i);
+  assert.match(result.user_message, /exact_clips.*45-90 second clips inside the selected windows/i);
   assert.match(result.user_message, /For SKIP_THIS_VIDEO.*empty best_20_min_windows array/i);
-  assert.match(result.user_message, /USE_EXACT_CLIPS_ONLY.*at least one clip/);
+  assert.match(result.user_message, /USE_EXACT_CLIPS_ONLY.*at least one 45-90 second clip/);
 });
 
 test('buildAnalysisRequest uses full transcript text before preview fallback', () => {
@@ -246,8 +247,8 @@ test('parses array-wrapped official OpenAI node output', () => {
       estimated_number_of_good_clips: 3
     },
     exact_clips: [
-      clip({ rank: 1, start_sec: 3, end_sec: 7, clip_length_seconds: 4 }),
-      clip({ rank: 2, start_sec: 20, end_sec: 36, clip_length_seconds: 16, clip_score: 8 }),
+      clip({ rank: 1, start_sec: 60, end_sec: 110, clip_length_seconds: 50 }),
+      clip({ rank: 2, start_sec: 65, end_sec: 120, clip_length_seconds: 55, clip_score: 8 }),
     ],
   }))}
 }
@@ -259,9 +260,9 @@ test('parses array-wrapped official OpenAI node output', () => {
   const result = parseAndGate(baseRow, response);
 
   assert.equal(result.analysisUpdate.ai_episode_score, 8);
-  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_20_MIN_WINDOW');
+  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_EXACT_CLIPS_ONLY');
   assert.equal(result.candidateUpdate.processing_status, 'ANALYZED');
-  assert.equal(result.momentRows.length, 1);
+  assert.equal(result.momentRows.length, 2);
 });
 
 test('parses official OpenAI node output string wrappers', () => {
@@ -471,7 +472,7 @@ test('downgrades weak 20-minute windows to exact clips', () => {
   assert(result.momentRows.every((row) => row.ssemble_status === 'PENDING'));
 });
 
-test('creates one pending window row when there are enough strong clips in range', () => {
+test('creates exact pending clip rows when there are enough strong clips in a window', () => {
   const result = parseAndGate(baseRow, ai({
     recommended_strategy: 'USE_20_MIN_WINDOW',
     best_20_min_window: {
@@ -488,13 +489,15 @@ test('creates one pending window row when there are enough strong clips in range
     ],
   }));
 
-  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_20_MIN_WINDOW');
-  assert.equal(result.momentRows.length, 1);
-  assert.equal(result.momentRows[0].clip_moment_id, 'CM-VID-video1234567-W0');
+  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_EXACT_CLIPS_ONLY');
+  assert.equal(result.momentRows.length, 3);
+  assert.equal(result.momentRows[0].clip_moment_id, 'CM-VID-video1234567-1');
+  assert.equal(result.momentRows[0].start_sec, 100);
+  assert.equal(result.momentRows[0].end_sec, 180);
   assert.equal(result.momentRows[0].ssemble_status, 'PENDING');
 });
 
-test('creates one row per valid 20-minute window and caps at five', () => {
+test('creates exact rows from valid 20-minute windows and caps total downloads at five', () => {
   const windows = Array.from({ length: 6 }, (_, index) => ({
     use_this: true,
     start_sec: index * 1300,
@@ -506,25 +509,30 @@ test('creates one row per valid 20-minute window and caps at five', () => {
     recommended_strategy: 'USE_20_MIN_WINDOW',
     best_20_min_windows: windows,
     best_20_min_window: undefined,
-    exact_clips: [],
+    exact_clips: windows.map((window, index) => clip({
+      rank: index + 1,
+      start_sec: window.start_sec + 60,
+      end_sec: window.start_sec + 120,
+      clip_length_seconds: 60,
+    })),
   }));
 
-  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_20_MIN_WINDOW');
-  assert.equal(result.analysisUpdate.recommended_start_sec, 0);
-  assert.equal(result.analysisUpdate.recommended_end_sec, 1200);
+  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_EXACT_CLIPS_ONLY');
+  assert.equal(result.analysisUpdate.recommended_start_sec, '');
+  assert.equal(result.analysisUpdate.recommended_end_sec, '');
   assert.equal(result.momentRows.length, 5);
   assert.deepEqual(result.momentRows.map((row) => row.clip_moment_id), [
-    'CM-VID-video1234567-W0',
-    'CM-VID-video1234567-W1',
-    'CM-VID-video1234567-W2',
-    'CM-VID-video1234567-W3',
-    'CM-VID-video1234567-W4',
+    'CM-VID-video1234567-1',
+    'CM-VID-video1234567-2',
+    'CM-VID-video1234567-3',
+    'CM-VID-video1234567-4',
+    'CM-VID-video1234567-5',
   ]);
-  assert.equal(result.momentRows[1].start_sec, 1300);
-  assert.equal(result.momentRows[1].core_idea, 'Dense section 1');
+  assert.equal(result.momentRows[1].start_sec, 1360);
+  assert.equal(result.momentRows[1].core_idea, 'Budgeting matters');
 });
 
-test('creates one pending window row without exact clips', () => {
+test('skips a window result without exact downloadable clips', () => {
   const result = parseAndGate(baseRow, ai({
     recommended_strategy: 'USE_20_MIN_WINDOW',
     best_20_min_window: {
@@ -537,21 +545,9 @@ test('creates one pending window row without exact clips', () => {
     exact_clips: [],
   }));
 
-  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_20_MIN_WINDOW');
-  assert.equal(result.candidateUpdate.processing_status, 'ANALYZED');
-  assert.equal(result.momentRows.length, 1);
-  assert.equal(result.momentRows[0].start_sec, 300);
-  assert.equal(result.momentRows[0].end_sec, 1500);
-  assert.deepEqual(Object.keys(result.momentRows[0]), [
-    'clip_moment_id', 'video_id', 'niche', 'source_id', 'rank', 'start_sec',
-    'end_sec', 'clip_length_seconds', 'hook_first_2_seconds', 'core_idea',
-    'why_valuable', 'target_audience', 'suggested_title', 'suggested_caption',
-    'on_screen_text', 'suggested_broll', 'commentary_angle',
-    'kenyan_african_application', 'bible_verse_if_relevant',
-    'needs_extra_context', 'originality_score', 'clip_score', 'rights_risk',
-    'final_recommendation', 'ssemble_status', 'ssemble_job_id', 'strategy',
-    'source_video_url', 'created_at',
-  ]);
+  assert.equal(result.analysisUpdate.recommended_strategy, 'SKIP_THIS_VIDEO');
+  assert.equal(result.candidateUpdate.processing_status, 'SKIPPED');
+  assert.deepEqual(result.momentRows, []);
 });
 
 test('backfills one complete deterministic row for a missing window moment', () => {
@@ -574,6 +570,7 @@ test('backfills one complete deterministic row for a missing window moment', () 
         why_this_window: 'Dense founder section',
         estimated_number_of_good_clips: 5,
       }],
+      exact_clips: [clip({ rank: 1, start_sec: 60, end_sec: 120 })],
     }),
   }];
 
@@ -586,14 +583,14 @@ test('backfills one complete deterministic row for a missing window moment', () 
   );
 
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].clip_moment_id, 'CM-VID-1-W0');
+  assert.equal(rows[0].clip_moment_id, 'CM-VID-1-W0-1');
   assert.equal(rows[0].source_id, 'SRC-1');
-  assert.equal(rows[0].rank, 0);
-  assert.equal(rows[0].clip_score, 10);
+  assert.equal(rows[0].rank, 1);
+  assert.equal(rows[0].clip_score, 8);
   assert.equal(rows[0].rights_risk, 'medium');
   assert.equal(rows[0].ssemble_status, 'PENDING');
-  assert.equal(rows[0].core_idea, 'Dense founder section');
-  assert.equal(rows[0].why_valuable, 'window with ~5 strong clips');
+  assert.equal(rows[0].core_idea, 'Budgeting matters');
+  assert.equal(rows[0].why_valuable, 'Practical money lesson');
   assert.equal(rows[0].created_at, now);
 });
 
@@ -624,13 +621,17 @@ test('backfills every missing stored window moment independently', () => {
           estimated_number_of_good_clips: 4,
         },
       ],
+      exact_clips: [
+        clip({ rank: 1, start_sec: 60, end_sec: 120 }),
+        clip({ rank: 2, start_sec: 2460, end_sec: 2520 }),
+      ],
     }),
-  }], [], [], [{ clip_moment_id: 'CM-VID-1-W0' }], '2026-06-23T10:00:00.000Z');
+  }], [], [], [{ clip_moment_id: 'CM-VID-1-W0-1' }], '2026-06-23T10:00:00.000Z');
 
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].clip_moment_id, 'CM-VID-1-W1');
-  assert.equal(rows[0].start_sec, 2400);
-  assert.equal(rows[0].core_idea, 'Later section');
+  assert.equal(rows[0].clip_moment_id, 'CM-VID-1-W1-2');
+  assert.equal(rows[0].start_sec, 2460);
+  assert.equal(rows[0].core_idea, 'Budgeting matters');
 });
 
 test('window backfill skips existing, non-window, and invalid-window rows', () => {
@@ -651,7 +652,7 @@ test('window backfill skips existing, non-window, and invalid-window rows', () =
   ], [], [], [], '2026-06-23T10:00:00.000Z'), []);
 });
 
-test('window backfill tolerates malformed metadata and routes high-risk sources for approval', () => {
+test('window backfill skips malformed metadata without exact downloadable clips', () => {
   const rows = buildMissingWindowMoments([{
     video_id: 'VID-2',
     niche: 'AFRICAN_KENYAN_SUCCESS',
@@ -667,13 +668,10 @@ test('window backfill tolerates malformed metadata and routes high-risk sources 
     video_id: 'VID-2', source_id: 'SRC-2',
   }], [], '2026-06-23T10:00:00.000Z');
 
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].core_idea, 'Fallback reason');
-  assert.equal(rows[0].rights_risk, 'low');
-  assert.equal(rows[0].ssemble_status, 'AWAITING_MANUAL_APPROVAL');
+  assert.deepEqual(rows, []);
 });
 
-test('high risk source requires manual approval before Ssemble', () => {
+test('high risk source requires manual approval before provider download', () => {
   const result = parseAndGate({ ...baseRow, source_risk: 'high', source_id: 'SRC-1' }, ai());
 
   assert.equal(result.candidateUpdate.processing_status, 'ANALYZED');
@@ -755,7 +753,7 @@ test('accepts complete legacy window output and stores only bare analysis JSON',
   const stored = JSON.parse(result.analysisUpdate.ai_json_output);
 
   assert.equal(result.retryable, false);
-  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_20_MIN_WINDOW');
+  assert.equal(result.analysisUpdate.recommended_strategy, 'USE_EXACT_CLIPS_ONLY');
   assert.deepEqual(stored, fixtures.normalizedWindowAnalysis);
   assert.equal(stored.output, undefined);
   assert.doesNotMatch(result.analysisUpdate.ai_json_output, /msg_legacy_window|```/);

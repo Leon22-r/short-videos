@@ -2,23 +2,12 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
-  buildReservationRow,
-  buildSubmittedJobUpdate,
-  planSsembleRequests,
-} = require('../n8n/workflow-code/ssemble-dispatch');
-const {
-  attachMoment,
-  explodeCreatedClips,
-  verifyAndParseWebhook,
-} = require('../n8n/workflow-code/ssemble-webhook');
-const {
-  buildNoopPollResult,
-  pickStaleSubmittedJobs,
-  shouldPollCurrentJob,
-  normalizeCompletedPollResult,
-  normalizeFailedPollStatus,
-  normalizeStatusResponse,
-} = require('../n8n/workflow-code/ssemble-polling');
+  buildCreatedClipRow,
+  buildMomentStatus: buildYtDlpMomentStatus,
+  buildPortraitCommand,
+  buildYtDlpCommand,
+  planYtDlpDownloads,
+} = require('../n8n/workflow-code/yt-dlp-clip-download');
 const {
   buildRenderJobRow,
   buildRenderJobBackfillRows,
@@ -37,6 +26,22 @@ const {
   pickPendingRenderJob,
   selectMusicTrack,
 } = require('../n8n/workflow-code/ffmpeg-render');
+const {
+  buildCredentialHealthRows,
+  buildPublishAttempt,
+  buildPublishClaim,
+  buildPublishFailureUpdate,
+  buildPublishSuccessUpdate,
+  buildPublishingJobs,
+  interpretFacebookStatus,
+  interpretInstagramContainerStatus,
+  interpretTikTokStatus,
+  interpretYouTubeStatus,
+  pickNextPublishJob,
+  pickRetryJobs,
+  providerPollUpdate,
+  validateProviderJob,
+} = require('../n8n/workflow-code/publishing');
 const { buildReviewDigest } = require('../n8n/workflow-code/review-queue-digest');
 
 const wf5 = require('../n8n/workflows/05-ai-transcript-analysis.json');
@@ -53,8 +58,8 @@ test('WF5 uses OpenAI after provider rollback', () => {
   assert(!names.some((name) => name.toLowerCase().includes('gemini')));
 });
 
-test('WF6 plans Ssemble requests with daily budget, dedupe, and 60s padding', () => {
-  const requests = planSsembleRequests(
+test('WF6 plans yt-dlp downloads from exact pending clip moments', () => {
+  const requests = planYtDlpDownloads(
     [
       {
         clip_moment_id: 'CM-1',
@@ -62,7 +67,7 @@ test('WF6 plans Ssemble requests with daily budget, dedupe, and 60s padding', ()
         niche: 'FINANCE_BUSINESS',
         source_video_url: 'https://www.youtube.com/watch?v=abc',
         start_sec: 30,
-        end_sec: 45,
+        end_sec: 75,
         clip_score: 9,
         strategy: 'USE_EXACT_CLIPS_ONLY',
         ssemble_status: 'PENDING',
@@ -79,22 +84,23 @@ test('WF6 plans Ssemble requests with daily budget, dedupe, and 60s padding', ()
         ssemble_status: 'PENDING',
       },
     ],
-    [{ clip_moment_id: 'CM-2', job_status: 'RESERVED', created_at: '2026-06-17T06:00:00.000Z' }],
+    [{ created_clip_id: 'CC-CM-2', created_at: '2026-06-17T06:00:00.000Z' }],
+    { FINANCE_BUSINESS: 'FOLDER-1' },
     {
-      dailyBudget: 3,
-      now: '2026-06-17T10:00:00.000Z',
-      webhookUrl: 'https://example.com/webhook/ssemble-callback?secret=test',
+      limit: 3,
     },
   );
 
   assert.equal(requests.length, 1);
   assert.equal(requests[0].clip_moment_id, 'CM-1');
-  assert.equal(requests[0].end_sec - requests[0].start_sec, 60);
-  assert.equal(JSON.parse(requests[0].ssemble_body).noClipping, true);
+  assert.equal(requests[0].created_clip_id, 'CC-CM-1');
+  assert.equal(requests[0].ssemble_job_id, 'YTDLP-CM-1');
+  assert.equal(requests[0].duration_seconds, 45);
+  assert.equal(requests[0].drive_folder_id, 'FOLDER-1');
 });
 
-test('WF6 reserves a clip before calling Ssemble and later updates with requestId', () => {
-  const req = planSsembleRequests(
+test('WF6 builds a shell-quoted yt-dlp command and compatible Created_Clips row', () => {
+  const req = planYtDlpDownloads(
     [{
       clip_moment_id: 'CM-1',
       video_id: 'VID-1',
@@ -107,37 +113,62 @@ test('WF6 reserves a clip before calling Ssemble and later updates with requestI
       ssemble_status: 'PENDING',
     }],
     [],
-    { now: '2026-06-17T10:00:00.000Z', webhookUrl: 'https://example.com/hook' },
+    { FINANCE_BUSINESS: 'FOLDER-1' },
   )[0];
 
-  const reservation = buildReservationRow(req, '2026-06-17T10:00:01.000Z');
-  const submitted = buildSubmittedJobUpdate(req, { data: { requestId: 'REQ-123' } }, '2026-06-17T10:00:02.000Z');
+  const command = buildYtDlpCommand(req);
+  const clip = buildCreatedClipRow(
+    req,
+    { id: 'DRIVE-1', webViewLink: 'https://drive/clip' },
+    '2026-06-17T10:00:02.000Z',
+  );
 
-  assert.equal(reservation.ssemble_job_id, 'RESERVE-CM-1');
-  assert.equal(reservation.job_status, 'RESERVED');
-  assert.equal(submitted.clip_moment_id, 'CM-1');
-  assert.equal(submitted.ssemble_job_id, 'REQ-123');
-  assert.equal(submitted.job_status, 'SUBMITTED');
+  assert.match(command, /python3 -m yt_dlp/);
+  assert.match(command, /--download-sections '\*0-90'/);
+  assert.match(command, /--download-sections '\*0-90' --force-keyframes-at-cuts/);
+  assert.doesNotMatch(command, /--no-part/);
+  assert.match(command, /test -s '\/data\/jobs\/CC-CM-1\/source\.mp4'/);
+  assert.match(
+    command,
+    /ffprobe -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 '\/data\/jobs\/CC-CM-1\/source\.mp4' \| grep -q '\^video\$'/,
+  );
+  assert.equal(req.portrait_path, '/data/jobs/CC-CM-1/portrait.mp4');
+  assert.equal(req.portrait_log_path, '/data/jobs/CC-CM-1/ffmpeg-portrait.log');
+  assert.equal(clip.created_clip_id, 'CC-CM-1');
+  assert.equal(clip.ssemble_job_id, 'YTDLP-CM-1');
+  assert.equal(clip.google_drive_file_id, 'DRIVE-1');
+  assert.equal(clip.review_status, 'AWAITING_DOWNLOAD');
 });
 
-test('WF6 workflow writes reservation before Ssemble API call', () => {
-  const workflow = requireWorkflow('06', 'ssemble-dispatch');
+test('WF6 workflow runs yt-dlp before creating the downstream clip row', () => {
+  const workflow = requireWorkflow('06', 'yt-dlp-clip-download');
+  const names = workflow.nodes.map((node) => node.name);
 
-  assert.equal(workflow.connections['Plan Requests'].main[0][0].node, 'Dispatch Loop');
-  assert.equal(workflow.connections['Build Reservation Row'].main[0][0].node, 'Reserve Ssemble Job');
-  assert.equal(workflow.connections['Reserve Ssemble Job'].main[0][0].node, 'Call Ssemble Create');
+  assert(names.includes('Plan yt-dlp Downloads'));
+  assert(names.includes('Run yt-dlp'));
+  assert(names.includes('Build Portrait Command'));
+  assert(names.includes('Run FFmpeg Portrait'));
+  assert(names.includes('Portrait Succeeded?'));
+  assert(names.includes('Read Downloaded Clip'));
+  assert(names.includes('Upload Clip To Drive'));
+  assert(names.includes('Save Created Clip'));
+  assert(!names.includes('Call Ssemble Create'));
+  assert.equal(workflow.connections['Plan yt-dlp Downloads'].main[0][0].node, 'Download Loop');
+  assert.equal(workflow.connections['Run yt-dlp'].main[0][0].node, 'Download Succeeded?');
+  assert.equal(workflow.connections['Download Succeeded?'].main[0][0].node, 'Build Portrait Command');
+  assert.equal(workflow.connections['Portrait Succeeded?'].main[0][0].node, 'Read Downloaded Clip');
+  assert.equal(workflow.connections['Upload Clip To Drive'].main[0][0].node, 'Build Created Clip Row');
 });
 
-test('WF6 dispatches Ssemble requests fairly by source before spending credits', () => {
+test('WF6 dispatches yt-dlp downloads fairly by source', () => {
   const moments = [
     { clip_moment_id: 'A-1', video_id: 'VID-A1', source_id: 'SRC-A', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/a1', start_sec: 0, end_sec: 90, clip_score: 10, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:01:00.000Z' },
     { clip_moment_id: 'A-2', video_id: 'VID-A2', source_id: 'SRC-A', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/a2', start_sec: 0, end_sec: 90, clip_score: 9, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:02:00.000Z' },
     { clip_moment_id: 'B-1', video_id: 'VID-B1', source_id: 'SRC-B', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/b1', start_sec: 0, end_sec: 90, clip_score: 8, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:01:00.000Z' },
   ];
 
-  const requests = planSsembleRequests(moments, [], {
-    dailyBudget: 3,
-    now: '2026-06-27T10:00:00.000Z',
+  const requests = planYtDlpDownloads(moments, [], {}, {
+    limit: 3,
     perSourceLimit: 1,
   });
 
@@ -151,16 +182,15 @@ test('WF6 falls back to niche fairness when source_id is missing', () => {
     { clip_moment_id: 'C-1', video_id: 'VID-C1', niche: 'CHRISTIAN_CONTENT', source_video_url: 'https://youtu.be/c1', start_sec: 0, end_sec: 90, clip_score: 8, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:01:00.000Z' },
   ];
 
-  const requests = planSsembleRequests(moments, [], {
-    dailyBudget: 3,
-    now: '2026-06-27T10:00:00.000Z',
+  const requests = planYtDlpDownloads(moments, [], {}, {
+    limit: 3,
     perSourceLimit: 1,
   });
 
   assert.deepEqual(requests.map((request) => request.clip_moment_id), ['F-1', 'C-1']);
 });
 
-test('WF6 balances Ssemble spend by niche before spending extra credits in one niche', () => {
+test('WF6 balances yt-dlp downloads by niche before taking extra clips in one niche', () => {
   const moments = [
     { clip_moment_id: 'F-A1', video_id: 'VID-FA1', source_id: 'SRC-FA', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/fa1', start_sec: 0, end_sec: 90, clip_score: 10, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:01:00.000Z' },
     { clip_moment_id: 'F-A2', video_id: 'VID-FA2', source_id: 'SRC-FA', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/fa2', start_sec: 0, end_sec: 90, clip_score: 9, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:02:00.000Z' },
@@ -168,170 +198,58 @@ test('WF6 balances Ssemble spend by niche before spending extra credits in one n
     { clip_moment_id: 'C-A1', video_id: 'VID-CA1', source_id: 'SRC-CA', niche: 'CHRISTIAN_CONTENT', source_video_url: 'https://youtu.be/ca1', start_sec: 0, end_sec: 90, clip_score: 7, strategy: 'USE_EXACT_CLIPS_ONLY', ssemble_status: 'PENDING', created_at: '2026-06-27T00:01:00.000Z' },
   ];
 
-  const requests = planSsembleRequests(moments, [], {
-    dailyBudget: 3,
-    now: '2026-06-27T10:00:00.000Z',
+  const requests = planYtDlpDownloads(moments, [], {}, {
+    limit: 3,
     perSourceLimit: 2,
   });
 
   assert.deepEqual(requests.map((request) => request.clip_moment_id), ['F-A1', 'C-A1', 'F-B1']);
 });
 
-test('WF7 verifies webhook secret, joins job lineage, and explodes shorts', () => {
-  const parsed = verifyAndParseWebhook(
-    {
-      query: { secret: 'good' },
-      body: {
-        event: 'shorts.completed',
-        requestId: 'REQ-123',
-        timestamp: '2026-06-17T10:05:00.000Z',
-        data: { shorts: [{ id: 'short1', title: 'Clip', video_url: 'https://cdn/clip.mp4', duration: 42, viral_score: 88 }] },
-      },
-    },
-    'good',
-  );
-  const attached = attachMoment(parsed, [{ ssemble_job_id: 'REQ-123', clip_moment_id: 'CM-1', video_id: 'VID-1', niche: 'FINANCE_BUSINESS' }]);
-  const clips = explodeCreatedClips(attached, '2026-06-17T10:06:00.000Z');
+test('WF6 builds an FFmpeg portrait conversion command from a planned request', () => {
+  const req = planYtDlpDownloads(
+    [{
+      clip_moment_id: 'CM-1',
+      video_id: 'VID-1',
+      niche: 'FINANCE_BUSINESS',
+      source_video_url: 'https://www.youtube.com/watch?v=abc',
+      start_sec: 0,
+      end_sec: 90,
+      ssemble_status: 'PENDING',
+    }],
+    [],
+    {},
+  )[0];
 
-  assert.equal(attached.clip_moment_id, 'CM-1');
-  assert.equal(clips.length, 1);
-  assert.equal(clips[0].created_clip_id, 'CC-short1');
-  assert.equal(clips[0].review_status, 'AWAITING_DOWNLOAD');
+  const command = buildPortraitCommand(req);
+  assert.match(command, /ffmpeg -y/);
+  assert.match(command, /-i '\/data\/jobs\/CC-CM-1\/source\.mp4'/);
+  assert.match(command, /scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:\(iw-1080\)\/2:\(ih-1920\)\/2,setsar=1/);
+  assert.match(command, /-vf/);
+  assert.doesNotMatch(command, /boxblur/);
+  assert.match(command, /-map 0:v:0 -map 0:a:0\?/);
+  assert.match(command, /-pix_fmt yuv420p/);
+  assert.match(command, /-movflags \+faststart/);
+  assert.match(command, /'\/data\/jobs\/CC-CM-1\/portrait\.mp4'/);
+  assert.match(command, /test -s '\/data\/jobs\/CC-CM-1\/portrait\.mp4'/);
+  assert.match(
+    command,
+    /ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 '\/data\/jobs\/CC-CM-1\/portrait\.mp4' \| grep -qx '1080x1920'/,
+  );
 });
 
-test('WF7b picks only stale submitted jobs that still need polling', () => {
-  const jobs = [
-    {
-      ssemble_job_id: 'REQ-old',
-      clip_moment_id: 'CM-old',
-      job_status: 'SUBMITTED',
-      webhook_received: 'FALSE',
-      created_at: '2026-06-26T09:00:00.000Z',
-    },
-    {
-      ssemble_job_id: 'REQ-fresh',
-      clip_moment_id: 'CM-fresh',
-      job_status: 'SUBMITTED',
-      webhook_received: 'FALSE',
-      created_at: '2026-06-26T09:45:00.000Z',
-    },
-    {
-      ssemble_job_id: 'REQ-webhook',
-      clip_moment_id: 'CM-webhook',
-      job_status: 'COMPLETED',
-      webhook_received: 'TRUE',
-      created_at: '2026-06-26T08:00:00.000Z',
-    },
-    {
-      ssemble_job_id: '',
-      clip_moment_id: 'CM-missing',
-      job_status: 'SUBMITTED',
-      webhook_received: 'FALSE',
-      created_at: '2026-06-26T08:00:00.000Z',
-    },
-  ];
+test('WF6 rejects unsafe ids and invalid yt-dlp ranges before planning', () => {
+  const requests = planYtDlpDownloads([
+    { clip_moment_id: 'CM bad', video_id: 'VID-1', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/a', start_sec: 0, end_sec: 60, ssemble_status: 'PENDING' },
+    { clip_moment_id: 'CM-short', video_id: 'VID-2', niche: 'FINANCE_BUSINESS', source_video_url: 'https://youtu.be/b', start_sec: 0, end_sec: 20, ssemble_status: 'PENDING' },
+  ], [], {}, { limit: 5 });
 
-  const picked = pickStaleSubmittedJobs(jobs, '2026-06-26T09:31:00.000Z', 30);
-
-  assert.deepEqual(picked.map((job) => job.ssemble_job_id), ['REQ-old']);
-});
-
-test('WF7b recheck skips jobs already closed by webhook', () => {
-  assert.equal(shouldPollCurrentJob({ ssemble_job_id: 'REQ-1', job_status: 'SUBMITTED', webhook_received: 'FALSE' }), true);
-  assert.equal(shouldPollCurrentJob({ job_status: 'COMPLETED', webhook_received: 'TRUE' }), false);
-  assert.equal(shouldPollCurrentJob({ job_status: 'FAILED', webhook_received: 'TRUE' }), false);
-  assert.equal(shouldPollCurrentJob({ job_status: 'SUBMITTED', webhook_received: 'TRUE' }), false);
-});
-
-test('WF7b normalizes Ssemble status responses into routeable states', () => {
-  const completed = normalizeStatusResponse(
-    { status: 'completed', data: { status: 'completed' } },
-    { ssemble_job_id: 'REQ-1' },
-    '2026-06-26T10:00:00.000Z',
-  );
-  const processing = normalizeStatusResponse(
-    { data: { status: 'processing' } },
-    { ssemble_job_id: 'REQ-2' },
-    '2026-06-26T10:00:00.000Z',
-  );
-  const failed = normalizeStatusResponse(
-    { status: 'failed', failureReason: 'render failed' },
-    { ssemble_job_id: 'REQ-3' },
-    '2026-06-26T10:00:00.000Z',
-  );
-
-  assert.equal(completed.requestId, 'REQ-1');
-  assert.equal(completed.status, 'completed');
-  assert.equal(completed.route, 'completed');
-  assert.equal(processing.route, 'pending');
-  assert.equal(failed.route, 'failed');
-  assert.equal(failed.failureReason, 'render failed');
-});
-
-test('WF7b leaves transient polling errors as no-op retries', () => {
-  const noop = buildNoopPollResult(
-    { ssemble_job_id: 'REQ-429', clip_moment_id: 'CM-1' },
-    { statusCode: 429, message: 'rate limit' },
-    '2026-06-26T10:00:00.000Z',
-  );
-
-  assert.equal(noop.requestId, 'REQ-429');
-  assert.equal(noop.route, 'pending');
-  assert.match(noop.failureReason, /rate limit/);
-});
-
-test('WF7b completed poll result reuses WF7 clip shaping path', () => {
-  const job = {
-    ssemble_job_id: 'REQ-123',
+  assert.deepEqual(requests, []);
+  assert.deepEqual(buildYtDlpMomentStatus({ clip_moment_id: 'CM-1', ssemble_job_id: 'YTDLP-CM-1' }, 'COMPLETED'), {
     clip_moment_id: 'CM-1',
-    video_id: 'VID-1',
-    niche: 'FINANCE_BUSINESS',
-  };
-  const normalized = normalizeCompletedPollResult(
-    job,
-    { status: 'completed' },
-    {
-      data: {
-        shorts: [
-          {
-            id: 'short1',
-            title: 'Clip',
-            video_url: 'https://cdn/clip.mp4',
-            duration: 42,
-            viral_score: 88,
-          },
-        ],
-      },
-    },
-    '2026-06-26T10:05:00.000Z',
-  );
-  const attached = attachMoment(normalized, [job]);
-  const clips = explodeCreatedClips(attached, '2026-06-26T10:06:00.000Z');
-
-  assert.equal(normalized.completed, true);
-  assert.equal(normalized.requestId, 'REQ-123');
-  assert.equal(attached.clip_moment_id, 'CM-1');
-  assert.equal(clips.length, 1);
-  assert.equal(clips[0].created_clip_id, 'CC-short1');
-  assert.equal(clips[0].review_status, 'AWAITING_DOWNLOAD');
-});
-
-test('WF7b failed and cancelled statuses close the moment as error', () => {
-  const failed = normalizeFailedPollStatus(
-    { ssemble_job_id: 'REQ-failed' },
-    { status: 'failed', failureReason: 'render failed' },
-    '2026-06-26T10:05:00.000Z',
-  );
-  const cancelled = normalizeFailedPollStatus(
-    { ssemble_job_id: 'REQ-cancelled' },
-    { status: 'cancelled' },
-    '2026-06-26T10:06:00.000Z',
-  );
-
-  assert.equal(failed.completed, false);
-  assert.equal(failed.requestId, 'REQ-failed');
-  assert.equal(failed.failureReason, 'render failed');
-  assert.equal(cancelled.failureReason, 'Ssemble returned cancelled');
+    ssemble_status: 'COMPLETED',
+    ssemble_job_id: 'YTDLP-CM-1',
+  });
 });
 
 test('WF8 reuses uploaded Drive files and builds OpenAI planner requests', () => {
@@ -374,6 +292,19 @@ test('WF8 picks awaiting downloads fairly by source lineage', () => {
   const selected = pickAwaitingDownloads(clips, jobs, moments, { FINANCE_BUSINESS: 'FOLDER-1' }, { limit: 5, perSourceLimit: 1 });
 
   assert.deepEqual(selected.map((clip) => clip.created_clip_id), ['CC-A1', 'CC-B1']);
+});
+
+test('WF8 resolves yt-dlp Created_Clips lineage back to Clip_Moments', () => {
+  const selected = pickAwaitingDownloads(
+    [{ created_clip_id: 'CC-CM-1', ssemble_job_id: 'YTDLP-CM-1', review_status: 'AWAITING_DOWNLOAD', google_drive_file_id: 'DRIVE-1' }],
+    [],
+    [{ clip_moment_id: 'CM-1', source_id: 'SRC-1', niche: 'FINANCE_BUSINESS', core_idea: 'Track spending' }],
+    { FINANCE_BUSINESS: 'FOLDER-1' },
+  );
+
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].source_id, 'SRC-1');
+  assert.equal(selected[0].moment_core_idea, 'Track spending');
 });
 
 test('WF8 falls back to niche fairness when source_id lineage is missing', () => {
@@ -452,8 +383,24 @@ test('WF8 planner schema includes render instructions for FFmpeg', () => {
   assert(schema.properties.render.required.includes('top_hook_text'));
   assert(schema.properties.render.required.includes('music_mood'));
   assert(schema.properties.render.required.includes('progress_bar_color'));
-  assert.match(planner.user_message, /captions are already burned/i);
+  assert.deepEqual(schema.properties.render.properties.music_mood.enum, [
+    'peaceful',
+    'reflective',
+    'hopeful',
+    'emotional',
+    'focused',
+    'confident',
+    'urgent',
+    'powerful',
+    'inspiring',
+    'warm',
+  ]);
+  assert.deepEqual(schema.properties.render.properties.music_energy_level.enum, ['low', 'medium', 'high']);
+  assert.match(planner.user_message, /downloaded with yt-dlp/i);
   assert.match(planner.user_message, /FFmpeg render plan/i);
+  assert.match(planner.user_message, /Do not invent other mood or energy values/i);
+  assert.match(planner.user_message, /peaceful: calm, soft, spiritual, gentle teaching/i);
+  assert.match(planner.user_message, /high energy: 0\.10 to 0\.14/i);
 });
 
 test('WF8 parse survives fenced, array, and content-part response shapes', () => {
@@ -731,6 +678,7 @@ test('WF8c workflow renders one pending job and stores FFmpeg command', () => {
   assert(names.includes('Read Channel_Branding'));
   assert(names.includes('Read Music_Library'));
   assert(names.includes('Build Asset Plan'));
+  assert(names.includes('Create Render Workspace'));
   assert(names.includes('Download Source Clip'));
   assert(names.includes('Write Source Clip'));
   assert(names.includes('Download Watermark'));
@@ -742,7 +690,14 @@ test('WF8c workflow renders one pending job and stores FFmpeg command', () => {
   assert(names.includes('Read Final Output'));
   assert(names.includes('Upload Final To Drive'));
   assert(names.includes('Mark Render Completed'));
+  assert.equal(workflow.connections['Assets Ready?'].main[0][0].node, 'Create Render Workspace');
+  assert.equal(workflow.connections['Create Render Workspace'].main[0][0].node, 'Download Source Clip');
   assert.equal(workflow.nodes.find((node) => node.name === 'Run FFmpeg').type, 'n8n-nodes-base.executeCommand');
+  assert.match(workflow.nodes.find((node) => node.name === 'Create Render Workspace').parameters.command, /mkdir -p/);
+  assert.equal(
+    workflow.nodes.find((node) => node.name === 'Download Source Clip').parameters.fileId.value,
+    '={{ $("Build Asset Plan").first().json.source_drive_file_id }}',
+  );
   assert.equal(workflow.nodes.find((node) => node.name === 'Write Source Clip').type, 'n8n-nodes-base.readWriteFile');
   assert.equal(workflow.nodes.find((node) => node.name === 'Read Final Output').type, 'n8n-nodes-base.readWriteFile');
 });
@@ -911,58 +866,310 @@ test('WF9 digest channels older than 24h are excluded', () => {
   assert.doesNotMatch(digest.html, /Old.*auto-paused/);
 });
 
-test('WF7b polling fallback checks stale Ssemble jobs and only fetches shorts after completed status', () => {
-  const workflow = requireWorkflow('07b', 'ssemble-polling-fallback');
-  const names = workflow.nodes.map((node) => node.name);
-  const statusNode = workflow.nodes.find((node) => node.name === 'Check Ssemble Status');
-  const shortsNode = workflow.nodes.find((node) => node.name === 'Get Ssemble Shorts');
-  const shortsInbound = Object.entries(workflow.connections)
-    .flatMap(([source, connection]) => (connection.main || [])
-      .flatMap((branch) => branch.map((target) => ({ source, target: target.node }))))
-    .filter((connection) => connection.target === 'Get Ssemble Shorts');
-  const sheetWriteNodes = new Set([
-    'Append Created_Clips',
-    'Update Error Status',
-    'Update Processing Status',
-  ]);
-  const skipNoOpTarget = workflow.connections['Still Needs Poll?'].main[1][0].node;
-  const emptyShortsTarget = workflow.connections['Completed Has Shorts?'].main[1][0].node;
+test('WF11 builds deterministic publishing jobs from approved completed renders', () => {
+  const rows = buildPublishingJobs(
+    [{
+      approved_id: 'APR-1',
+      created_clip_id: 'CC-1',
+      niche: 'FINANCE_BUSINESS',
+      platform: 'YOUTUBE_SHORTS,TIKTOK',
+      final_title: 'Track Your Money',
+      final_caption: 'Know where it goes.',
+      hashtags: '#KenyaFinance #Money',
+      status: 'APPROVED',
+    }],
+    [{
+      render_id: 'RENDER_CC-1',
+      created_clip_id: 'CC-1',
+      niche: 'FINANCE_BUSINESS',
+      render_status: 'COMPLETED',
+      final_drive_file_id: 'DRIVE-FINAL',
+      final_drive_url: 'https://drive/final',
+      final_local_path: '/data/jobs/RENDER_CC-1/output.mp4',
+    }],
+    [{ created_clip_id: 'CC-1', suggested_title: 'Old Title', suggested_caption: 'Old caption' }],
+    [
+      { channel_id: 'finance_youtube', youtube_channel_id: 'UC-FINANCE', niche: 'FINANCE_BUSINESS', platform: 'YOUTUBE_SHORTS', enabled_status: 'TRUE', audit_status: 'APPROVED_PUBLIC', default_privacy: 'public' },
+      { channel_id: 'finance_tiktok', tiktok_open_id: 'TT-FINANCE', niche: 'FINANCE_BUSINESS', platform: 'TIKTOK', enabled_status: 'TRUE', audit_status: 'DEV_PRIVATE_ONLY', requires_manual_publish: 'TRUE' },
+      { channel_id: 'finance_ig', instagram_user_id: 'IG-FINANCE', niche: 'FINANCE_BUSINESS', platform: 'INSTAGRAM_REELS', enabled_status: 'FALSE', audit_status: 'APPROVED_PUBLIC' },
+    ],
+    [],
+    '2026-07-25T08:00:00.000Z',
+  );
 
-  assert.equal(workflow.nodes[0].name, 'Schedule 15m');
-  assert(names.includes('Pick Stale Submitted Jobs'));
-  assert(names.includes('Confirm Still Submitted'));
-  assert(names.includes('Still Needs Poll?'));
-  assert(names.includes('Check Ssemble Status'));
-  assert(names.includes('Get Ssemble Shorts'));
-  assert(names.includes('Normalize Completed Poll'));
-  assert(names.includes('Completed Has Shorts?'));
-  assert(names.includes('Append Created_Clips'));
-  assert.match(statusNode.parameters.url, /\/status/);
-  assert.doesNotMatch(shortsNode.parameters.url, /\/status/);
-  assert.equal(statusNode.parameters.authentication, 'genericCredentialType');
-  assert.equal(statusNode.parameters.genericAuthType, 'httpHeaderAuth');
-  assert.equal(shortsNode.parameters.authentication, 'genericCredentialType');
-  assert.equal(shortsNode.parameters.genericAuthType, 'httpHeaderAuth');
-  assert.equal(workflow.connections['Confirm Still Submitted'].main[0][0].node, 'Still Needs Poll?');
-  assert.equal(workflow.connections['Still Needs Poll?'].main[0][0].node, 'Check Ssemble Status');
-  assert.equal(skipNoOpTarget, 'Wait 2s Pending');
-  assert(!sheetWriteNodes.has(skipNoOpTarget));
-  assert.deepEqual(shortsInbound, [{ source: 'Status Completed?', target: 'Get Ssemble Shorts' }]);
-  assert.equal(workflow.connections['Status Completed?'].main[0][0].node, 'Get Ssemble Shorts');
-  assert.equal(workflow.connections['Status Completed?'].main[1][0].node, 'Status Failed?');
-  assert.equal(workflow.connections['Status Failed?'].main[1][0].node, 'Wait 2s Pending');
-  assert.equal(workflow.connections['Get Ssemble Shorts'].main[0][0].node, 'Normalize Completed Poll');
-  assert.equal(workflow.connections['Normalize Completed Poll'].main[0][0].node, 'Completed Has Shorts?');
-  assert.equal(workflow.connections['Completed Has Shorts?'].main[0][0].node, 'Shape Job Completed');
-  assert.equal(emptyShortsTarget, 'Wait 2s Pending');
-  assert(!sheetWriteNodes.has(emptyShortsTarget));
-  assert.equal(workflow.connections['Append Created_Clips'].main[0][0].node, 'Wait 2s Completed');
-  assert.equal(workflow.connections['Wait 2s Pending'].main[0][0].node, 'Poll Loop');
+  assert.deepEqual(rows.map((row) => row.publish_id), [
+    'PUB_RENDER_CC-1_YOUTUBE_SHORTS_finance_youtube',
+    'PUB_RENDER_CC-1_TIKTOK_finance_tiktok',
+  ]);
+  assert.equal(rows[0].video_source, 'LOCAL_FILE');
+  assert.equal(rows[0].title, 'Track Your Money');
+  assert.equal(rows[0].publish_status, 'PENDING');
+  assert.equal(rows[0].destination_id, 'UC-FINANCE');
+  assert.equal(rows[0].default_privacy, 'public');
+  assert.equal(rows[1].destination_id, 'TT-FINANCE');
+  assert.equal(rows[1].requires_manual_publish, 'TRUE');
+  assert.equal(rows[1].tiktok_mode, 'DRAFT');
+  assert.equal(rows[1].default_privacy, 'SELF_ONLY');
 });
 
-test('WF7, WF7b, WF8, and WF9 workflow files exist with expected entry nodes', () => {
-  assert.equal(requireWorkflow('07', 'ssemble-webhook-receiver').nodes[0].name, 'Webhook');
-  assert.equal(requireWorkflow('07b', 'ssemble-polling-fallback').nodes[0].name, 'Schedule 15m');
+test('WF11 fails closed for unapproved rows, missing platforms, and unaudited destinations', () => {
+  const approvedRows = [
+    { approved_id: 'APR-PENDING', created_clip_id: 'CC-1', platform: 'YOUTUBE_SHORTS', status: 'PENDING' },
+    { approved_id: 'APR-BLANK', created_clip_id: 'CC-1', platform: '', status: 'APPROVED' },
+    { approved_id: 'APR-INVALID', created_clip_id: 'CC-1', platform: 'MYSPACE', status: 'APPROVED' },
+    { approved_id: 'APR-READY', created_clip_id: 'CC-1', platform: 'YOUTUBE_SHORTS', status: 'READY' },
+  ];
+  const renderRows = [{ render_id: 'RENDER_CC-1', created_clip_id: 'CC-1', render_status: 'COMPLETED', final_drive_url: 'https://drive/final' }];
+
+  assert.deepEqual(buildPublishingJobs(
+    approvedRows,
+    renderRows,
+    [],
+    [{ channel_id: 'yt', youtube_channel_id: 'UC-1', platform: 'YOUTUBE_SHORTS', enabled_status: 'TRUE', audit_status: 'NEEDS_REVIEW' }],
+    [],
+  ), []);
+
+  const rows = buildPublishingJobs(
+    approvedRows,
+    renderRows,
+    [],
+    [{ channel_id: 'yt', youtube_channel_id: 'UC-1', platform: 'YOUTUBE_SHORTS', enabled_status: 'TRUE', audit_status: 'DEV_PRIVATE_ONLY' }],
+    [],
+  );
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].approved_id, 'APR-READY');
+  assert.equal(rows[0].default_privacy, 'private');
+});
+
+test('WF11 skips duplicate publishing jobs and incomplete renders', () => {
+  const rows = buildPublishingJobs(
+    [
+      { approved_id: 'APR-1', created_clip_id: 'CC-1', niche: 'FINANCE_BUSINESS', platform: 'YOUTUBE_SHORTS', status: 'APPROVED' },
+      { approved_id: 'APR-2', created_clip_id: 'CC-2', niche: 'FINANCE_BUSINESS', platform: 'YOUTUBE_SHORTS', status: 'APPROVED' },
+    ],
+    [
+      { render_id: 'RENDER_CC-1', created_clip_id: 'CC-1', render_status: 'COMPLETED', final_drive_url: 'https://drive/final' },
+      { render_id: 'RENDER_CC-2', created_clip_id: 'CC-2', render_status: 'FAILED', final_drive_url: 'https://drive/final2' },
+    ],
+    [],
+    [{ channel_id: 'finance_youtube', youtube_channel_id: 'UC-FINANCE', niche: 'FINANCE_BUSINESS', platform: 'YOUTUBE_SHORTS', enabled_status: 'TRUE', audit_status: 'APPROVED_PUBLIC' }],
+    [{ render_id: 'RENDER_CC-1', platform: 'YOUTUBE_SHORTS', channel_id: 'finance_youtube' }],
+  );
+
+  assert.deepEqual(rows, []);
+});
+
+test('WF12 picks due publish jobs and builds platform metadata without tokens', () => {
+  const picked = pickNextPublishJob([
+    { publish_id: 'PUB-later', publish_status: 'RETRY_PENDING', next_retry_at: '2026-07-25T09:00:00.000Z', created_at: '2026-07-25T07:00:00.000Z' },
+    { publish_id: 'PUB-exhausted', publish_status: 'RETRY_PENDING', retry_count: '4', next_retry_at: '2026-07-25T08:00:00.000Z', created_at: '2026-07-25T06:00:00.000Z' },
+    { publish_id: 'PUB-now', publish_status: 'PENDING', platform: 'YOUTUBE_SHORTS', title: 'T', caption: 'C', created_at: '2026-07-25T08:00:00.000Z' },
+  ], '2026-07-25T08:30:00.000Z');
+  const attempt = buildPublishAttempt({ ...picked, hashtags: '#A #B' }, '2026-07-25T08:31:00.000Z');
+  const youtube = JSON.parse(attempt.youtube_metadata);
+
+  assert.equal(picked.publish_id, 'PUB-now');
+  assert.equal(attempt.publish_status, 'UPLOADING');
+  assert.equal(youtube.status.privacyStatus, 'private');
+  assert.deepEqual(youtube.snippet.tags, ['A', 'B']);
+  assert.doesNotMatch(JSON.stringify(attempt), /Bearer|refresh_token|access_token|client_secret/i);
+});
+
+test('WF12 honors publishing schedules and only recovers expired claims', () => {
+  const now = '2026-07-25T08:30:00.000Z';
+  const picked = pickNextPublishJob([
+    { publish_id: 'PUB-future', publish_status: 'PENDING', scheduled_at: '2030-01-01T00:00:00.000Z', created_at: '2026-07-25T06:00:00.000Z' },
+    { publish_id: 'PUB-invalid-date', publish_status: 'PENDING', scheduled_at: 'not-a-date', created_at: '2026-07-25T06:30:00.000Z' },
+    { publish_id: 'PUB-active-claim', publish_status: 'CLAIMED', lease_expires_at: '2026-07-25T08:45:00.000Z', created_at: '2026-07-25T07:00:00.000Z' },
+    { publish_id: 'PUB-stale-claim', publish_status: 'CLAIMED', lease_expires_at: '2026-07-25T08:29:00.000Z', created_at: '2026-07-25T07:30:00.000Z' },
+  ], now);
+
+  assert.equal(picked.publish_id, 'PUB-stale-claim');
+});
+
+test('WF12 builds bounded claims and recovers legacy stale uploads', () => {
+  const claim = buildPublishClaim(
+    { publish_id: 'PUB-1', publish_status: 'PENDING' },
+    'wf12-execution-123',
+    '2026-07-25T08:00:00.000Z',
+    20,
+  );
+  const recovered = pickNextPublishJob([
+    { publish_id: 'PUB-uploading', publish_status: 'UPLOADING', started_at: '2026-07-25T07:00:00.000Z' },
+  ], '2026-07-25T08:00:00.000Z');
+
+  assert.equal(claim.publish_status, 'CLAIMED');
+  assert.equal(claim.claimed_at, '2026-07-25T08:00:00.000Z');
+  assert.equal(claim.claimed_by, 'wf12-execution-123');
+  assert.equal(claim.lease_expires_at, '2026-07-25T08:20:00.000Z');
+  assert.equal(recovered.publish_id, 'PUB-uploading');
+  assert.throws(() => buildPublishClaim({ publish_id: 'PUB-1' }, ''), /claimed_by/);
+});
+
+test('WF12 classifies publish success, retryable failure, and auth failure', () => {
+  const job = { publish_id: 'PUB-1', platform: 'YOUTUBE_SHORTS', retry_count: '0' };
+  const success = buildPublishSuccessUpdate(job, { id: 'YT-1', url: 'https://youtube/shorts/YT-1' }, '2026-07-25T08:00:00.000Z');
+  const retry = buildPublishFailureUpdate(job, { error: { message: '429 rate limit' } }, '2026-07-25T08:00:00.000Z');
+  const auth = buildPublishFailureUpdate(job, { error: { message: '401 invalid token' } }, '2026-07-25T08:00:00.000Z');
+
+  assert.equal(success.publish_status, 'PUBLISHED');
+  assert.equal(success.post_id, 'YT-1');
+  assert.equal(retry.publish_status, 'RETRY_PENDING');
+  assert.equal(retry.retry_count, '1');
+  assert.equal(retry.next_retry_at, '2026-07-25T08:15:00.000Z');
+  assert.equal(auth.publish_status, 'AUTH_REQUIRED');
+  assert.equal(auth.retry_count, '0');
+  assert.equal(auth.claimed_by, '');
+  assert.equal(buildPublishSuccessUpdate(job, {}, '2026-07-25T08:00:00.000Z').publish_status, 'FAILED');
+});
+
+test('WF12 exhausts retryable failures at count four instead of stranding them', () => {
+  const failed = buildPublishFailureUpdate(
+    { publish_id: 'PUB-4', platform: 'YOUTUBE_SHORTS', retry_count: '3', claimed_by: 'worker' },
+    { error: { message: '429 rate limit' } },
+    '2026-07-25T08:00:00.000Z',
+  );
+
+  assert.equal(failed.publish_status, 'FAILED');
+  assert.equal(failed.retry_count, '4');
+  assert.equal(failed.next_retry_at, '');
+  assert.equal(failed.claimed_by, '');
+});
+
+test('WF12 validates provider prerequisites and keeps TikTok direct posting fail closed', () => {
+  assert.deepEqual(validateProviderJob({ platform: 'YOUTUBE_SHORTS', youtube_channel_id: 'UC-1', credential_slot: 'YOUTUBE_PRIMARY', local_file_path: '/data/video.mp4' }).ready, true);
+  assert.equal(validateProviderJob({ platform: 'YOUTUBE_SHORTS', destination_id: 'UC-GENERIC', credential_slot: 'YOUTUBE_PRIMARY', local_file_path: '/data/video.mp4' }).reason, 'MISSING_DESTINATION_ID:youtube_channel_id');
+  assert.equal(validateProviderJob({ platform: 'YOUTUBE_SHORTS', youtube_channel_id: 'UC-1', credential_slot: 'YOUTUBE_PRIMARY' }).reason, 'LOCAL_VIDEO_REQUIRED:YOUTUBE_SHORTS');
+  assert.equal(validateProviderJob({ platform: 'FACEBOOK_REELS', facebook_page_id: 'PAGE-1', credential_slot: 'FACEBOOK_PRIMARY', public_video_url: 'https://media.example/video.mp4' }).reason, 'META_GRAPH_VERSION_REQUIRED');
+  assert.equal(validateProviderJob({ platform: 'INSTAGRAM_REELS', instagram_user_id: 'IG-1', credential_slot: 'INSTAGRAM_PRIMARY', public_video_url: 'https://media.example/video.mp4', meta_graph_version: 'v24.0', instagram_graph_host: 'evil.example' }).reason, 'INVALID_INSTAGRAM_GRAPH_HOST');
+  assert.equal(validateProviderJob({ platform: 'TIKTOK', tiktok_open_id: 'TT-1', credential_slot: 'TIKTOK_PRIMARY', tiktok_mode: 'DIRECT', public_video_url: 'https://media.example/video.mp4', tiktok_domain_verified: 'TRUE' }).reason, 'TIKTOK_DIRECT_REQUIRES_CREATOR_UI_AND_CONSENT');
+  assert.equal(validateProviderJob({ platform: 'TIKTOK', tiktok_open_id: 'TT-1', credential_slot: 'TIKTOK_PRIMARY', tiktok_mode: 'DRAFT', public_video_url: 'https://media.example/video.mp4', tiktok_domain_verified: 'TRUE', tiktok_verified_url_prefix: 'https://media.example/' }).ready, true);
+  assert.equal(validateProviderJob({ platform: 'TIKTOK', tiktok_open_id: 'TT-1', credential_slot: 'TIKTOK_PRIMARY', tiktok_mode: 'DRAFT', public_video_url: 'https://other.example/video.mp4', tiktok_domain_verified: 'TRUE', tiktok_verified_url_prefix: 'https://media.example/' }).reason, 'TIKTOK_VIDEO_URL_OUTSIDE_VERIFIED_PREFIX');
+  for (const publicVideoUrl of [
+    'https://media.example.evil/video.mp4',
+    'https://media.example/videos-evil/video.mp4',
+  ]) {
+    assert.equal(validateProviderJob({ platform: 'TIKTOK', tiktok_open_id: 'TT-1', credential_slot: 'TIKTOK_PRIMARY', tiktok_mode: 'DRAFT', public_video_url: publicVideoUrl, tiktok_domain_verified: 'TRUE', tiktok_verified_url_prefix: 'https://media.example/videos' }).reason, 'TIKTOK_VIDEO_URL_OUTSIDE_VERIFIED_PREFIX');
+  }
+  for (const publicVideoUrl of ['https://user:pass@media.example/videos/video.mp4', 'https://media.example:8443/videos/video.mp4']) {
+    assert.equal(validateProviderJob({ platform: 'TIKTOK', tiktok_open_id: 'TT-1', credential_slot: 'TIKTOK_PRIMARY', tiktok_mode: 'DRAFT', public_video_url: publicVideoUrl, tiktok_domain_verified: 'TRUE', tiktok_verified_url_prefix: 'https://media.example/videos' }).ready, false);
+  }
+});
+
+test('WF12 interprets asynchronous provider acknowledgements only after terminal status', () => {
+  assert.equal(interpretYouTubeStatus({ items: [{ id: 'YT-1', processingDetails: { processingStatus: 'processing' }, status: { uploadStatus: 'uploaded' } }] }).outcome, 'PROCESSING');
+  assert.equal(interpretYouTubeStatus({ items: [{ id: 'YT-1', processingDetails: { processingStatus: 'succeeded' }, status: { uploadStatus: 'processed' } }] }).outcome, 'PUBLISHED');
+  assert.equal(interpretFacebookStatus({ id: 'FB-1', status: { publishing_phase: { status: 'processing' } } }).outcome, 'PROCESSING');
+  assert.equal(interpretFacebookStatus({ id: 'FB-1', status: { publishing_phase: { status: 'complete' } } }).outcome, 'PUBLISHED');
+  assert.equal(interpretInstagramContainerStatus({ id: 'IGC-1', status_code: 'FINISHED' }).outcome, 'READY_TO_PUBLISH');
+  assert.deepEqual(interpretTikTokStatus({ data: { status: 'SEND_TO_USER_INBOX' } }, 'TT-PUB-1'), { outcome: 'DRAFT_UPLOADED', post_id: '' });
+  assert.deepEqual(interpretTikTokStatus({ data: { status: 'PUBLISH_COMPLETE' } }, 'TT-PUB-1'), { outcome: 'PUBLISHED', post_id: '' });
+  assert.deepEqual(interpretTikTokStatus({ data: { status: 'PUBLISH_COMPLETE', publicaly_available_post_id: ['TT-VIDEO-1'] } }, 'TT-PUB-1'), { outcome: 'PUBLISHED', post_id: 'TT-VIDEO-1' });
+  assert.equal(interpretTikTokStatus({ data: { status: 'PROCESSING_DOWNLOAD', publish_id: 'TT-PUB-1' } }).outcome, 'PROCESSING');
+});
+
+test('WF12 builds a durable provider polling checkpoint', () => {
+  const update = providerPollUpdate({ publish_id: 'PUB-1', claimed_by: 'worker-1' }, 'YOUTUBE_PROCESSING', 'YT-1', { ok: true }, '2026-08-17T12:00:00.000Z', 2);
+  assert.equal(update.publish_status, 'PROCESSING');
+  assert.equal(update.provider_ref, 'YT-1');
+  assert.equal(update.poll_after, '2026-08-17T12:02:00.000Z');
+});
+
+test('WF13 and WF14 build maintenance updates from sheet state', () => {
+  const health = buildCredentialHealthRows([
+    { channel_id: 'yt', platform: 'YOUTUBE_SHORTS', enabled_status: 'TRUE', token_expires_at: '2026-07-26T00:00:00.000Z' },
+    { channel_id: 'ig', platform: 'INSTAGRAM_REELS', enabled_status: 'FALSE', token_expires_at: '2026-07-26T00:00:00.000Z' },
+  ], '2026-07-25T08:00:00.000Z');
+  const retries = pickRetryJobs([
+    { publish_id: 'PUB-1', publish_status: 'RETRY_PENDING', retry_count: '1', next_retry_at: '2026-07-25T07:59:00.000Z' },
+    { publish_id: 'PUB-2', publish_status: 'RETRY_PENDING', retry_count: '4', next_retry_at: '2026-07-25T07:59:00.000Z' },
+  ], '2026-07-25T08:00:00.000Z');
+
+  assert.equal(health.length, 1);
+  assert.equal(health[0].last_health_status, 'EXPIRING');
+  assert.equal(health[0].last_expiry_audit_at, '2026-07-25T08:00:00.000Z');
+  assert.equal(health[0].last_token_test_at, undefined);
+  assert.deepEqual(retries, [
+    {
+      publish_id: 'PUB-1',
+      publish_status: 'PENDING',
+      next_retry_at: '',
+      claimed_at: '',
+      claimed_by: '',
+      lease_expires_at: '',
+      updated_at: '2026-07-25T08:00:00.000Z',
+    },
+    {
+      publish_id: 'PUB-2',
+      publish_status: 'FAILED',
+      next_retry_at: '',
+      claimed_at: '',
+      claimed_by: '',
+      lease_expires_at: '',
+      updated_at: '2026-07-25T08:00:00.000Z',
+    },
+  ]);
+});
+
+test('WF11-WF14 use an atomic Postgres queue and complete every provider through verified terminal state', () => {
+  const wf11 = requireWorkflow('11', 'build-publishing-jobs');
+  const wf12 = requireWorkflow('12', 'publish-to-platforms');
+  const wf13 = requireWorkflow('13', 'publishing-credential-health');
+  const wf14 = requireWorkflow('14', 'publishing-retry-scheduler');
+  const wf12Names = wf12.nodes.map((node) => node.name);
+  const claimNode = wf12.nodes.find((node) => node.name === 'Claim Next Job Atomically');
+  const uploadingNode = wf12.nodes.find((node) => node.name === 'Mark Uploading Atomically');
+  const safeSkipCode = wf12.nodes.find((node) => node.name === 'Build Safe Skip Reason').parameters.jsCode;
+  const safeSkipNode = wf12.nodes.find((node) => node.name === 'Save Safe Skip Atomically');
+  const healthCode = wf13.nodes.find((node) => node.name === 'Build Expiry Audit Updates').parameters.jsCode;
+
+  assert.equal(wf11.nodes[0].name, 'Schedule 30m');
+  assert(wf11.nodes.some((node) => node.name === 'Build Missing Publish Jobs'));
+  assert.equal(wf11.nodes.find((node) => node.name === 'Sync Atomic Publishing Queue').type, 'n8n-nodes-base.postgres');
+  assert.equal(wf12.nodes[0].name, 'Schedule 15m');
+  assert(wf12Names.includes('Claim Next Job Atomically'));
+  assert(wf12Names.includes('Mirror Atomic Claim'));
+  assert(wf12Names.includes('Mark Uploading Atomically'));
+  assert(wf12Names.includes('Build Safe Skip Reason'));
+  assert(wf12Names.includes('Save Safe Skip Atomically'));
+  assert(wf12Names.includes('Mirror Safe Skip'));
+  const httpNames = wf12.nodes.filter((node) => node.type === 'n8n-nodes-base.httpRequest').map((node) => node.name);
+  assert(httpNames.includes('Start YouTube Resumable Upload'));
+  assert(httpNames.includes('Check YouTube Processing'));
+  assert(httpNames.includes('Start Facebook Reel'));
+  assert(httpNames.includes('Check Facebook Reel Status'));
+  assert(httpNames.includes('Create Instagram Reel Container'));
+  assert(httpNames.includes('Publish Instagram Reel'));
+  assert(httpNames.includes('Start TikTok Draft Pull'));
+  assert(httpNames.includes('Check TikTok Draft Status'));
+  assert.equal(claimNode.type, 'n8n-nodes-base.postgres');
+  assert.equal(claimNode.typeVersion, 2.6);
+  assert.match(claimNode.parameters.query, /FOR UPDATE SKIP LOCKED/);
+  assert.match(claimNode.parameters.query, /existing_claim/);
+  assert.match(claimNode.parameters.options.queryReplacement, /\$execution\.id/);
+  assert.match(uploadingNode.parameters.query, /claimed_by = \$2/);
+  assert.match(safeSkipNode.parameters.query, /publish_status = 'SKIPPED'/);
+  assert.match(safeSkipCode, /UNSUPPORTED_PROVIDER_STATE/);
+  assert.match(wf12.nodes.find((node) => node.name === 'Build Provider Route').parameters.jsCode, /TIKTOK_DIRECT_REQUIRES_CREATOR_UI_AND_CONSENT/);
+  assert(wf12.nodes.filter((node) => node.type === 'n8n-nodes-base.httpRequest').every((node) => node.credentials && !/Bearer\s+\S+|access_token|client_secret/i.test(JSON.stringify(node.parameters))));
+  assert.equal(wf12.connections['Claim Next Job Atomically'].main[0][0].node, 'Redact Atomic Claim For Sheet');
+  assert.equal(wf12.connections['Redact Atomic Claim For Sheet'].main[0][0].node, 'Mirror Atomic Claim');
+  assert.equal(wf12.connections['Mirror Atomic Claim'].main[0][0].node, 'Mark Uploading Atomically');
+  assert.equal(wf12.connections['Save Safe Skip Atomically'].main[0][0].node, 'Redact Safe Skip For Sheet');
+  assert.equal(wf13.nodes[0].name, 'Schedule Daily');
+  assert.match(healthCode, /last_expiry_audit_at/);
+  assert.doesNotMatch(healthCode, /last_token_test_at/);
+  assert.equal(wf14.nodes[0].name, 'Schedule Hourly');
+  assert.equal(wf14.nodes.find((node) => node.name === 'Release Due Retries Atomically').type, 'n8n-nodes-base.postgres');
+});
+
+test('WF6, WF8, WF9, and publishing workflow files exist with expected entry nodes', () => {
+  assert.equal(requireWorkflow('06', 'yt-dlp-clip-download').nodes[0].name, 'Schedule 15m');
   assert.equal(requireWorkflow('08', 'drive-storage-transform').nodes[0].name, 'Schedule 30m');
   assert.equal(requireWorkflow('09', 'review-queue-digest').nodes[0].name, 'Schedule Daily');
+  assert.equal(requireWorkflow('11', 'build-publishing-jobs').nodes[0].name, 'Schedule 30m');
+  assert.equal(requireWorkflow('12', 'publish-to-platforms').nodes[0].name, 'Schedule 15m');
+  assert.equal(requireWorkflow('13', 'publishing-credential-health').nodes[0].name, 'Schedule Daily');
+  assert.equal(requireWorkflow('14', 'publishing-retry-scheduler').nodes[0].name, 'Schedule Hourly');
 });

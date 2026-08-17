@@ -8,6 +8,21 @@ const TITLE_FORMULAS = {
   AFRICAN_KENYAN_SUCCESS: ['Every Young Kenyan Builder Should Hear This', 'This Advice Works Differently in Africa', 'The Reality of Building in Kenya'],
 };
 
+const ALLOWED_MUSIC_MOODS = [
+  'peaceful',
+  'reflective',
+  'hopeful',
+  'emotional',
+  'focused',
+  'confident',
+  'urgent',
+  'powerful',
+  'inspiring',
+  'warm',
+];
+
+const ALLOWED_MUSIC_ENERGY_LEVELS = ['low', 'medium', 'high'];
+
 const TRANSFORMATION_SCHEMA = {
   type: 'object',
   properties: {
@@ -34,8 +49,8 @@ const TRANSFORMATION_SCHEMA = {
         cta_text: { type: 'string' },
         cta_start_second: { type: 'number' },
         cta_end_second: { type: 'number' },
-        music_mood: { type: 'string' },
-        music_energy_level: { type: 'string' },
+        music_mood: { type: 'string', enum: ALLOWED_MUSIC_MOODS },
+        music_energy_level: { type: 'string', enum: ALLOWED_MUSIC_ENERGY_LEVELS },
         music_volume: { type: 'number' },
         use_blurred_background: { type: 'boolean' },
         progress_bar_color: { type: 'string' },
@@ -117,8 +132,30 @@ function buildSchemaInstructions() {
     'commentary_angle must add an original take so the output is not a reposted podcast clip.',
     'on_screen_text_beats, broll_plan, hashtags, and originality_checklist must be arrays of short strings.',
     'Set bible_verse_if_relevant to null when no verse applies.',
-    'The captions are already burned into the Ssemble video. Do not create subtitle or caption-burn instructions.',
+    'The source clip was downloaded with yt-dlp and will receive brand styling in FFmpeg. Do not assume Ssemble captions or provider-generated edits exist.',
     'Add a render object for the FFmpeg render plan: top hook text, CTA text/timing, music mood/energy/volume, blurred-background choice, and progress bar color.',
+    'For music_mood, choose exactly one of: peaceful, reflective, hopeful, emotional, focused, confident, urgent, powerful, inspiring, warm.',
+    'For music_energy_level, choose exactly one of: low, medium, high.',
+    'Do not invent other mood or energy values.',
+    'Choose music_mood based on the emotional feeling of the transcript:',
+    '- peaceful: calm, soft, spiritual, gentle teaching',
+    '- reflective: thoughtful, serious, deep wisdom',
+    '- hopeful: encouragement, possibility, healing',
+    '- emotional: pain, testimony, sadness, vulnerability',
+    '- focused: practical education, finance, business, discipline',
+    '- confident: strong business, leadership, certainty',
+    '- urgent: warning, mistake, wake-up call',
+    '- powerful: intense motivation, discipline, hard truth',
+    '- inspiring: growth, success, comeback, entrepreneurship',
+    '- warm: relationships, kindness, family, love, values',
+    'Choose music_energy_level:',
+    '- low: calm, emotional, reflective, spiritual',
+    '- medium: educational, practical, business-like, balanced',
+    '- high: intense, urgent, motivational, energetic',
+    'Return music_volume as a number:',
+    '- low energy: 0.05 to 0.08',
+    '- medium energy: 0.08 to 0.11',
+    '- high energy: 0.10 to 0.14',
     'progress_bar_color must use FFmpeg-safe 0xRRGGBB format.',
     'music_volume must be a decimal between 0.04 and 0.14.',
     'The JSON must conform to this schema:',
@@ -136,7 +173,13 @@ function pickAwaitingDownloads(clips, jobs, moments, folders, options = 5) {
     .filter((clip) => String(clip.review_status) === 'AWAITING_DOWNLOAD')
     .map((clip) => {
       const job = jobsById[clip.ssemble_job_id] || {};
-      const moment = momentsById[job.clip_moment_id] || {};
+      const providerMomentId = String(clip.ssemble_job_id || '').startsWith('YTDLP-')
+        ? String(clip.ssemble_job_id).slice('YTDLP-'.length)
+        : '';
+      const createdMomentId = String(clip.created_clip_id || '').startsWith('CC-CM-')
+        ? String(clip.created_clip_id).slice('CC-'.length)
+        : '';
+      const moment = momentsById[job.clip_moment_id] || momentsById[providerMomentId] || momentsById[createdMomentId] || {};
       const niche = clip.niche || job.niche || 'AFRICAN_KENYAN_SUCCESS';
       return {
         ...clip,

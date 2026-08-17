@@ -12,9 +12,9 @@ const SYSTEM_PROMPT = `You are a short-form video content strategist for a Kenya
 
 Find valuable, transformable short-form moments.
 
-Prioritize USE_20_MIN_WINDOW when a transcript contains at least 3 strong clips within a single 60-1200 second window. For long videos, return up to 5 distinct 20-minute windows when each window independently contains at least 3 strong clips. Use USE_EXACT_CLIPS_ONLY only when the good moments are scattered far apart or when there are only 1-2 strong clips. Use SKIP_THIS_VIDEO only when the transcript lacks strong, brand-safe, transformable opportunities.
+Default to USE_EXACT_CLIPS_ONLY whenever the transcript contains downloadable short-form moments. Return the best exact 45-90 second clips directly. Use USE_20_MIN_WINDOW only as optional analysis context for dense long videos, never as the preferred recommendation, and still return exact clip ranges inside those windows. Use SKIP_THIS_VIDEO only when the transcript lacks strong, brand-safe, transformable opportunities.
 
-Because Ssemble credits are spent more efficiently on high-density windows, prefer 20-minute windows whenever they can produce multiple usable shorts.
+The downstream provider is yt-dlp, which only downloads exact time ranges. A 20-minute window is analysis context only; never rely on the provider to choose shorts from a window.
 
 Return valid JSON matching the requested schema.`;
 
@@ -121,10 +121,11 @@ function buildSchemaInstructions() {
   return [
     'Return the bare analysis object only. Do not add an output wrapper or commentary.',
     'Do not use Markdown code fences.',
-    'Use this strategy enum: SKIP_THIS_VIDEO, USE_EXACT_CLIPS_ONLY, USE_20_MIN_WINDOW.',
+    'Use this strategy enum: SKIP_THIS_VIDEO, USE_EXACT_CLIPS_ONLY, USE_20_MIN_WINDOW. Prefer USE_EXACT_CLIPS_ONLY for all downloadable clips.',
     'All start_sec and end_sec values are raw seconds from the beginning of the video. Minute 5 is start_sec = 300; a 20-minute duration is 1200 seconds.',
-    'For USE_20_MIN_WINDOW, populate best_20_min_windows with 1-5 distinct windows. Each window must have use_this=true, estimate at least 3 good clips, and provide a 60-1200 second range; exact_clips may be empty.',
-    'For USE_EXACT_CLIPS_ONLY, exact_clips must contain at least one clip with final_recommendation="clip".',
+    'For USE_20_MIN_WINDOW, populate best_20_min_windows only when window context is genuinely useful. Each window must have use_this=true, estimate at least 3 good clips, and provide a 60-1200 second range.',
+    'For USE_20_MIN_WINDOW, exact_clips must contain the exact 45-90 second clips inside the selected windows. The workflow downloads exact_clips with yt-dlp; it does not download whole windows.',
+    'For USE_EXACT_CLIPS_ONLY, exact_clips must contain at least one 45-90 second clip with final_recommendation="clip".',
     'For exact_clips[].final_recommendation use: clip, use_as_idea_only, or skip.',
     'For risk fields use lowercase: low, medium, or high.',
     'For SKIP_THIS_VIDEO, return an empty best_20_min_windows array.',
@@ -325,45 +326,43 @@ function buildRetryableResult(row, response, error) {
   };
 }
 
-function buildWindowMoment(row, window, options = {}) {
-  const startSec = Number(window.start_sec);
-  const endSec = Number(window.end_sec);
-  const estimatedClips = Number(options.estimatedClips);
-  const index = Number.isInteger(options.index) ? options.index : 0;
+function buildMomentFromClip(row, clip, options = {}) {
+  const startSec = Number(clip.start_sec);
+  const endSec = Number(clip.end_sec);
+  const rank = Number.isFinite(Number(clip.rank)) ? Number(clip.rank) : Number(options.rank || 1);
+  const idSuffix = options.idSuffix || rank;
   const rightsRisk = ['low', 'medium', 'high'].includes(String(options.rightsRisk).toLowerCase())
     ? String(options.rightsRisk).toLowerCase()
-    : 'low';
+    : String(clip.copyright_or_reused_content_risk || 'low');
 
   return {
-    clip_moment_id: `CM-${row.video_id}-W${index}`,
+    clip_moment_id: `CM-${row.video_id}-${idSuffix}`,
     video_id: row.video_id,
-    niche: row.niche || '',
+    niche: row.niche,
     source_id: options.sourceId || row.source_id || '',
-    rank: index,
+    rank,
     start_sec: startSec,
     end_sec: endSec,
     clip_length_seconds: endSec - startSec,
-    hook_first_2_seconds: '',
-    core_idea: String(window.why_this_window || options.fallbackReason || '').slice(0, 500),
-    why_valuable: Number.isFinite(estimatedClips)
-      ? `window with ~${estimatedClips} strong clips`
-      : 'window selected for automatic clipping',
-    target_audience: '',
-    suggested_title: '',
-    suggested_caption: '',
-    on_screen_text: '',
-    suggested_broll: '',
-    commentary_angle: '',
-    kenyan_african_application: '',
-    bible_verse_if_relevant: '',
-    needs_extra_context: 'FALSE',
-    originality_score: '',
-    clip_score: clamp(options.clipScore, 0, 10),
+    hook_first_2_seconds: String(clip.hook_first_2_seconds || ''),
+    core_idea: String(clip.core_idea || options.fallbackReason || '').slice(0, 500),
+    why_valuable: String(clip.why_it_is_valuable || '').slice(0, 500),
+    target_audience: String(clip.best_target_audience || ''),
+    suggested_title: String(clip.suggested_title || ''),
+    suggested_caption: String(clip.suggested_caption || '').slice(0, 500),
+    on_screen_text: String(clip.on_screen_text || ''),
+    suggested_broll: JSON.stringify(clip.suggested_b_roll || []),
+    commentary_angle: String(clip.my_original_commentary_angle || '').slice(0, 500),
+    kenyan_african_application: String(clip.kenyan_african_application || '').slice(0, 500),
+    bible_verse_if_relevant: clip.bible_verse_if_relevant || '',
+    needs_extra_context: clip.does_it_need_extra_context ? 'TRUE' : 'FALSE',
+    originality_score: clamp(clip.originality_score, 0, 10),
+    clip_score: clamp(clip.clip_score, 0, 10),
     rights_risk: rightsRisk,
-    final_recommendation: 'clip',
+    final_recommendation: String(clip.final_recommendation),
     ssemble_status: options.highRiskSource ? 'AWAITING_MANUAL_APPROVAL' : 'PENDING',
     ssemble_job_id: '',
-    strategy: 'USE_20_MIN_WINDOW',
+    strategy: options.strategy || 'USE_EXACT_CLIPS_ONLY',
     source_video_url: row.video_url || '',
     created_at: options.now || new Date().toISOString(),
   };
@@ -392,6 +391,40 @@ function collectWindows(ai) {
     .slice(0, 5);
 }
 
+function collectValidClips(ai) {
+  return (ai.exact_clips || [])
+    .filter((clip) => String(clip.final_recommendation) === 'clip')
+    .filter((clip) => clamp(clip.clip_score, 0, 10) >= 7)
+    .filter((clip) => {
+      const start = Number(clip.start_sec);
+      const end = Number(clip.end_sec);
+      const length = end - start;
+      return Number.isFinite(start)
+        && Number.isFinite(end)
+        && start >= 0
+        && length >= 45
+        && length <= 90;
+    })
+    .sort((a, b) => clamp(b.clip_score, 0, 10) - clamp(a.clip_score, 0, 10));
+}
+
+function collectWindowClips(ai, windows) {
+  const seen = new Set();
+  const rows = [];
+  for (const [windowIndex, window] of windows.entries()) {
+    const windowClips = collectValidClips(ai)
+      .filter((clip) => Number(clip.start_sec) >= Number(window.start_sec) && Number(clip.end_sec) <= Number(window.end_sec))
+      .slice(0, 3);
+    for (const clip of windowClips) {
+      const key = `${clip.start_sec}-${clip.end_sec}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ clip, window, windowIndex });
+    }
+  }
+  return rows.slice(0, 5);
+}
+
 function buildMissingWindowMoments(analysisRows, sourceRows, candidateRows, momentRows, now) {
   const riskBySource = {};
   for (const source of sourceRows || []) {
@@ -412,34 +445,21 @@ function buildMissingWindowMoments(analysisRows, sourceRows, candidateRows, mome
 
     const stored = parseStoredAnalysis(row.ai_json_output);
     const normalized = normalizeAnalysis(stored);
-    let windows = collectWindows(normalized);
-    if (windows.length === 0) {
-      const startSec = Number(row.recommended_start_sec);
-      const endSec = Number(row.recommended_end_sec);
-      const windowLength = endSec - startSec;
-      if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || startSec < 0
-        || windowLength < 60 || windowLength > 1200) continue;
-      windows = [{
-        use_this: true,
-        start_sec: startSec,
-        end_sec: endSec,
-        why_this_window: row.reason_for_strategy || '',
-        estimated_number_of_good_clips: '',
-      }];
-    }
+    const windows = collectWindows(normalized);
+    if (windows.length === 0) continue;
     const sourceRisk = riskBySource[sourceByVideo[row.video_id]] || 'low';
     const sourceId = sourceByVideo[row.video_id] || row.source_id || '';
-    windows.forEach((window, index) => {
-      const clipMomentId = `CM-${row.video_id}-W${index}`;
+    collectWindowClips(normalized, windows).forEach(({ clip, windowIndex }, index) => {
+      const clipMomentId = `CM-${row.video_id}-W${windowIndex}-${index + 1}`;
       if (existingIds.has(clipMomentId)) return;
-      repairs.push(buildWindowMoment(row, window, {
-        index,
-        clipScore: row.ai_episode_score,
+      repairs.push(buildMomentFromClip(row, clip, {
+        idSuffix: `W${windowIndex}-${index + 1}`,
+        rank: index + 1,
         rightsRisk: row.rights_risk,
-        estimatedClips: window.estimated_number_of_good_clips,
         highRiskSource: sourceRisk === 'high',
         sourceId,
         fallbackReason: row.reason_for_strategy,
+        strategy: 'USE_20_MIN_WINDOW',
         now: timestamp,
       }));
       existingIds.add(clipMomentId);
@@ -460,11 +480,7 @@ function parseAndGate(row, response, now = new Date().toISOString()) {
   }
   const episodeScore = clamp(ai.overall_episode_score, 0, 10);
 
-  let clips = (ai.exact_clips || [])
-    .filter((clip) => clamp(clip.clip_score, 0, 10) >= 7)
-    .filter((clip) => Number(clip.end_sec) > Number(clip.start_sec) && Number(clip.start_sec) >= 0)
-    .sort((a, b) => clamp(b.clip_score, 0, 10) - clamp(a.clip_score, 0, 10))
-    .slice(0, 3);
+  let clips = collectValidClips(ai).slice(0, 5);
 
   const clipRightsRisks = clips.map((clip) => String(clip.copyright_or_reused_content_risk || 'low'));
   const clipMonetizationRisks = clips.map((clip) => String(clip.monetization_risk || 'low'));
@@ -474,9 +490,12 @@ function parseAndGate(row, response, now = new Date().toISOString()) {
   if (episodeScore < 7 || conservativeRisk === 'high') strategy = 'SKIP_THIS_VIDEO';
 
   const windows = collectWindows(ai);
+  const windowClips = collectWindowClips(ai, windows);
   if (strategy === 'USE_20_MIN_WINDOW') {
-    if (windows.length === 0) {
+    if (windows.length === 0 || windowClips.length === 0) {
       strategy = clips.length > 0 ? 'USE_EXACT_CLIPS_ONLY' : 'SKIP_THIS_VIDEO';
+    } else {
+      strategy = 'USE_EXACT_CLIPS_ONLY';
     }
   }
   if (strategy === 'USE_EXACT_CLIPS_ONLY') {
@@ -511,48 +530,25 @@ function parseAndGate(row, response, now = new Date().toISOString()) {
 
   let momentRows = [];
   if (strategy === 'USE_20_MIN_WINDOW') {
-    momentRows = windows.map((window, index) => buildWindowMoment(row, window, {
-      index,
-      clipScore: episodeScore,
+    momentRows = windowClips.map(({ clip, windowIndex }, index) => buildMomentFromClip(row, clip, {
+      idSuffix: `W${windowIndex}-${index + 1}`,
+      rank: index + 1,
       rightsRisk: riskMax(clipRightsRisks),
-      estimatedClips: window.estimated_number_of_good_clips,
       highRiskSource,
       sourceId: row.source_id || '',
+      strategy,
       now,
     }));
   } else if (strategy === 'USE_EXACT_CLIPS_ONLY') {
-    momentRows = clips.map((clip, index) => ({
-      clip_moment_id: `CM-${row.video_id}-${index + 1}`,
-      video_id: row.video_id,
-      niche: row.niche,
-      source_id: row.source_id || '',
+    momentRows = clips.map((clip, index) => buildMomentFromClip(row, clip, {
+      idSuffix: index + 1,
       rank: index + 1,
-      start_sec: Number(clip.start_sec),
-      end_sec: Number(clip.end_sec),
-      clip_length_seconds: Number(clip.end_sec) - Number(clip.start_sec),
-      hook_first_2_seconds: String(clip.hook_first_2_seconds || ''),
-      core_idea: String(clip.core_idea || '').slice(0, 500),
-      why_valuable: String(clip.why_it_is_valuable || '').slice(0, 500),
-      target_audience: String(clip.best_target_audience || ''),
-      suggested_title: String(clip.suggested_title || ''),
-      suggested_caption: String(clip.suggested_caption || '').slice(0, 500),
-      on_screen_text: String(clip.on_screen_text || ''),
-      suggested_broll: JSON.stringify(clip.suggested_b_roll || []),
-      commentary_angle: String(clip.my_original_commentary_angle || '').slice(0, 500),
-      kenyan_african_application: String(clip.kenyan_african_application || '').slice(0, 500),
-      bible_verse_if_relevant: clip.bible_verse_if_relevant || '',
-      needs_extra_context: clip.does_it_need_extra_context ? 'TRUE' : 'FALSE',
-      originality_score: clamp(clip.originality_score, 0, 10),
-      clip_score: clamp(clip.clip_score, 0, 10),
-      rights_risk: String(clip.copyright_or_reused_content_risk || 'low'),
-      final_recommendation: String(clip.final_recommendation),
-      ssemble_status: (highRiskSource || String(clip.copyright_or_reused_content_risk) === 'high')
-        ? 'AWAITING_MANUAL_APPROVAL'
-        : 'PENDING',
-      ssemble_job_id: '',
+      rightsRisk: String(clip.copyright_or_reused_content_risk || 'low'),
+      highRiskSource: highRiskSource || String(clip.copyright_or_reused_content_risk) === 'high',
+      sourceId: row.source_id || '',
       strategy,
-      source_video_url: row.video_url,
       created_at: now,
+      now,
     }));
   }
 

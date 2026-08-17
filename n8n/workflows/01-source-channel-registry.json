@@ -1,5 +1,6 @@
 {
   "name": "WF1 Source Channel Registry",
+  "description": "Resolves human-entered YouTube channel URLs into stable channel and uploads-playlist IDs. It keeps source registration explicit while giving downstream discovery a cheap, deterministic playlist input.",
   "nodes": [
     {
       "parameters": {},
@@ -35,12 +36,15 @@
         220,
         0
       ],
-      "executeOnce": true
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Rows with a URL but no resolved channel id; build a YouTube API lookup URL per row.\nconst KEY = 'YOUTUBE_API_KEY';\n\nfunction extractYouTubeVideoId(url) {\n  const patterns = [\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/watch\\?[^#]*\\bv=([A-Za-z0-9_-]{11})/,\n    /(?:youtu\\.be)\\/([A-Za-z0-9_-]{11})/,\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/shorts\\/([A-Za-z0-9_-]{11})/,\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/embed\\/([A-Za-z0-9_-]{11})/,\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/live\\/([A-Za-z0-9_-]{11})/,\n  ];\n\n  for (const pattern of patterns) {\n    const match = url.match(pattern);\n    if (match) return match[1];\n  }\n\n  return null;\n}\n\nfunction buildLookup(row, key) {\n  if (!row.youtube_channel_url || row.youtube_channel_id) return null;\n\n  const url = String(row.youtube_channel_url).trim();\n  if (!url) return null;\n\n  const encodedKey = encodeURIComponent(key);\n  const channelMatch = url.match(/\\/channel\\/(UC[A-Za-z0-9_-]{22})(?:[/?#]|$)/);\n  if (channelMatch) {\n    const channelId = channelMatch[1];\n    return {\n      ...row,\n      lookup_type: 'channel_id',\n      lookup_value: channelId,\n      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&id=${encodeURIComponent(channelId)}&key=${encodedKey}`,\n    };\n  }\n\n  const handleMatch = url.match(/\\/@([A-Za-z0-9._-]+)(?:[/?#]|$)/);\n  if (handleMatch) {\n    const handle = handleMatch[1];\n    return {\n      ...row,\n      lookup_type: 'handle',\n      lookup_value: handle,\n      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forHandle=${encodeURIComponent(handle)}&key=${encodedKey}`,\n    };\n  }\n\n  const usernameMatch = url.match(/\\/user\\/([^/?#]+)(?:[/?#]|$)/);\n  if (usernameMatch) {\n    const username = decodeURIComponent(usernameMatch[1]);\n    return {\n      ...row,\n      lookup_type: 'username',\n      lookup_value: username,\n      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forUsername=${encodeURIComponent(username)}&key=${encodedKey}`,\n    };\n  }\n\n  const customMatch = url.match(/\\/c\\/([^/?#]+)(?:[/?#]|$)/);\n  if (customMatch) {\n    const customName = decodeURIComponent(customMatch[1]);\n    return {\n      ...row,\n      lookup_type: 'custom_url_search',\n      lookup_value: customName,\n      lookup_url: `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=1&q=${encodeURIComponent(customName)}&key=${encodedKey}`,\n    };\n  }\n\n  const videoId = extractYouTubeVideoId(url);\n  if (videoId) {\n    return {\n      ...row,\n      lookup_type: 'video',\n      lookup_value: videoId,\n      lookup_url: `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}&key=${encodedKey}`,\n    };\n  }\n\n  return null;\n}\n\nconst out = [];\n$input.all().forEach((item, index) => {\n  const lookup = buildLookup(item.json, KEY);\n  if (!lookup) return;\n  out.push({ json: lookup, pairedItem: { item: index } });\n});\n\nreturn out;"
+        "jsCode": "// Rows with a URL but no resolved channel id; build a YouTube API lookup URL per row.\nfunction extractYouTubeVideoId(url) {\n  const patterns = [\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/watch\\?[^#]*\\bv=([A-Za-z0-9_-]{11})/,\n    /(?:youtu\\.be)\\/([A-Za-z0-9_-]{11})/,\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/shorts\\/([A-Za-z0-9_-]{11})/,\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/embed\\/([A-Za-z0-9_-]{11})/,\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/live\\/([A-Za-z0-9_-]{11})/,\n  ];\n\n  for (const pattern of patterns) {\n    const match = url.match(pattern);\n    if (match) return match[1];\n  }\n\n  return null;\n}\n\nfunction buildLookup(row) {\n  if (!row.youtube_channel_url || row.youtube_channel_id) return null;\n\n  const url = String(row.youtube_channel_url).trim();\n  if (!url) return null;\n\n  const channelMatch = url.match(/\\/channel\\/(UC[A-Za-z0-9_-]{22})(?:[/?#]|$)/);\n  if (channelMatch) {\n    const channelId = channelMatch[1];\n    return {\n      ...row,\n      lookup_type: 'channel_id',\n      lookup_value: channelId,\n      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&id=${encodeURIComponent(channelId)}`,\n    };\n  }\n\n  const handleMatch = url.match(/\\/@([A-Za-z0-9._-]+)(?:[/?#]|$)/);\n  if (handleMatch) {\n    const handle = handleMatch[1];\n    return {\n      ...row,\n      lookup_type: 'handle',\n      lookup_value: handle,\n      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forHandle=${encodeURIComponent(handle)}`,\n    };\n  }\n\n  const usernameMatch = url.match(/\\/user\\/([^/?#]+)(?:[/?#]|$)/);\n  if (usernameMatch) {\n    const username = decodeURIComponent(usernameMatch[1]);\n    return {\n      ...row,\n      lookup_type: 'username',\n      lookup_value: username,\n      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forUsername=${encodeURIComponent(username)}`,\n    };\n  }\n\n  const customMatch = url.match(/\\/c\\/([^/?#]+)(?:[/?#]|$)/);\n  if (customMatch) {\n    const customName = decodeURIComponent(customMatch[1]);\n    return {\n      ...row,\n      lookup_type: 'custom_url_search',\n      lookup_value: customName,\n      lookup_url: `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=1&q=${encodeURIComponent(customName)}`,\n    };\n  }\n\n  const videoId = extractYouTubeVideoId(url);\n  if (videoId) {\n    return {\n      ...row,\n      lookup_type: 'video',\n      lookup_value: videoId,\n      lookup_url: `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}`,\n    };\n  }\n\n  return null;\n}\n\nconst out = [];\n$input.all().forEach((item, index) => {\n  const lookup = buildLookup(item.json);\n  if (!lookup) return;\n  out.push({ json: lookup, pairedItem: { item: index } });\n});\n\nreturn out;"
       },
       "id": "a1b2c3d4-0001-4000-8000-000000000003",
       "name": "Pick Unresolved",
@@ -55,7 +59,9 @@
       "parameters": {
         "method": "GET",
         "url": "={{ $json.lookup_url }}",
-        "options": {}
+        "options": {},
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth"
       },
       "id": "a1b2c3d4-0001-4000-8000-000000000004",
       "name": "Resolve Channel",
@@ -64,7 +70,10 @@
       "position": [
         660,
         0
-      ]
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -109,7 +118,10 @@
       "position": [
         1100,
         0
-      ]
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     }
   ],
   "connections": {

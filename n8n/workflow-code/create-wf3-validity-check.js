@@ -17,6 +17,9 @@ const sheetsNode = (id, name, position, parameters, extra = {}) => ({
   type: 'n8n-nodes-base.googleSheets',
   typeVersion: 4.5,
   position,
+  retryOnFail: true,
+  maxTries: 3,
+  waitBetweenTries: 5000,
   ...(parameters.operation === 'read' ? { executeOnce: true } : {}),
   ...extra,
 });
@@ -55,6 +58,44 @@ const PREFER_PATTERNS = [
   /podcast/i, /interview/i, /sermon/i, /teaching/i, /lesson/i, /masterclass/i,
   /conversation/i, /keynote/i, /q\\s*&\\s*a/i, /panel/i, /testimony/i,
 ];
+const ENGAGEMENT_GATE = {
+  minViews: 10000,
+  minLikePercentage: 0.02,
+  minEngagementPercentage: 0.02,
+  minCommentPercentage: 0.0005,
+};
+
+function numberValue(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function computeEngagementMetrics(v) {
+  const views = numberValue(v.view_count);
+  const likes = numberValue(v.like_count);
+  const comments = numberValue(v.comment_count);
+  if (views <= 0) {
+    return {
+      like_percentage: 0,
+      comment_percentage: 0,
+      engagement_percentage: 0,
+    };
+  }
+  return {
+    like_percentage: likes / views,
+    comment_percentage: comments / views,
+    engagement_percentage: (likes + comments) / views,
+  };
+}
+
+function passesEngagementGate(v, metrics) {
+  return (
+    numberValue(v.view_count) >= ENGAGEMENT_GATE.minViews &&
+    metrics.like_percentage >= ENGAGEMENT_GATE.minLikePercentage &&
+    metrics.engagement_percentage >= ENGAGEMENT_GATE.minEngagementPercentage &&
+    metrics.comment_percentage >= ENGAGEMENT_GATE.minCommentPercentage
+  );
+}
 
 const out = [];
 for (const item of $input.all()) {
@@ -63,6 +104,7 @@ for (const item of $input.all()) {
 
   const title = String(v.video_title || '');
   const dur = Number(v.duration_seconds || 0);
+  const engagementMetrics = computeEngagementMetrics(v);
   let status = 'VALID';
   let reason = '';
 
@@ -79,6 +121,11 @@ for (const item of $input.all()) {
       status = 'REJECTED';
       reason = 'STATIC_NARRATION_VISUALS';
     }
+  }
+
+  if (status === 'VALID' && !passesEngagementGate(v, engagementMetrics)) {
+    status = 'REJECTED';
+    reason = 'LOW_ENGAGEMENT';
   }
 
   const lang = String(v.language || '').toLowerCase();
@@ -101,6 +148,7 @@ for (const item of $input.all()) {
   out.push({
     json: {
       video_id: v.video_id,
+      ...engagementMetrics,
       validity_status: status,
       validity_score: score,
       rejection_reason: reason,
@@ -113,6 +161,7 @@ return out;`;
 
 const workflow = {
   name: 'WF3 Validity Check',
+  description: 'Applies format, rights-risk, language, and engagement gates before transcript work. It rejects weak candidates early so downstream provider and processing capacity is reserved for viable videos.',
   nodes: [
     {
       parameters: { rule: { interval: [{ field: 'hours', hoursInterval: 1 }] } },

@@ -30,6 +30,47 @@ const PREFER_PATTERNS = [
   /testimony/i,
 ];
 
+const ENGAGEMENT_GATE = {
+  minViews: 10000,
+  minLikePercentage: 0.02,
+  minEngagementPercentage: 0.02,
+  minCommentPercentage: 0.0005,
+};
+
+function numberValue(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function computeEngagementMetrics(candidate) {
+  const views = numberValue(candidate.view_count);
+  const likes = numberValue(candidate.like_count);
+  const comments = numberValue(candidate.comment_count);
+
+  if (views <= 0) {
+    return {
+      like_percentage: 0,
+      comment_percentage: 0,
+      engagement_percentage: 0,
+    };
+  }
+
+  return {
+    like_percentage: likes / views,
+    comment_percentage: comments / views,
+    engagement_percentage: (likes + comments) / views,
+  };
+}
+
+function passesEngagementGate(candidate, metrics = computeEngagementMetrics(candidate)) {
+  return (
+    numberValue(candidate.view_count) >= ENGAGEMENT_GATE.minViews &&
+    metrics.like_percentage >= ENGAGEMENT_GATE.minLikePercentage &&
+    metrics.engagement_percentage >= ENGAGEMENT_GATE.minEngagementPercentage &&
+    metrics.comment_percentage >= ENGAGEMENT_GATE.minCommentPercentage
+  );
+}
+
 function buildRiskBySource(sourceRows) {
   return sourceRows.reduce((lookup, row) => {
     if (!row.source_id) return lookup;
@@ -67,6 +108,7 @@ function staticNarrationRisk(candidate) {
 function classifyCandidate(candidate, riskBySource) {
   const title = String(candidate.video_title || '');
   const duration = Number(candidate.duration_seconds || 0);
+  const engagementMetrics = computeEngagementMetrics(candidate);
   let status = 'VALID';
   let reason = '';
 
@@ -90,6 +132,11 @@ function classifyCandidate(candidate, riskBySource) {
     }
   }
 
+  if (status === 'VALID' && !passesEngagementGate(candidate, engagementMetrics)) {
+    status = 'REJECTED';
+    reason = 'LOW_ENGAGEMENT';
+  }
+
   const language = String(candidate.language || '').toLowerCase();
   if (status === 'VALID' && language && !language.startsWith('en') && !language.startsWith('sw')) {
     status = 'FLAGGED';
@@ -103,6 +150,7 @@ function classifyCandidate(candidate, riskBySource) {
 
   return {
     video_id: candidate.video_id,
+    ...engagementMetrics,
     validity_status: status,
     validity_score: scoreCandidate(candidate),
     rejection_reason: reason,
@@ -118,9 +166,12 @@ function applyValidityRules(candidateRows, riskBySource) {
 }
 
 module.exports = {
+  ENGAGEMENT_GATE,
   applyValidityRules,
   buildRiskBySource,
   classifyCandidate,
+  computeEngagementMetrics,
+  passesEngagementGate,
   scoreCandidate,
   staticNarrationRisk,
 };

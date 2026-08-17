@@ -3,6 +3,7 @@ const test = require('node:test');
 const {
   applyValidityRules,
   buildRiskBySource,
+  computeEngagementMetrics,
   scoreCandidate,
 } = require('../n8n/workflow-code/validity-check');
 
@@ -38,6 +39,8 @@ test('marks long-form low-risk candidates valid', () => {
       video_title: 'Faith podcast interview',
       duration_seconds: 1800,
       view_count: 12000,
+      like_count: 300,
+      comment_count: 12,
       language: 'en',
       processing_status: 'NEW',
       validity_status: '',
@@ -49,6 +52,93 @@ test('marks long-form low-risk candidates valid', () => {
   assert.equal(row.validity_score, 10);
   assert.equal(row.rejection_reason, '');
   assert.equal(row.processing_status, 'NEW');
+});
+
+test('computes engagement metrics as percentage-formatted decimals', () => {
+  assert.deepEqual(computeEngagementMetrics({
+    view_count: 10000,
+    like_count: 200,
+    comment_count: 5,
+  }), {
+    like_percentage: 0.02,
+    comment_percentage: 0.0005,
+    engagement_percentage: 0.0205,
+  });
+
+  assert.deepEqual(computeEngagementMetrics({
+    view_count: 0,
+    like_count: 200,
+    comment_count: 5,
+  }), {
+    like_percentage: 0,
+    comment_percentage: 0,
+    engagement_percentage: 0,
+  });
+});
+
+test('rejects candidates below the engagement pass gate', () => {
+  const rows = applyValidityRules([
+    {
+      video_id: 'VID-1',
+      video_title: 'Faith podcast interview',
+      duration_seconds: 1800,
+      view_count: 9999,
+      like_count: 500,
+      comment_count: 50,
+      language: 'en',
+      processing_status: 'NEW',
+      validity_status: '',
+    },
+    {
+      video_id: 'VID-2',
+      video_title: 'Faith podcast interview',
+      duration_seconds: 1800,
+      view_count: 10000,
+      like_count: 199,
+      comment_count: 5,
+      language: 'en',
+      processing_status: 'NEW',
+      validity_status: '',
+    },
+    {
+      video_id: 'VID-3',
+      video_title: 'Faith podcast interview',
+      duration_seconds: 1800,
+      view_count: 10000,
+      like_count: 200,
+      comment_count: 4,
+      language: 'en',
+      processing_status: 'NEW',
+      validity_status: '',
+    },
+  ], {});
+
+  assert.deepEqual(rows.map((row) => row.video_id), ['VID-1', 'VID-2', 'VID-3']);
+  assert(rows.every((row) => row.validity_status === 'REJECTED'));
+  assert(rows.every((row) => row.rejection_reason === 'LOW_ENGAGEMENT'));
+  assert(rows.every((row) => row.processing_status === 'SKIPPED'));
+});
+
+test('passes candidates at the engagement threshold', () => {
+  const [row] = applyValidityRules([
+    {
+      video_id: 'VID-1',
+      video_title: 'Faith podcast interview',
+      duration_seconds: 1800,
+      view_count: 10000,
+      like_count: 200,
+      comment_count: 5,
+      language: 'en',
+      processing_status: 'NEW',
+      validity_status: '',
+    },
+  ], {});
+
+  assert.equal(row.validity_status, 'VALID');
+  assert.equal(row.rejection_reason, '');
+  assert.equal(row.like_percentage, 0.02);
+  assert.equal(row.comment_percentage, 0.0005);
+  assert.equal(row.engagement_percentage, 0.0205);
 });
 
 test('rejects shorts and too-short videos', () => {
@@ -116,6 +206,9 @@ test('flags non-English or non-Swahili language for review', () => {
       video_id: 'VID-1',
       video_title: 'Long interview',
       duration_seconds: 1800,
+      view_count: 12000,
+      like_count: 300,
+      comment_count: 12,
       language: 'fr',
       processing_status: 'NEW',
       validity_status: '',
@@ -134,6 +227,9 @@ test('flags valid high-risk source candidates for manual approval', () => {
       source_id: 'SRC-HIGH',
       video_title: 'Long interview',
       duration_seconds: 1800,
+      view_count: 12000,
+      like_count: 300,
+      comment_count: 12,
       language: 'en',
       processing_status: 'NEW',
       validity_status: '',

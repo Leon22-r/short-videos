@@ -7,13 +7,11 @@ const {
   uploadsPlaylistFromChannelId,
 } = require('../n8n/workflow-code/youtube-url-resolver');
 
-const key = 'test key';
-
 test('builds channel lookup for channel URLs', () => {
   const result = buildLookup({
     source_id: 'src1',
     youtube_channel_url: 'https://www.youtube.com/channel/UC1234567890123456789012/videos',
-  }, key);
+  });
 
   assert.equal(result.lookup_type, 'channel_id');
   assert.equal(result.lookup_value, 'UC1234567890123456789012');
@@ -25,7 +23,7 @@ test('builds handle lookup for handle URLs with subpaths', () => {
   const result = buildLookup({
     source_id: 'src2',
     youtube_channel_url: 'https://www.youtube.com/@Some.Handle-1/shorts',
-  }, key);
+  });
 
   assert.equal(result.lookup_type, 'handle');
   assert.equal(result.lookup_value, 'Some.Handle-1');
@@ -36,7 +34,7 @@ test('builds username lookup for legacy user URLs', () => {
   const result = buildLookup({
     source_id: 'src3',
     youtube_channel_url: 'https://www.youtube.com/user/GoogleDevelopers',
-  }, key);
+  });
 
   assert.equal(result.lookup_type, 'username');
   assert.equal(result.lookup_value, 'GoogleDevelopers');
@@ -47,7 +45,7 @@ test('builds search lookup for custom c URLs', () => {
   const result = buildLookup({
     source_id: 'src4',
     youtube_channel_url: 'https://www.youtube.com/c/GoogleDevelopers/videos',
-  }, key);
+  });
 
   assert.equal(result.lookup_type, 'custom_url_search');
   assert.equal(result.lookup_value, 'GoogleDevelopers');
@@ -67,7 +65,7 @@ test('builds video lookup for video URLs', () => {
   const result = buildLookup({
     source_id: 'src5',
     youtube_channel_url: 'https://youtu.be/abcdefghijk',
-  }, key);
+  });
 
   assert.equal(result.lookup_type, 'video');
   assert.equal(result.lookup_value, 'abcdefghijk');
@@ -75,21 +73,30 @@ test('builds video lookup for video URLs', () => {
 });
 
 test('skips already resolved and empty rows', () => {
-  assert.equal(buildLookup({ youtube_channel_url: '', youtube_channel_id: '' }, key), null);
+  assert.equal(buildLookup({ youtube_channel_url: '', youtube_channel_id: '' }), null);
   assert.equal(buildLookup({
     youtube_channel_url: 'https://www.youtube.com/@x',
     youtube_channel_id: 'UC1234567890123456789012',
-  }, key), null);
+  }), null);
 });
 
 test('returns a note for unsupported URLs', () => {
   const result = buildLookup({
     source_id: 'src6',
     youtube_channel_url: 'https://example.com/not-youtube',
-  }, key);
+  });
 
   assert.equal(result.source_id, 'src6');
   assert.match(result.notes, /RESOLVE_SKIPPED/);
+});
+
+test('keeps API credentials out of generated lookup URLs', () => {
+  const result = buildLookup({
+    source_id: 'src10',
+    youtube_channel_url: 'https://www.youtube.com/@GoogleDevelopers',
+  });
+
+  assert.doesNotMatch(result.lookup_url, /(?:[?&])key=/);
 });
 
 test('parses channel lookup responses', () => {

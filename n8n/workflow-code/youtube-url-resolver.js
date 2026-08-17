@@ -20,13 +20,12 @@ function extractYouTubeVideoId(url) {
   return null;
 }
 
-function buildLookup(row, key) {
+function buildLookup(row) {
   if (!row.youtube_channel_url || row.youtube_channel_id) return null;
 
   const url = String(row.youtube_channel_url).trim();
   if (!url) return null;
 
-  const encodedKey = encodeURIComponent(key);
   const channelMatch = url.match(/\/channel\/(UC[A-Za-z0-9_-]{22})(?:[/?#]|$)/);
   if (channelMatch) {
     const channelId = channelMatch[1];
@@ -34,7 +33,7 @@ function buildLookup(row, key) {
       ...row,
       lookup_type: 'channel_id',
       lookup_value: channelId,
-      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&id=${encodeURIComponent(channelId)}&key=${encodedKey}`,
+      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&id=${encodeURIComponent(channelId)}`,
     };
   }
 
@@ -45,7 +44,7 @@ function buildLookup(row, key) {
       ...row,
       lookup_type: 'handle',
       lookup_value: handle,
-      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forHandle=${encodeURIComponent(handle)}&key=${encodedKey}`,
+      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forHandle=${encodeURIComponent(handle)}`,
     };
   }
 
@@ -56,7 +55,7 @@ function buildLookup(row, key) {
       ...row,
       lookup_type: 'username',
       lookup_value: username,
-      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forUsername=${encodeURIComponent(username)}&key=${encodedKey}`,
+      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forUsername=${encodeURIComponent(username)}`,
     };
   }
 
@@ -67,7 +66,7 @@ function buildLookup(row, key) {
       ...row,
       lookup_type: 'custom_url_search',
       lookup_value: customName,
-      lookup_url: `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=1&q=${encodeURIComponent(customName)}&key=${encodedKey}`,
+      lookup_url: `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=1&q=${encodeURIComponent(customName)}`,
     };
   }
 
@@ -77,7 +76,7 @@ function buildLookup(row, key) {
       ...row,
       lookup_type: 'video',
       lookup_value: videoId,
-      lookup_url: `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}&key=${encodedKey}`,
+      lookup_url: `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}`,
     };
   }
 
