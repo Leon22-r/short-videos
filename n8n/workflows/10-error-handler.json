@@ -1,0 +1,94 @@
+{
+  "name": "WF10 Error Handler",
+  "description": "Normalizes unattended workflow failures and appends them to the shared Error_Log sheet. It provides the central failure sink that scheduled workflows should select in n8n Workflow Settings after import.",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const e = $input.first().json;\nconst exec = e.execution || {};\nconst err = exec.error || {};\nreturn [{\n  json: {\n    error_id: `ERR-${Date.now()}`,\n    workflow_name: (e.workflow && e.workflow.name) || 'unknown',\n    node_name: exec.lastNodeExecuted || (err.node && err.node.name) || 'unknown',\n    related_video_id: '',\n    error_type: err.name || 'WorkflowError',\n    error_message: (err.message || JSON.stringify(e)).slice(0, 1000),\n    raw_payload: JSON.stringify(e).slice(0, 40000),\n    created_at: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000002",
+      "name": "Normalize Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Error_Log"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": []
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000003",
+      "name": "Log To Error_Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Error": {
+      "main": [
+        [
+          {
+            "node": "Log To Error_Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}

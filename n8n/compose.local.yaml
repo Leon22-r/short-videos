@@ -1,11 +1,71 @@
 services:
+  publishing-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PUBLISHING_DB_NAME:-short_videos}
+      POSTGRES_USER: ${PUBLISHING_DB_USER:-short_videos}
+      POSTGRES_PASSWORD: ${PUBLISHING_DB_PASSWORD:-local-publishing-password-change-me}
+    ports:
+      - "127.0.0.1:${PUBLISHING_DB_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - publishing_db_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+
+  publishing-migrations:
+    image: postgres:16-alpine
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://${PUBLISHING_DB_USER:-short_videos}:${PUBLISHING_DB_PASSWORD:-local-publishing-password-change-me}@publishing-db:5432/${PUBLISHING_DB_NAME:-short_videos}
+    command: ["/run-migrations.sh"]
+    volumes:
+      - ./postgres/run-migrations.sh:/run-migrations.sh:ro
+      - ./postgres/migrations:/migrations:ro
+    depends_on:
+      publishing-db:
+        condition: service_healthy
+
+  provider-uploader:
+    build:
+      context: ./provider-uploader
+    image: short-videos/provider-uploader:local
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+      - PROVIDER_TIMEOUT_MS=1800000
+    volumes:
+      - ./render-data:/data:ro
+
   n8n:
-    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-2.25.7}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        N8N_VERSION: ${N8N_VERSION:-2.25.7}
+    image: short-videos/n8n-ffmpeg:${N8N_VERSION:-2.25.7}
     restart: unless-stopped
     ports:
       - "127.0.0.1:5678:5678"
     environment:
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      # Clear the default node blocklist so the Execute Command node (used by WF8c
+      # to run FFmpeg) loads. n8n 2.0+ disables it by default. Single-tenant only —
+      # this node runs arbitrary shell in the container.
+      - "NODES_EXCLUDE=[]"
+      # n8n 2.x defaults N8N_RESTRICT_FILE_ACCESS_TO to "~/.n8n-files", which blocks
+      # readWriteFile nodes from writing/reading the /data render volume ("... is not
+      # writable"). Scope allowed file access to the mounted work dirs instead.
+      - N8N_RESTRICT_FILE_ACCESS_TO=/data;/files
+      # Provider uploads can be hundreds of MB. Keep workflow binary payloads
+      # on the durable n8n volume instead of retaining them in process memory.
+      - N8N_AVAILABLE_BINARY_DATA_MODES=filesystem
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
       - N8N_RUNNERS_MODE=external
       - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
       - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN:-local-dev-task-runner-token-change-me}
@@ -25,6 +85,14 @@ services:
     volumes:
       - n8n_data:/home/node/.n8n
       - ./local-files:/files
+      - ./render-data:/data
+    depends_on:
+      publishing-db:
+        condition: service_healthy
+      publishing-migrations:
+        condition: service_completed_successfully
+      provider-uploader:
+        condition: service_healthy
 
   task-runners:
     build:
@@ -37,6 +105,8 @@ services:
       - N8N_RUNNERS_TASK_BROKER_URI=http://n8n:5679
       - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN:-local-dev-task-runner-token-change-me}
       - N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT=0
+    volumes:
+      - ./render-data:/data
     depends_on:
       - n8n
 
@@ -50,3 +120,4 @@ services:
 volumes:
   n8n_data:
   jaeger_data:
+  publishing_db_data:

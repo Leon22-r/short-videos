@@ -1,0 +1,167 @@
+{
+  "name": "WF9 Review Queue Digest",
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Africa/Nairobi"
+  },
+  "nodes": [
+    {
+      "id": "wf9-001",
+      "name": "Schedule Daily",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf9-005",
+      "name": "Read Source_Channels",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Source_Channels"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "wf9-002",
+      "name": "Read Created_Clips",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Created_Clips"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "wf9-003",
+      "name": "Build Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function escapeHtml(value) {\n  return String(value || '')\n    .replaceAll('&', '&amp;')\n    .replaceAll('<', '&lt;')\n    .replaceAll('>', '&gt;')\n    .replaceAll('\"', '&quot;');\n}\n\nfunction buildReviewDigest(clips, channels = []) {\n  const pending = clips.filter((clip) => String(clip.review_status) === 'NEEDS_REVIEW');\n\n  const yesterday = new Date(Date.now() - 86400000);\n  const recentlyPaused = channels.filter((ch) => {\n    if (!ch.auto_paused_at) return false;\n    try { return new Date(ch.auto_paused_at) > yesterday; } catch { return false; }\n  });\n  const channelsByNiche = {};\n  for (const channel of channels) {\n    const niche = channel.niche || 'UNKNOWN';\n    channelsByNiche[niche] = channelsByNiche[niche] || [];\n    channelsByNiche[niche].push(channel);\n  }\n  const exhaustedNiches = Object.entries(channelsByNiche)\n    .map(([niche, nicheChannels]) => {\n      const active = nicheChannels.filter((channel) => String(channel.active_status || '').toUpperCase() === 'TRUE');\n      if (nicheChannels.length === 0 || active.length > 0) return null;\n      const autoPaused = nicheChannels.filter((channel) => channel.auto_paused_at);\n      return {\n        niche,\n        total: nicheChannels.length,\n        autoPaused: autoPaused.length,\n        manualInactive: nicheChannels.length - autoPaused.length,\n        reason: autoPaused.length === nicheChannels.length\n          ? 'all channels auto-paused for low-quality videos'\n          : 'no active channels remain',\n      };\n    })\n    .filter(Boolean)\n    .sort((a, b) => a.niche.localeCompare(b.niche));\n\n  if (pending.length === 0 && recentlyPaused.length === 0 && exhaustedNiches.length === 0) return null;\n\n  let html = '';\n\n  if (pending.length > 0) {\n    const byNiche = {};\n    for (const clip of pending) {\n      const niche = clip.niche || 'UNKNOWN';\n      byNiche[niche] = byNiche[niche] || [];\n      byNiche[niche].push(clip);\n    }\n    html += `<h2>Clips awaiting review: ${pending.length}</h2>`;\n    for (const niche of Object.keys(byNiche).sort()) {\n      html += `<h3>${escapeHtml(niche)} (${byNiche[niche].length})</h3><ul>`;\n      for (const clip of byNiche[niche]) {\n        const title = escapeHtml(clip.suggested_title || clip.clip_title || clip.created_clip_id);\n        html += `<li><a href=\"${escapeHtml(clip.google_drive_url)}\">${title}</a> - ${escapeHtml(clip.duration_seconds)}s - ${escapeHtml(clip.reviewer_notes)}</li>`;\n      }\n      html += '</ul>';\n    }\n    html += '<p>Approve by setting review_status=APPROVED in Created_Clips, then copy to Approved_For_Posting.</p>';\n  }\n\n  if (recentlyPaused.length > 0) {\n    html += `<h2>Channels auto-paused today: ${recentlyPaused.length}</h2><ul>`;\n    for (const ch of recentlyPaused) {\n      html += `<li><strong>${escapeHtml(ch.source_name)}</strong> [${escapeHtml(ch.niche)}] - ${escapeHtml(ch.auto_paused_reason)}</li>`;\n    }\n    html += '</ul>';\n    html += '<p>To re-enable: set active_status=TRUE in Source_Channels tab (WF5 resets health window automatically on next run).</p>';\n  }\n\n  if (exhaustedNiches.length > 0) {\n    html += `<h2>Niches needing new channels: ${exhaustedNiches.length}</h2><ul>`;\n    for (const item of exhaustedNiches) {\n      html += `<li><strong>${escapeHtml(item.niche)}</strong> - No active channels remain (${item.total} total, ${item.autoPaused} auto-paused, ${item.manualInactive} manually inactive). ${escapeHtml(item.reason)}.</li>`;\n    }\n    html += '</ul>';\n    html += '<p>Add new Source_Channels rows or re-enable suitable channels to keep these niches represented.</p>';\n  }\n\n  let subject;\n  if (pending.length > 0 || recentlyPaused.length > 0 || exhaustedNiches.length > 0) {\n    const parts = [];\n    if (pending.length > 0) parts.push(`${pending.length} clips`);\n    if (recentlyPaused.length > 0) parts.push(`${recentlyPaused.length} channels auto-paused`);\n    if (exhaustedNiches.length > 0) parts.push(`${exhaustedNiches.length} niche attention`);\n    subject = `Shorts review queue: ${parts.join(', ')}`;\n  } else if (pending.length > 0) {\n    subject = `Shorts review queue: ${pending.length} clips`;\n  } else {\n    subject = `Shorts alert: ${recentlyPaused.length} channels auto-paused`;\n  }\n\n  return { subject, html };\n}\n\n\nconst channels = $('Read Source_Channels').all().map(i => i.json);\nconst digest = buildReviewDigest($input.all().map(i => i.json), channels);\nif (!digest) return [];\nreturn [{ json: digest, pairedItem: { item: 0 } }];"
+      }
+    },
+    {
+      "id": "wf9-004",
+      "name": "Send Digest",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "njihialeon00@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Daily": {
+      "main": [
+        [
+          {
+            "node": "Read Source_Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Source_Channels": {
+      "main": [
+        [
+          {
+            "node": "Read Created_Clips",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Created_Clips": {
+      "main": [
+        [
+          {
+            "node": "Build Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Digest": {
+      "main": [
+        [
+          {
+            "node": "Send Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "name": "WF14 Publishing Retry Scheduler",
+  "description": "Atomically releases due retryable publishing jobs in Postgres and terminalizes exhausted retries, then mirrors those state changes to Google Sheets. This keeps retry timing deterministic across overlapping workers.",
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Africa/Nairobi"
+  },
+  "nodes": [
+    {
+      "id": "wf14-001",
+      "name": "Schedule Hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf14-002",
+      "name": "Release Due Retries Atomically",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "UPDATE short_videos.publishing_jobs\nSET publish_status = CASE WHEN retry_count >= 4 THEN 'FAILED' ELSE 'PENDING' END,\n    next_retry_at = NULL,\n    claimed_at = NULL,\n    claimed_by = '',\n    lease_expires_at = NULL,\n    updated_at = now()\nWHERE publish_status = 'RETRY_PENDING'\n  AND (retry_count >= 4 OR next_retry_at IS NULL OR next_retry_at <= now())\nRETURNING *;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "",
+          "replaceEmptyStrings": true
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "wf14-003",
+      "name": "Mirror Retry State",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Publishing_Jobs"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "publish_id"
+          ]
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Schedule Hourly": {
+      "main": [
+        [
+          {
+            "node": "Release Due Retries Atomically",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Due Retries Atomically": {
+      "main": [
+        [
+          {
+            "node": "Mirror Retry State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}

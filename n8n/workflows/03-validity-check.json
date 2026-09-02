@@ -1,0 +1,183 @@
+{
+  "name": "WF3 Validity Check",
+  "description": "Applies format, rights-risk, language, and engagement gates before transcript work. It rejects weak candidates early so downstream provider and processing capacity is reserved for viable videos.",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000001",
+      "name": "Schedule Hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Source_Channels"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000002",
+      "name": "Read Source_Channels",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidate_Videos"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000003",
+      "name": "Read Candidate_Videos",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const riskBySource = {};\nfor (const s of $('Read Source_Channels').all()) {\n  riskBySource[s.json.source_id] = String(s.json.risk_level || 'low').toLowerCase();\n}\n\nconst REJECT_PATTERNS = [\n  [/(official\\s+)?(trailer|teaser)\\b/i, 'TRAILER_OR_PROMO'],\n  [/\\bpromo(tion)?\\b/i, 'TRAILER_OR_PROMO'],\n  [/\\b(official (music )?video|lyric video|audio)\\b/i, 'MUSIC_VIDEO'],\n  [/\\b(compilation|best of|top \\d+ moments|highlights)\\b/i, 'COMPILATION'],\n  [/\\b(news bulletin|breaking news|live news)\\b/i, 'NEWS_CLIP'],\n  [/#shorts/i, 'SHORTS_UPLOAD'],\n];\nconst STATIC_NARRATION_PATTERNS = [\n  /\\b(one|single)\\s+(picture|image|photo)\\b/i,\n  /\\b(static|still)\\s+(image|picture|photo|background|screen)\\b/i,\n  /\\b(quote card|quotes slideshow|slideshow|slide show)\\b/i,\n  /\\b(text[-\\s]?to[-\\s]?speech|tts|ai voice(?:\\s*over)?|robot voice)\\b.*\\b(story|stories|quotes?|motivation|motivational|wisdom|narration)\\b/i,\n  /\\b(story|stories|quotes?|motivation|motivational|wisdom)\\b.*\\b(narration|narrated|voice\\s*over|voiceover)\\b/i,\n  /\\b(narration|narrated|voice\\s*over|voiceover)\\b.*\\b(static|still|one picture|single image|slideshow|quotes?)\\b/i,\n];\nconst PREFER_PATTERNS = [\n  /podcast/i, /interview/i, /sermon/i, /teaching/i, /lesson/i, /masterclass/i,\n  /conversation/i, /keynote/i, /q\\s*&\\s*a/i, /panel/i, /testimony/i,\n];\nconst ENGAGEMENT_GATE = {\n  minViews: 10000,\n  minLikePercentage: 0.02,\n  minEngagementPercentage: 0.02,\n  minCommentPercentage: 0.0005,\n};\n\nfunction numberValue(value) {\n  const parsed = Number(value || 0);\n  return Number.isFinite(parsed) ? parsed : 0;\n}\n\nfunction computeEngagementMetrics(v) {\n  const views = numberValue(v.view_count);\n  const likes = numberValue(v.like_count);\n  const comments = numberValue(v.comment_count);\n  if (views <= 0) {\n    return {\n      like_percentage: 0,\n      comment_percentage: 0,\n      engagement_percentage: 0,\n    };\n  }\n  return {\n    like_percentage: likes / views,\n    comment_percentage: comments / views,\n    engagement_percentage: (likes + comments) / views,\n  };\n}\n\nfunction passesEngagementGate(v, metrics) {\n  return (\n    numberValue(v.view_count) >= ENGAGEMENT_GATE.minViews &&\n    metrics.like_percentage >= ENGAGEMENT_GATE.minLikePercentage &&\n    metrics.engagement_percentage >= ENGAGEMENT_GATE.minEngagementPercentage &&\n    metrics.comment_percentage >= ENGAGEMENT_GATE.minCommentPercentage\n  );\n}\n\nconst out = [];\nfor (const item of $input.all()) {\n  const v = item.json;\n  if (String(v.processing_status) !== 'NEW' || String(v.validity_status || '') !== '') continue;\n\n  const title = String(v.video_title || '');\n  const dur = Number(v.duration_seconds || 0);\n  const engagementMetrics = computeEngagementMetrics(v);\n  let status = 'VALID';\n  let reason = '';\n\n  if (dur > 0 && dur <= 60) { status = 'REJECTED'; reason = 'SHORTS_UPLOAD'; }\n  else if (dur > 0 && dur < 180) { status = 'REJECTED'; reason = 'TOO_SHORT'; }\n  else {\n    for (const [re, code] of REJECT_PATTERNS) {\n      if (re.test(title)) { status = 'REJECTED'; reason = code; break; }\n    }\n    const staticText = [v.video_title, v.video_description, v.description, v.source_name, v.source_type]\n      .filter(Boolean)\n      .join(' ');\n    if (status === 'VALID' && STATIC_NARRATION_PATTERNS.some(re => re.test(staticText))) {\n      status = 'REJECTED';\n      reason = 'STATIC_NARRATION_VISUALS';\n    }\n  }\n\n  if (status === 'VALID' && !passesEngagementGate(v, engagementMetrics)) {\n    status = 'REJECTED';\n    reason = 'LOW_ENGAGEMENT';\n  }\n\n  const lang = String(v.language || '').toLowerCase();\n  if (status === 'VALID' && lang && !lang.startsWith('en') && !lang.startsWith('sw')) {\n    status = 'FLAGGED'; reason = 'LANGUAGE_CHECK';\n  }\n\n  let score = 5;\n  if (dur >= 900 && dur <= 7200) score += 2;\n  else if (dur >= 300) score += 1;\n  if (PREFER_PATTERNS.some(re => re.test(title))) score += 2;\n  const views = Number(v.view_count || 0);\n  if (views >= 10000) score += 1;\n  score = Math.min(10, score);\n\n  if (status === 'VALID' && riskBySource[v.source_id] === 'high') {\n    status = 'FLAGGED'; reason = 'MANUAL_APPROVAL_REQUIRED';\n  }\n\n  out.push({\n    json: {\n      video_id: v.video_id,\n      ...engagementMetrics,\n      validity_status: status,\n      validity_score: score,\n      rejection_reason: reason,\n      processing_status: status === 'REJECTED' ? 'SKIPPED' : v.processing_status,\n    },\n    pairedItem: { item: 0 },\n  });\n}\nreturn out;"
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000004",
+      "name": "Apply Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Candidate_Videos"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "video_id"
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000005",
+      "name": "Update Candidate Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        880,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Schedule Hourly": {
+      "main": [
+        [
+          {
+            "node": "Read Source_Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Source_Channels": {
+      "main": [
+        [
+          {
+            "node": "Read Candidate_Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Candidate_Videos": {
+      "main": [
+        [
+          {
+            "node": "Apply Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Rules": {
+      "main": [
+        [
+          {
+            "node": "Update Candidate Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}

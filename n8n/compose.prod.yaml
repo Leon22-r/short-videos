@@ -21,7 +21,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
   n8n:
-    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-2.25.7}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        N8N_VERSION: ${N8N_VERSION:-2.25.7}
+    image: short-videos/n8n-ffmpeg:${N8N_VERSION:-2.25.7}
     restart: always
     ports:
       - "127.0.0.1:5678:5678"
@@ -42,6 +47,14 @@ services:
       - traefik.http.routers.n8n.middlewares=n8n@docker
     environment:
       - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      # Clear the default node blocklist so the Execute Command node (used by WF8c
+      # to run FFmpeg) loads. n8n 2.0+ disables it by default. Single-tenant only —
+      # this node runs arbitrary shell in the container.
+      - "NODES_EXCLUDE=[]"
+      # n8n 2.x defaults N8N_RESTRICT_FILE_ACCESS_TO to "~/.n8n-files", which blocks
+      # readWriteFile nodes from writing/reading the /data render volume ("... is not
+      # writable"). Scope allowed file access to the mounted work dirs instead.
+      - N8N_RESTRICT_FILE_ACCESS_TO=/data;/files
       - N8N_HOST=${SUBDOMAIN}.${DOMAIN_NAME}
       - N8N_PORT=5678
       - N8N_PROTOCOL=https
@@ -60,6 +73,7 @@ services:
     volumes:
       - n8n_data:/home/node/.n8n
       - ./local-files:/files
+      - ./render-data:/data
 
 volumes:
   n8n_data:

@@ -1,0 +1,18 @@
+.git/
+.worktrees/
+node_modules/
+graphify-out/
+.graphify/
+__pycache__/
+*.pyc
+.venv/
+venv/
+n8n/.env
+n8n/local-files/
+n8n/render-data/
+
+# Lambda deployment bundles contain installed dependencies; index handler.py only.
+lamba-function/*/
+
+# Generated from n8n/workflow-code; index the canonical generators/helpers.
+n8n/workflows/

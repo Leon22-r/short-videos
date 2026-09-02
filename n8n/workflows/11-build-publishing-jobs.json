@@ -1,0 +1,366 @@
+{
+  "name": "WF11 Build Publishing Jobs",
+  "description": "Creates one fail-closed publishing queue row per explicitly approved render and enabled platform destination. It separates human approval from billable provider work so no upload starts implicitly.",
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Africa/Nairobi"
+  },
+  "nodes": [
+    {
+      "id": "wf11-001",
+      "name": "Schedule 30m",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "wf11-002",
+      "name": "Read Approved_For_Posting",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Approved_For_Posting"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "wf11-003",
+      "name": "Read Render_Jobs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Render_Jobs"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "wf11-004",
+      "name": "Read Created_Clips",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Created_Clips"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "wf11-005",
+      "name": "Read Publishing_Channels",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Publishing_Channels"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "wf11-006",
+      "name": "Read Publishing_Jobs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Publishing_Jobs"
+        },
+        "options": {}
+      },
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "wf11-007",
+      "name": "Build Missing Publish Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const PLATFORM_STATUSES = new Set([\n  'PENDING',\n  'CLAIMED',\n  'UPLOADING',\n  'PROCESSING',\n  'PUBLISHED',\n  'RETRY_PENDING',\n  'AUTH_REQUIRED',\n  'REJECTED',\n  'FAILED',\n  'DRAFT_UPLOADED',\n  'SKIPPED',\n]);\n\nconst PLATFORMS = [\n  'YOUTUBE_SHORTS',\n  'FACEBOOK_REELS',\n  'INSTAGRAM_REELS',\n  'TIKTOK',\n];\n\nconst MAX_RETRY_ATTEMPTS = 4;\nconst DEFAULT_LEASE_MINUTES = 30;\nconst DEFAULT_PROVIDER_POLL_MINUTES = 2;\n\nconst CREDENTIAL_SLOTS = {\n  YOUTUBE_SHORTS: 'YOUTUBE_PRIMARY',\n  FACEBOOK_REELS: 'FACEBOOK_PRIMARY',\n  INSTAGRAM_REELS: 'INSTAGRAM_PRIMARY',\n  TIKTOK: 'TIKTOK_PRIMARY',\n};\n\nfunction active(row) {\n  return ['true', 'active', 'yes', '1', 'enabled'].includes(String(row.enabled_status || row.active_status || '').trim().toLowerCase());\n}\n\nfunction clean(value, limit = 2000) {\n  if (value === null || value === undefined) return '';\n  return String(value).trim().slice(0, limit);\n}\n\nfunction nowIso(now = new Date()) {\n  return now instanceof Date ? now.toISOString() : String(now);\n}\n\nfunction normalizePlatform(platform) {\n  const value = clean(platform).toUpperCase();\n  if (value === 'YOUTUBE') return 'YOUTUBE_SHORTS';\n  if (value === 'FACEBOOK') return 'FACEBOOK_REELS';\n  if (value === 'INSTAGRAM') return 'INSTAGRAM_REELS';\n  if (value === 'TIKTOK_DRAFT') return 'TIKTOK';\n  return value;\n}\n\nfunction normalizeStatus(status) {\n  const value = clean(status).toUpperCase();\n  return PLATFORM_STATUSES.has(value) ? value : '';\n}\n\nfunction splitPlatforms(value) {\n  if (!clean(value)) return [];\n  const platforms = String(value)\n    .split(/[,\\n|]/)\n    .map(normalizePlatform)\n    .filter(Boolean)\n    .filter((platform) => PLATFORMS.includes(platform));\n  return [...new Set(platforms)];\n}\n\nfunction truthy(value) {\n  return ['true', 'yes', '1', 'enabled'].includes(clean(value).toLowerCase());\n}\n\nfunction destinationIdFor(channel, platform) {\n  const fields = {\n    YOUTUBE_SHORTS: 'youtube_channel_id',\n    FACEBOOK_REELS: 'facebook_page_id',\n    INSTAGRAM_REELS: 'instagram_user_id',\n    TIKTOK: 'tiktok_open_id',\n  };\n  return clean(channel?.[fields[platform]]);\n}\n\nfunction channelCanPublish(channel, platform) {\n  const auditStatus = clean(channel.audit_status).toUpperCase();\n  if (!['APPROVED_PUBLIC', 'DEV_PRIVATE_ONLY'].includes(auditStatus)) return false;\n  if (!clean(channel.channel_id) || !destinationIdFor(channel, platform)) return false;\n  if (truthy(channel.requires_manual_publish) && platform !== 'TIKTOK') return false;\n  return true;\n}\n\nfunction validHttpsUrl(value) {\n  try {\n    const url = new URL(clean(value, 4000));\n    return url.protocol === 'https:' && !url.username && !url.password && (!url.port || url.port === '443');\n  } catch {\n    return false;\n  }\n}\n\nfunction urlWithinVerifiedPrefix(value, prefixValue) {\n  try {\n    const url = new URL(clean(value, 4000));\n    const prefix = new URL(clean(prefixValue, 4000));\n    if (!validHttpsUrl(url.toString()) || !validHttpsUrl(prefix.toString())) return false;\n    if (prefix.search || prefix.hash || url.origin !== prefix.origin) return false;\n    const prefixPath = prefix.pathname || '/';\n    if (prefixPath === '/') return true;\n    if (prefixPath.endsWith('/')) return url.pathname.startsWith(prefixPath);\n    return url.pathname === prefixPath || url.pathname.startsWith(`${prefixPath}/`);\n  } catch {\n    return false;\n  }\n}\n\nfunction validateProviderJob(job) {\n  const platform = normalizePlatform(job?.platform);\n  if (!PLATFORMS.includes(platform)) return { ready: false, reason: `UNSUPPORTED_PLATFORM:${platform || 'UNKNOWN'}` };\n\n  const destinationId = destinationIdFor(job, platform);\n  if (!destinationId) {\n    const fields = {\n      YOUTUBE_SHORTS: 'youtube_channel_id',\n      FACEBOOK_REELS: 'facebook_page_id',\n      INSTAGRAM_REELS: 'instagram_user_id',\n      TIKTOK: 'tiktok_open_id',\n    };\n    return { ready: false, reason: `MISSING_DESTINATION_ID:${fields[platform]}` };\n  }\n\n  const expectedSlot = CREDENTIAL_SLOTS[platform];\n  const credentialSlot = clean(job?.credential_slot).toUpperCase();\n  if (credentialSlot !== expectedSlot) {\n    return { ready: false, reason: `UNBOUND_CREDENTIAL_SLOT:${expectedSlot}` };\n  }\n\n  if (platform === 'YOUTUBE_SHORTS' && !clean(job?.local_file_path, 4000)) {\n    return { ready: false, reason: 'LOCAL_VIDEO_REQUIRED:YOUTUBE_SHORTS' };\n  }\n\n  if (platform === 'FACEBOOK_REELS' || platform === 'INSTAGRAM_REELS') {\n    if (!/^v\\d+\\.\\d+$/.test(clean(job?.meta_graph_version))) {\n      return { ready: false, reason: 'META_GRAPH_VERSION_REQUIRED' };\n    }\n    if (!validHttpsUrl(job?.public_video_url)) {\n      return { ready: false, reason: `PUBLIC_HTTPS_VIDEO_REQUIRED:${platform}` };\n    }\n  }\n\n  if (platform === 'INSTAGRAM_REELS') {\n    const host = clean(job?.instagram_graph_host).toLowerCase();\n    if (!['graph.facebook.com', 'graph.instagram.com'].includes(host)) {\n      return { ready: false, reason: 'INVALID_INSTAGRAM_GRAPH_HOST' };\n    }\n  }\n\n  if (platform === 'TIKTOK') {\n    if (clean(job?.tiktok_mode).toUpperCase() !== 'DRAFT') {\n      return { ready: false, reason: 'TIKTOK_DIRECT_REQUIRES_CREATOR_UI_AND_CONSENT' };\n    }\n    if (!truthy(job?.tiktok_domain_verified)) {\n      return { ready: false, reason: 'TIKTOK_VERIFIED_DOMAIN_REQUIRED' };\n    }\n    if (!validHttpsUrl(job?.public_video_url)) {\n      return { ready: false, reason: 'PUBLIC_HTTPS_VIDEO_REQUIRED:TIKTOK' };\n    }\n    const verifiedPrefix = clean(job?.tiktok_verified_url_prefix, 4000);\n    if (!urlWithinVerifiedPrefix(job?.public_video_url, verifiedPrefix)) {\n      return { ready: false, reason: 'TIKTOK_VIDEO_URL_OUTSIDE_VERIFIED_PREFIX' };\n    }\n  }\n\n  return { ready: true, reason: '', platform, destination_id: destinationId };\n}\n\nfunction normalizeHashtags(value) {\n  if (!value) return '';\n  if (Array.isArray(value)) return value.map((tag) => clean(tag).replace(/^#?/, '#')).filter((tag) => tag !== '#').join(' ');\n  return String(value)\n    .split(/[\\s,\\n]+/)\n    .map((tag) => clean(tag).replace(/^#?/, '#'))\n    .filter((tag) => tag !== '#')\n    .join(' ');\n}\n\nfunction titleFor(row) {\n  return clean(row.final_title || row.suggested_title || row.clip_title || row.created_clip_id, 100);\n}\n\nfunction captionFor(row) {\n  const caption = clean(row.final_caption || row.suggested_caption || row.final_description || '', 1800);\n  const hashtags = normalizeHashtags(row.hashtags);\n  if (!hashtags) return caption;\n  if (!caption) return hashtags;\n  return `${caption}\\n\\n${hashtags}`.slice(0, 2200);\n}\n\nfunction renderReady(render) {\n  return clean(render.render_status).toUpperCase() === 'COMPLETED' && (render.final_drive_file_id || render.final_drive_url || render.final_local_path);\n}\n\nfunction jobKey(row) {\n  return `${clean(row.render_id)}::${normalizePlatform(row.platform)}::${clean(row.channel_id)}`;\n}\n\nfunction buildPublishingJobs(approvedRows, renderRows, createdRows, channelRows, existingJobs, now = new Date()) {\n  const timestamp = nowIso(now);\n  const rendersById = Object.fromEntries((renderRows || []).map((row) => [clean(row.render_id), row]));\n  const createdById = Object.fromEntries((createdRows || []).map((row) => [clean(row.created_clip_id), row]));\n  const existingKeys = new Set((existingJobs || []).map(jobKey));\n  const channels = (channelRows || []).filter(active);\n  const out = [];\n\n  for (const approved of approvedRows || []) {\n    const status = clean(approved.status).toUpperCase();\n    if (!['APPROVED', 'READY'].includes(status)) continue;\n\n    const created = createdById[clean(approved.created_clip_id)] || {};\n    const renderId = clean(approved.render_id || created.render_id || `RENDER_${approved.created_clip_id}`);\n    const render = rendersById[renderId] || {};\n    if (!renderReady(render)) continue;\n\n    const niche = clean(approved.niche || render.niche || created.niche);\n    const requestedPlatforms = splitPlatforms(approved.platform);\n    for (const platform of requestedPlatforms) {\n      const matchingChannels = channels.filter((channel) => {\n        if (normalizePlatform(channel.platform) !== platform) return false;\n        if (clean(channel.niche) && clean(channel.niche) !== niche) return false;\n        return channelCanPublish(channel, platform);\n      });\n\n      for (const channel of matchingChannels) {\n        const channelId = clean(channel.channel_id);\n        const destinationId = destinationIdFor(channel, platform);\n        const requiresManualPublish = truthy(channel.requires_manual_publish);\n        const auditStatus = clean(channel.audit_status).toUpperCase();\n        const row = {\n          publish_id: `PUB_${renderId}_${platform}_${channelId}`,\n          approved_id: clean(approved.approved_id),\n          render_id: renderId,\n          created_clip_id: clean(approved.created_clip_id),\n          niche,\n          platform,\n          channel_id: channelId,\n          destination_id: destinationId,\n          youtube_channel_id: clean(channel.youtube_channel_id),\n          facebook_page_id: clean(channel.facebook_page_id),\n          instagram_user_id: clean(channel.instagram_user_id),\n          tiktok_open_id: clean(channel.tiktok_open_id),\n          credential_slot: clean(channel.credential_slot).toUpperCase() || CREDENTIAL_SLOTS[platform],\n          meta_graph_version: clean(channel.meta_graph_version),\n          instagram_graph_host: clean(channel.instagram_graph_host).toLowerCase() || 'graph.facebook.com',\n          tiktok_domain_verified: truthy(channel.tiktok_domain_verified) ? 'TRUE' : 'FALSE',\n          tiktok_verified_url_prefix: clean(channel.tiktok_verified_url_prefix, 4000),\n          default_privacy: auditStatus === 'DEV_PRIVATE_ONLY'\n            ? (platform === 'TIKTOK' ? 'SELF_ONLY' : 'private')\n            : clean(channel.default_privacy) || (platform === 'TIKTOK' ? 'SELF_ONLY' : 'private'),\n          requires_manual_publish: requiresManualPublish ? 'TRUE' : 'FALSE',\n          audit_status: auditStatus,\n          tiktok_mode: platform === 'TIKTOK' && requiresManualPublish ? 'DRAFT' : 'DIRECT',\n          video_source: render.final_local_path ? 'LOCAL_FILE' : 'DRIVE',\n          video_file_id: clean(render.final_drive_file_id),\n          video_url: clean(render.final_drive_url),\n          public_video_url: clean(approved.public_video_url || render.public_video_url, 4000),\n          local_file_path: clean(render.final_local_path),\n          title: titleFor({ ...created, ...approved }),\n          caption: captionFor({ ...created, ...approved }),\n          description: clean(approved.final_description || created.suggested_caption || approved.final_caption, 4000),\n          hashtags: normalizeHashtags(approved.hashtags || created.hashtags),\n          scheduled_at: clean(approved.scheduled_date || approved.scheduled_at),\n          publish_status: 'PENDING',\n          retry_count: clean(approved.retry_count) || '0',\n          next_retry_at: '',\n          last_error: '',\n          post_id: '',\n          post_url: '',\n          claimed_at: '',\n          claimed_by: '',\n          lease_expires_at: '',\n          created_at: timestamp,\n          updated_at: timestamp,\n        };\n        if (!existingKeys.has(jobKey(row))) {\n          existingKeys.add(jobKey(row));\n          out.push(row);\n        }\n      }\n    }\n  }\n\n  return out;\n}\n\nfunction providerPollUpdate(job, providerStage, providerRef, providerResponse = {}, now = new Date(), minutes = DEFAULT_PROVIDER_POLL_MINUTES) {\n  const timestamp = nowIso(now);\n  const pollMinutes = Number(minutes);\n  const safeMinutes = Number.isFinite(pollMinutes) && pollMinutes > 0 ? Math.min(pollMinutes, 60) : DEFAULT_PROVIDER_POLL_MINUTES;\n  return {\n    publish_id: clean(job?.publish_id),\n    claimed_by: clean(job?.claimed_by),\n    publish_status: 'PROCESSING',\n    provider_stage: clean(providerStage),\n    provider_ref: clean(providerRef, 1000),\n    provider_response: JSON.stringify(providerResponse || {}),\n    poll_after: new Date(Date.parse(timestamp) + safeMinutes * 60000).toISOString(),\n    updated_at: timestamp,\n  };\n}\n\nfunction interpretYouTubeStatus(response = {}) {\n  const item = Array.isArray(response.items) ? response.items[0] : null;\n  if (!item) return { outcome: 'FAILED', error: 'YouTube status response did not contain the uploaded video' };\n  const processing = clean(item.processingDetails?.processingStatus).toLowerCase();\n  const upload = clean(item.status?.uploadStatus).toLowerCase();\n  if (processing === 'succeeded' && upload === 'processed') {\n    return { outcome: 'PUBLISHED', post_id: clean(item.id), post_url: `https://www.youtube.com/watch?v=${clean(item.id)}` };\n  }\n  if (processing === 'failed' || ['failed', 'rejected', 'deleted'].includes(upload)) {\n    const reason = item.processingDetails?.processingFailureReason || item.status?.failureReason || item.status?.rejectionReason || `${processing}/${upload}`;\n    return { outcome: upload === 'rejected' ? 'REJECTED' : 'FAILED', error: `YouTube processing failed: ${clean(reason)}` };\n  }\n  if (processing === 'terminated') return { outcome: 'FAILED', error: 'YouTube processing status terminated without success' };\n  return { outcome: 'PROCESSING' };\n}\n\nfunction interpretFacebookStatus(response = {}) {\n  const status = response.status || {};\n  const phases = [status.uploading_phase, status.processing_phase, status.publishing_phase].filter(Boolean);\n  const failed = phases.find((phase) => clean(phase.status).toLowerCase() === 'error' || (Array.isArray(phase.errors) && phase.errors.length));\n  if (failed) return { outcome: 'FAILED', error: `Facebook Reel failed: ${clean(JSON.stringify(failed.errors || failed))}` };\n  if (clean(status.publishing_phase?.status).toLowerCase() === 'complete') {\n    const id = clean(response.id || response.video_id);\n    return { outcome: 'PUBLISHED', post_id: id, post_url: clean(response.permalink_url || response.permalink) };\n  }\n  return { outcome: 'PROCESSING' };\n}\n\nfunction interpretInstagramContainerStatus(response = {}) {\n  const status = clean(response.status_code).toUpperCase();\n  if (status === 'FINISHED') return { outcome: 'READY_TO_PUBLISH', container_id: clean(response.id) };\n  if (status === 'PUBLISHED') return { outcome: 'PUBLISHED', container_id: clean(response.id) };\n  if (status === 'ERROR' || status === 'EXPIRED') return { outcome: 'FAILED', error: `Instagram container ${status}: ${clean(response.status)}` };\n  return { outcome: 'PROCESSING' };\n}\n\nfunction interpretTikTokStatus(response = {}, providerRef = '') {\n  const data = response.data || {};\n  const status = clean(data.status).toUpperCase();\n  if (status === 'SEND_TO_USER_INBOX') {\n    return { outcome: 'DRAFT_UPLOADED', post_id: '' };\n  }\n  if (status === 'PUBLISH_COMPLETE') {\n    const publicIds = Array.isArray(data.publicaly_available_post_id) ? data.publicaly_available_post_id : [];\n    return { outcome: 'PUBLISHED', post_id: clean(publicIds[0]) };\n  }\n  if (status === 'FAILED') return { outcome: 'FAILED', error: `TikTok processing failed: ${clean(data.fail_reason || response.error?.message)}` };\n  return { outcome: 'PROCESSING' };\n}\n\nfunction parseDueAt(value) {\n  if (!clean(value)) return null;\n  const parsed = Date.parse(value);\n  return Number.isFinite(parsed) ? parsed : Number.NaN;\n}\n\nfunction scheduleIsDue(row, current) {\n  const scheduledAt = parseDueAt(row.scheduled_at);\n  return scheduledAt === null || (Number.isFinite(scheduledAt) && scheduledAt <= current);\n}\n\nfunction leaseIsStale(row, current, staleClaimMinutes = DEFAULT_LEASE_MINUTES) {\n  const explicitExpiry = parseDueAt(row.lease_expires_at);\n  if (Number.isFinite(explicitExpiry)) return explicitExpiry <= current;\n\n  const claimedAt = parseDueAt(row.claimed_at || row.started_at || row.updated_at);\n  if (!Number.isFinite(claimedAt)) return false;\n  const minutes = Number(staleClaimMinutes);\n  const staleAfterMs = (Number.isFinite(minutes) && minutes > 0 ? minutes : DEFAULT_LEASE_MINUTES) * 60000;\n  return claimedAt + staleAfterMs <= current;\n}\n\nfunction pickNextPublishJob(rows, now = new Date(), options = {}) {\n  const current = Date.parse(nowIso(now));\n  if (!Number.isFinite(current)) return null;\n  return (rows || [])\n    .filter((row) => {\n      const status = normalizeStatus(row.publish_status);\n      if (!scheduleIsDue(row, current)) return false;\n      if (status === 'PENDING') return true;\n      if (status === 'CLAIMED' || status === 'UPLOADING') {\n        return leaseIsStale(row, current, options.staleClaimMinutes);\n      }\n      if (status !== 'RETRY_PENDING') return false;\n      if (retryCountOf(row.retry_count) >= MAX_RETRY_ATTEMPTS) return false;\n      if (!row.next_retry_at) return true;\n      const retryAt = Date.parse(row.next_retry_at);\n      return Number.isFinite(retryAt) && retryAt <= current;\n    })\n    .sort((a, b) => {\n      const aDue = parseDueAt(a.scheduled_at) ?? parseDueAt(a.created_at) ?? 0;\n      const bDue = parseDueAt(b.scheduled_at) ?? parseDueAt(b.created_at) ?? 0;\n      return aDue - bDue || clean(a.created_at).localeCompare(clean(b.created_at));\n    })[0] || null;\n}\n\nfunction buildPublishClaim(job, claimedBy, now = new Date(), leaseMinutes = DEFAULT_LEASE_MINUTES) {\n  const publishId = clean(job?.publish_id);\n  const worker = clean(claimedBy, 200);\n  if (!publishId) throw new Error('Cannot claim a publishing job without publish_id');\n  if (!worker) throw new Error('Cannot claim a publishing job without claimed_by');\n\n  const timestamp = nowIso(now);\n  const current = Date.parse(timestamp);\n  if (!Number.isFinite(current)) throw new Error('Cannot claim a publishing job with an invalid timestamp');\n  const requestedLease = Number(leaseMinutes);\n  const safeLeaseMinutes = Number.isFinite(requestedLease) && requestedLease > 0\n    ? Math.min(requestedLease, 1440)\n    : DEFAULT_LEASE_MINUTES;\n\n  return {\n    ...job,\n    publish_status: 'CLAIMED',\n    claimed_at: timestamp,\n    claimed_by: worker,\n    lease_expires_at: new Date(current + safeLeaseMinutes * 60000).toISOString(),\n    updated_at: timestamp,\n  };\n}\n\nfunction buildPublishAttempt(job, now = new Date()) {\n  const platform = normalizePlatform(job.platform);\n  const timestamp = nowIso(now);\n  const title = clean(job.title || job.created_clip_id, 100);\n  const caption = clean(job.caption || job.description, 2200);\n  const visibility = clean(job.default_privacy) || (platform === 'TIKTOK' ? 'SELF_ONLY' : 'private');\n\n  return {\n    ...job,\n    platform,\n    publish_status: 'UPLOADING',\n    started_at: timestamp,\n    updated_at: timestamp,\n    title,\n    caption,\n    youtube_metadata: JSON.stringify({\n      snippet: {\n        title,\n        description: caption,\n        tags: normalizeHashtags(job.hashtags).replace(/#/g, '').split(/\\s+/).filter(Boolean),\n        categoryId: '22',\n      },\n      status: {\n        privacyStatus: platform === 'YOUTUBE_SHORTS' ? visibility : 'private',\n        selfDeclaredMadeForKids: false,\n      },\n    }),\n    facebook_metadata: JSON.stringify({ description: caption }),\n    instagram_metadata: JSON.stringify({ caption }),\n    tiktok_metadata: JSON.stringify({\n      post_info: {\n        title: caption,\n        privacy_level: visibility,\n        disable_duet: false,\n        disable_comment: false,\n        disable_stitch: false,\n      },\n      source_info: job.video_url\n        ? { source: 'PULL_FROM_URL', video_url: job.video_url }\n        : { source: 'FILE_UPLOAD' },\n    }),\n  };\n}\n\nfunction retryDelayMinutes(retryCount) {\n  const count = Number(retryCount || 0);\n  if (count <= 0) return 15;\n  if (count === 1) return 60;\n  if (count === 2) return 360;\n  return 1440;\n}\n\nfunction classifyError(error) {\n  const message = clean(error?.message || error?.error?.message || error?.body?.error?.message || error?.body || error, 2000);\n  if (/auth|oauth|token|401|403|permission|scope|credential/i.test(message)) return { status: 'AUTH_REQUIRED', retryable: false, message };\n  if (/reject|copyright|policy|invalid.*video|privacy|unsupported|duplicate/i.test(message)) return { status: 'REJECTED', retryable: false, message };\n  return { status: 'RETRY_PENDING', retryable: true, message: message || 'Platform publish failed' };\n}\n\nfunction buildPublishSuccessUpdate(job, response = {}, now = new Date()) {\n  const platform = normalizePlatform(job.platform);\n  const postId = clean(response.id || response.video_id || response.publish_id || response.data?.id || response.data?.publish_id || response.share_id);\n  const postUrl = clean(response.url || response.post_url || response.permalink_url || response.data?.share_url || response.data?.url);\n  const completedStatus = platform === 'TIKTOK' && clean(job.tiktok_mode).toUpperCase() === 'DRAFT' ? 'DRAFT_UPLOADED' : 'PUBLISHED';\n  const status = postId ? completedStatus : 'FAILED';\n  return {\n    publish_id: job.publish_id,\n    platform,\n    publish_status: status,\n    post_id: postId,\n    post_url: postUrl,\n    last_error: postId ? '' : 'Platform response did not include a confirmed post ID',\n    updated_at: nowIso(now),\n    completed_at: postId ? nowIso(now) : '',\n    claimed_at: '',\n    claimed_by: '',\n    lease_expires_at: '',\n  };\n}\n\nfunction retryCountOf(value) {\n  const count = Number(value);\n  return Number.isInteger(count) && count >= 0 ? count : MAX_RETRY_ATTEMPTS;\n}\n\nfunction buildPublishFailureUpdate(job, error, now = new Date()) {\n  const classified = classifyError(error);\n  const previousRetryCount = retryCountOf(job.retry_count || 0);\n  const retryCount = previousRetryCount + (classified.retryable ? 1 : 0);\n  const failed = classified.retryable && retryCount >= MAX_RETRY_ATTEMPTS;\n  const nextRetry = classified.retryable && !failed\n    ? new Date(Date.parse(nowIso(now)) + retryDelayMinutes(previousRetryCount) * 60000).toISOString()\n    : '';\n\n  return {\n    publish_id: job.publish_id,\n    platform: normalizePlatform(job.platform),\n    publish_status: failed ? 'FAILED' : classified.status,\n    retry_count: String(retryCount),\n    next_retry_at: nextRetry,\n    last_error: classified.message,\n    updated_at: nowIso(now),\n    claimed_at: '',\n    claimed_by: '',\n    lease_expires_at: '',\n  };\n}\n\nfunction buildCredentialHealthRows(channels, now = new Date()) {\n  const timestamp = nowIso(now);\n  return (channels || [])\n    .filter(active)\n    .map((channel) => {\n      const expiresAt = Date.parse(channel.token_expires_at || '');\n      let status = 'HEALTHY';\n      if (Number.isFinite(expiresAt) && expiresAt < Date.parse(timestamp)) status = 'INVALID';\n      else if (Number.isFinite(expiresAt) && expiresAt - Date.parse(timestamp) < 7 * 86400000) status = 'EXPIRING';\n      return {\n        channel_id: clean(channel.channel_id || channel.destination_id || channel.credential_name),\n        platform: normalizePlatform(channel.platform),\n        last_health_status: status,\n        last_expiry_audit_at: timestamp,\n        updated_at: timestamp,\n      };\n    });\n}\n\nfunction pickRetryJobs(rows, now = new Date()) {\n  return (rows || [])\n    .filter((row) => normalizeStatus(row.publish_status) === 'RETRY_PENDING')\n    .filter((row) => {\n      if (retryCountOf(row.retry_count) >= MAX_RETRY_ATTEMPTS) return true;\n      if (!row.next_retry_at) return true;\n      const next = Date.parse(row.next_retry_at);\n      return Number.isFinite(next) && next <= Date.parse(nowIso(now));\n    })\n    .map((row) => ({\n      publish_id: row.publish_id,\n      publish_status: retryCountOf(row.retry_count) >= MAX_RETRY_ATTEMPTS ? 'FAILED' : 'PENDING',\n      next_retry_at: '',\n      claimed_at: '',\n      claimed_by: '',\n      lease_expires_at: '',\n      updated_at: nowIso(now),\n    }));\n}\n\n\nconst rows = buildPublishingJobs(\n  $('Read Approved_For_Posting').all().map(i => i.json),\n  $('Read Render_Jobs').all().map(i => i.json),\n  $('Read Created_Clips').all().map(i => i.json),\n  $('Read Publishing_Channels').all().map(i => i.json),\n  $('Read Publishing_Jobs').all().map(i => i.json),\n);\nreturn rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "wf11-008",
+      "name": "Sync Atomic Publishing Queue",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1540,
+        0
+      ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH incoming AS (\n  SELECT value AS row\n  FROM jsonb_array_elements($1::jsonb)\n  WHERE NULLIF(btrim(value->>'publish_id'), '') IS NOT NULL\n)\nINSERT INTO short_videos.publishing_jobs AS jobs (\n  publish_id, approved_id, render_id, created_clip_id, niche, platform,\n  channel_id, destination_id, youtube_channel_id, facebook_page_id,\n  instagram_user_id, tiktok_open_id, credential_slot, meta_graph_version,\n  instagram_graph_host, tiktok_domain_verified, tiktok_verified_url_prefix, default_privacy,\n  requires_manual_publish, audit_status, tiktok_mode, video_source,\n  video_file_id, video_url, public_video_url, local_file_path, title, caption, description,\n  hashtags, scheduled_at, publish_status, retry_count, next_retry_at,\n  last_error, post_id, post_url, started_at, completed_at, claimed_at,\n  claimed_by, lease_expires_at, payload, created_at, updated_at\n)\nSELECT\n  btrim(row->>'publish_id'),\n  COALESCE(row->>'approved_id', ''),\n  COALESCE(row->>'render_id', ''),\n  COALESCE(row->>'created_clip_id', ''),\n  COALESCE(row->>'niche', ''),\n  upper(btrim(row->>'platform')),\n  COALESCE(row->>'channel_id', ''),\n  COALESCE(row->>'destination_id', ''),\n  COALESCE(row->>'youtube_channel_id', ''),\n  COALESCE(row->>'facebook_page_id', ''),\n  COALESCE(row->>'instagram_user_id', ''),\n  COALESCE(row->>'tiktok_open_id', ''),\n  COALESCE(row->>'credential_slot', ''),\n  COALESCE(row->>'meta_graph_version', ''),\n  COALESCE(NULLIF(row->>'instagram_graph_host', ''), 'graph.facebook.com'),\n  upper(COALESCE(row->>'tiktok_domain_verified', 'FALSE')) IN ('TRUE', '1', 'YES'),\n  COALESCE(row->>'tiktok_verified_url_prefix', ''),\n  COALESCE(NULLIF(row->>'default_privacy', ''), 'private'),\n  upper(COALESCE(row->>'requires_manual_publish', 'FALSE')) IN ('TRUE', '1', 'YES'),\n  COALESCE(row->>'audit_status', ''),\n  COALESCE(NULLIF(row->>'tiktok_mode', ''), 'DIRECT'),\n  COALESCE(row->>'video_source', ''),\n  COALESCE(row->>'video_file_id', ''),\n  COALESCE(row->>'video_url', ''),\n  COALESCE(row->>'public_video_url', ''),\n  COALESCE(row->>'local_file_path', ''),\n  COALESCE(row->>'title', ''),\n  COALESCE(row->>'caption', ''),\n  COALESCE(row->>'description', ''),\n  COALESCE(row->>'hashtags', ''),\n  short_videos.safe_schedule_at(row->>'scheduled_at'),\n  upper(COALESCE(NULLIF(row->>'publish_status', ''), 'PENDING')),\n  GREATEST(COALESCE(NULLIF(row->>'retry_count', '')::integer, 0), 0),\n  NULLIF(row->>'next_retry_at', '')::timestamptz,\n  COALESCE(row->>'last_error', ''),\n  COALESCE(row->>'post_id', ''),\n  COALESCE(row->>'post_url', ''),\n  NULLIF(row->>'started_at', '')::timestamptz,\n  NULLIF(row->>'completed_at', '')::timestamptz,\n  NULLIF(row->>'claimed_at', '')::timestamptz,\n  COALESCE(row->>'claimed_by', ''),\n  NULLIF(row->>'lease_expires_at', '')::timestamptz,\n  row,\n  COALESCE(NULLIF(row->>'created_at', '')::timestamptz, now()),\n  COALESCE(NULLIF(row->>'updated_at', '')::timestamptz, now())\nFROM incoming\nON CONFLICT (publish_id) DO UPDATE SET\n  approved_id = EXCLUDED.approved_id,\n  render_id = EXCLUDED.render_id,\n  created_clip_id = EXCLUDED.created_clip_id,\n  niche = EXCLUDED.niche,\n  platform = EXCLUDED.platform,\n  channel_id = EXCLUDED.channel_id,\n  destination_id = EXCLUDED.destination_id,\n  youtube_channel_id = EXCLUDED.youtube_channel_id,\n  facebook_page_id = EXCLUDED.facebook_page_id,\n  instagram_user_id = EXCLUDED.instagram_user_id,\n  tiktok_open_id = EXCLUDED.tiktok_open_id,\n  credential_slot = EXCLUDED.credential_slot,\n  meta_graph_version = EXCLUDED.meta_graph_version,\n  instagram_graph_host = EXCLUDED.instagram_graph_host,\n  tiktok_domain_verified = EXCLUDED.tiktok_domain_verified,\n  tiktok_verified_url_prefix = EXCLUDED.tiktok_verified_url_prefix,\n  default_privacy = EXCLUDED.default_privacy,\n  requires_manual_publish = EXCLUDED.requires_manual_publish,\n  audit_status = EXCLUDED.audit_status,\n  tiktok_mode = EXCLUDED.tiktok_mode,\n  video_source = EXCLUDED.video_source,\n  video_file_id = EXCLUDED.video_file_id,\n  video_url = EXCLUDED.video_url,\n  public_video_url = EXCLUDED.public_video_url,\n  local_file_path = EXCLUDED.local_file_path,\n  title = EXCLUDED.title,\n  caption = EXCLUDED.caption,\n  description = EXCLUDED.description,\n  hashtags = EXCLUDED.hashtags,\n  scheduled_at = EXCLUDED.scheduled_at,\n  payload = jobs.payload || EXCLUDED.payload,\n  updated_at = now()\nRETURNING *;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify([\n  ...$('Read Publishing_Jobs').all(),\n  ...$('Build Missing Publish Jobs').all(),\n].map(item => item.json).filter(row => row.publish_id)) }}",
+          "replaceEmptyStrings": true
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "executeOnce": true
+    },
+    {
+      "id": "wf11-009",
+      "name": "Return New Publish Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return $('Build Missing Publish Jobs').all()\n  .filter(item => item.json.publish_id)\n  .map((item, index) => ({ json: item.json, pairedItem: { item: index } }));"
+      }
+    },
+    {
+      "id": "wf11-010",
+      "name": "Append Publishing Jobs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1980,
+        0
+      ],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Publishing_Jobs"
+        },
+        "options": {},
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "publish_id"
+          ]
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Schedule 30m": {
+      "main": [
+        [
+          {
+            "node": "Read Approved_For_Posting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Approved_For_Posting": {
+      "main": [
+        [
+          {
+            "node": "Read Render_Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Render_Jobs": {
+      "main": [
+        [
+          {
+            "node": "Read Created_Clips",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Created_Clips": {
+      "main": [
+        [
+          {
+            "node": "Read Publishing_Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Publishing_Channels": {
+      "main": [
+        [
+          {
+            "node": "Read Publishing_Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Publishing_Jobs": {
+      "main": [
+        [
+          {
+            "node": "Build Missing Publish Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Missing Publish Jobs": {
+      "main": [
+        [
+          {
+            "node": "Sync Atomic Publishing Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync Atomic Publishing Queue": {
+      "main": [
+        [
+          {
+            "node": "Return New Publish Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Return New Publish Jobs": {
+      "main": [
+        [
+          {
+            "node": "Append Publishing Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}

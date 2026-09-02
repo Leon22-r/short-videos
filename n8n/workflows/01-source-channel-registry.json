@@ -1,0 +1,191 @@
+{
+  "name": "WF1 Source Channel Registry",
+  "description": "Resolves human-entered YouTube channel URLs into stable channel and uploads-playlist IDs. It keeps source registration explicit while giving downstream discovery a cheap, deterministic playlist input.",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Source_Channels"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000002",
+      "name": "Read Source_Channels",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ],
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Rows with a URL but no resolved channel id; build a YouTube API lookup URL per row.\nfunction extractYouTubeVideoId(url) {\n  const patterns = [\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/watch\\?[^#]*\\bv=([A-Za-z0-9_-]{11})/,\n    /(?:youtu\\.be)\\/([A-Za-z0-9_-]{11})/,\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/shorts\\/([A-Za-z0-9_-]{11})/,\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/embed\\/([A-Za-z0-9_-]{11})/,\n    /(?:youtube\\.com|m\\.youtube\\.com)\\/live\\/([A-Za-z0-9_-]{11})/,\n  ];\n\n  for (const pattern of patterns) {\n    const match = url.match(pattern);\n    if (match) return match[1];\n  }\n\n  return null;\n}\n\nfunction buildLookup(row) {\n  if (!row.youtube_channel_url || row.youtube_channel_id) return null;\n\n  const url = String(row.youtube_channel_url).trim();\n  if (!url) return null;\n\n  const channelMatch = url.match(/\\/channel\\/(UC[A-Za-z0-9_-]{22})(?:[/?#]|$)/);\n  if (channelMatch) {\n    const channelId = channelMatch[1];\n    return {\n      ...row,\n      lookup_type: 'channel_id',\n      lookup_value: channelId,\n      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&id=${encodeURIComponent(channelId)}`,\n    };\n  }\n\n  const handleMatch = url.match(/\\/@([A-Za-z0-9._-]+)(?:[/?#]|$)/);\n  if (handleMatch) {\n    const handle = handleMatch[1];\n    return {\n      ...row,\n      lookup_type: 'handle',\n      lookup_value: handle,\n      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forHandle=${encodeURIComponent(handle)}`,\n    };\n  }\n\n  const usernameMatch = url.match(/\\/user\\/([^/?#]+)(?:[/?#]|$)/);\n  if (usernameMatch) {\n    const username = decodeURIComponent(usernameMatch[1]);\n    return {\n      ...row,\n      lookup_type: 'username',\n      lookup_value: username,\n      lookup_url: `https://www.googleapis.com/youtube/v3/channels?part=id,contentDetails&forUsername=${encodeURIComponent(username)}`,\n    };\n  }\n\n  const customMatch = url.match(/\\/c\\/([^/?#]+)(?:[/?#]|$)/);\n  if (customMatch) {\n    const customName = decodeURIComponent(customMatch[1]);\n    return {\n      ...row,\n      lookup_type: 'custom_url_search',\n      lookup_value: customName,\n      lookup_url: `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=1&q=${encodeURIComponent(customName)}`,\n    };\n  }\n\n  const videoId = extractYouTubeVideoId(url);\n  if (videoId) {\n    return {\n      ...row,\n      lookup_type: 'video',\n      lookup_value: videoId,\n      lookup_url: `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}`,\n    };\n  }\n\n  return null;\n}\n\nconst out = [];\n$input.all().forEach((item, index) => {\n  const lookup = buildLookup(item.json);\n  if (!lookup) return;\n  out.push({ json: lookup, pairedItem: { item: index } });\n});\n\nreturn out;"
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000003",
+      "name": "Pick Unresolved",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.lookup_url }}",
+        "options": {},
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth"
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000004",
+      "name": "Resolve Channel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Pair API responses back with source rows (same order, 1:1).\nfunction uploadsPlaylistFromChannelId(channelId) {\n  if (!/^UC[A-Za-z0-9_-]{22}$/.test(channelId || '')) return '';\n  return `UU${channelId.slice(2)}`;\n}\n\nfunction parseLookupResponse(row, api) {\n  const item = api.items && api.items[0];\n  if (!item) {\n    return {\n      source_id: row.source_id,\n      notes: `RESOLVE_FAILED: no channel for ${row.youtube_channel_url}`,\n    };\n  }\n\n  if (row.lookup_type === 'video') {\n    const channelId = item.snippet && item.snippet.channelId;\n    return {\n      source_id: row.source_id,\n      youtube_channel_id: channelId,\n      uploads_playlist_id: uploadsPlaylistFromChannelId(channelId),\n      last_checked_at: new Date().toISOString(),\n    };\n  }\n\n  if (row.lookup_type === 'custom_url_search') {\n    const channelId = item.snippet && item.snippet.channelId;\n    return {\n      source_id: row.source_id,\n      youtube_channel_id: channelId,\n      uploads_playlist_id: uploadsPlaylistFromChannelId(channelId),\n      last_checked_at: new Date().toISOString(),\n    };\n  }\n\n  return {\n    source_id: row.source_id,\n    youtube_channel_id: item.id,\n    uploads_playlist_id: item.contentDetails && item.contentDetails.relatedPlaylists && item.contentDetails.relatedPlaylists.uploads,\n    last_checked_at: new Date().toISOString(),\n  };\n}\n\nconst rows = $('Pick Unresolved').all();\nconst out = [];\n$input.all().forEach((item, i) => {\n  out.push({ json: parseLookupResponse(rows[i].json, item.json), pairedItem: { item: i } });\n});\nreturn out;"
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000005",
+      "name": "Parse Channel Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Source_Channels"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "source_id"
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000006",
+      "name": "Update Source Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1100,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Source_Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Source_Channels": {
+      "main": [
+        [
+          {
+            "node": "Pick Unresolved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Unresolved": {
+      "main": [
+        [
+          {
+            "node": "Resolve Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Channel": {
+      "main": [
+        [
+          {
+            "node": "Parse Channel Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Channel Response": {
+      "main": [
+        [
+          {
+            "node": "Update Source Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "placeholder"
+  }
+}
