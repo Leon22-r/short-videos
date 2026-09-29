@@ -2,6 +2,8 @@
 
 The discovery, review, and render pipeline is Google-Sheets-driven. Publishing uses Google Sheets as the approval/operator mirror and Postgres as the transactional queue and provider-checkpoint source of truth.
 
+WF12 also supports an opt-in `POSTIZ` backend. Existing jobs retain `DIRECT`; Postiz jobs use a frozen integration mapping, durable submission intent and identity-checked result polling. See [Postiz publishing](postiz-publishing.md) for configuration, status semantics and recovery. The direct-provider details below apply to `DIRECT` jobs unless noted.
+
 ## Workflow Chain
 
 1. WF1 `Source Channel Registry`: resolves YouTube channel URLs into channel IDs and uploads playlist IDs.

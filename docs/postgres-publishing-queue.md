@@ -2,6 +2,8 @@
 
 Postgres is the source of truth for publishing job state. Google Sheets remains the human-readable mirror used for approvals, routing metadata, and operations.
 
+Migration `003-postiz-publishing.sql` adds opt-in `POSTIZ` jobs while preserving existing jobs as `DIRECT`. Backend and Postiz integration are immutable through Sheet sync; all Postiz metadata freezes on first dispatch. Dedicated live-lease-guarded queries save media, acquire a single-winner submission intent, record the external post ID and complete reconciliation. Post-intent failures cannot be released for automatic resubmission by WF14. See [Postiz publishing](postiz-publishing.md) for the complete contract; direct-provider credential/media requirements below apply only to `DIRECT` jobs.
+
 ## Local startup
 
 The `publishing-db` service starts automatically with `n8n/compose.local.yaml`. On its first start, the official Postgres entrypoint applies `n8n/postgres/init/001-publishing-queue.sql`. On every Compose start, the one-shot `publishing-migrations` service applies the idempotent files under `n8n/postgres/migrations/` before n8n starts, so existing volumes receive schema upgrades too.
@@ -17,7 +19,7 @@ Local host access defaults to `127.0.0.1:5433`. Containers use `publishing-db:54
 
 Create a credential of type `Postgres` named `Publishing Queue Postgres`. For local Compose, use host `publishing-db`, port `5432`, database/user `short_videos`, the configured password, and no SSL. Bind it to the Postgres nodes in WF11, WF12, and WF14.
 
-Credential creation and binding remain deployment actions. Secrets and credential IDs are intentionally absent from committed workflow JSON.
+Credential creation and binding remain deployment actions. Real secrets and credential IDs are absent from committed workflow JSON; references are placeholders. Postiz HTTP nodes additionally require the Header Auth credential described in [Postiz publishing](postiz-publishing.md).
 
 WF12 also contains four fixed provider credential bindings: `YouTube Publishing OAuth2`, `Facebook Reels Page Token`, `Instagram Reels Token`, and `TikTok Content Posting Bearer`. Queue rows select these through `YOUTUBE_PRIMARY`, `FACEBOOK_PRIMARY`, `INSTAGRAM_PRIMARY`, and `TIKTOK_PRIMARY`; there is currently one credential/account per platform. `credential_slot` is an allowlisted routing assertion, not a secret or dynamic credential lookup.
 

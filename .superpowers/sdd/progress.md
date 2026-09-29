@@ -1,5 +1,15 @@
 # SDD Progress — n8n Video Pipeline
 
+## Postiz migration — 2026-09-21
+
+- [x] Joint plan and independent review in Agent Room AM-XHPN.
+- [x] Opt-in Postiz handoff, immutable routing, durable submission intent and bounded result reconciliation.
+- [x] Regenerate WF11–WF14; document setup, failure recovery and rollback.
+- [x] Pass 210 tests including real isolated Postgres migration/race/recovery checks.
+- [ ] Deploy migration, bind credentials/endpoint/error workflow, validate imported n8n connections and run authorized live delivery tests.
+
+See `docs/superpowers/plans/2026-09-21-postiz-publishing-migration.md` and `docs/postiz-publishing.md`. Implementation is local and uncommitted; production activation was not performed.
+
 ## Current worktree delivery
 
 Branch: `feat/n8n-video-pipeline-phase1`
