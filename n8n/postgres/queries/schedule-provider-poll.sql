@@ -29,4 +29,11 @@ SET publish_status = CASE
 WHERE publish_id = $1
   AND claimed_by = $2
   AND publish_status = 'UPLOADING'
+  AND (publishing_backend = 'DIRECT' OR (
+    lease_expires_at > now()
+    AND provider_stage = 'POSTIZ_SUBMITTED'
+    AND $3 = 'POSTIZ_SUBMITTED'
+    AND postiz_post_id <> ''
+    AND $4 = postiz_post_id
+  ))
 RETURNING *;
