@@ -331,7 +331,9 @@ one commit despite the size.
 1. Does the WhatsApp domain need its own Postgres database from day one, or does it
    start stateless? D3 provisions one either way; this only affects whether the
    migration runner is wired up for it now.
-2. Is the Lambda deployment path still used at all, or has
-   `local-transcript-server.py` replaced it for good? Both move either way, but if the
-   Lambda is dead then `build.sh` and the packaging step can be dropped entirely
-   rather than made reproducible.
+~~2. Is the Lambda deployment path still used at all?~~ **Resolved 2026-09-30: keep
+both.** The Lambda packaging path and the local server both stay, so `build.sh` is
+made reproducible rather than deleted. They share `handler.py` as the single
+implementation — `build.sh` packages it for Lambda, `local-server.py` wraps it over
+HTTP for local WF-04 development. Neither is a fork of the other, which is what makes
+keeping both cheap.
