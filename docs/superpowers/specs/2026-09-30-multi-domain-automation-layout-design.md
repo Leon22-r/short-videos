@@ -1,7 +1,7 @@
 # Multi-Domain Automation Layout
 
 **Date:** 2026-09-30
-**Status:** Approved design, pending implementation plan
+**Status:** Approved 2026-10-01. Pending implementation plan.
 
 ## Purpose
 
@@ -328,9 +328,12 @@ one commit despite the size.
 
 ## Open questions
 
-1. Does the WhatsApp domain need its own Postgres database from day one, or does it
-   start stateless? D3 provisions one either way; this only affects whether the
-   migration runner is wired up for it now.
+~~1. Does the WhatsApp domain need its own Postgres database from day one?~~
+**Resolved 2026-10-01 by default: provision it, leave it empty.** The database and
+role are created and the migration runner is wired up with an empty migrations
+directory. Measured cost is nil — 20 MB was the entire Postgres server, not per
+database — and it avoids a schema migration later. If the domain turns out to be
+genuinely stateless, an empty database is harmless.
 ~~2. Is the Lambda deployment path still used at all?~~ **Resolved 2026-09-30: keep
 both.** The Lambda packaging path and the local server both stay, so `build.sh` is
 made reproducible rather than deleted. They share `handler.py` as the single
