@@ -17,6 +17,7 @@ SET publish_status = $3,
 WHERE publish_id = $1
   AND claimed_by = $2
   AND publish_status = 'UPLOADING'
+  AND publishing_backend = 'DIRECT'
   AND $3 IN ('PUBLISHED', 'DRAFT_UPLOADED')
   AND (
     NULLIF($4, '') IS NOT NULL

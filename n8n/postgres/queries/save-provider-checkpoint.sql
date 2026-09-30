@@ -7,5 +7,6 @@ SET provider_stage = $3,
 WHERE publish_id = $1
   AND claimed_by = $2
   AND publish_status = 'UPLOADING'
+  AND publishing_backend = 'DIRECT'
   AND lease_expires_at > now()
 RETURNING *;

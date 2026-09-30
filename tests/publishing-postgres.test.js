@@ -77,3 +77,24 @@ test('compose starts a healthy local publishing database with durable storage', 
   assert.match(compose, /condition: service_completed_successfully/);
   assert.match(compose, /provider-uploader:/);
 });
+
+test('Postiz intent and immutable backend contracts are explicit in SQL', () => {
+  const migration = read('n8n/postgres/migrations/003-postiz-publishing.sql');
+  assert.match(migration, /publishing_backend text NOT NULL DEFAULT 'DIRECT'/);
+  assert.match(migration, /postiz_submit_payload jsonb NOT NULL DEFAULT/);
+  const upsert = read('n8n/postgres/queries/upsert-publishing-jobs.sql');
+  const conflicts = upsert.split('ON CONFLICT')[1];
+  assert.doesNotMatch(conflicts, /(?:publishing_backend|postiz_integration_id|postiz_post_id) = EXCLUDED/);
+  assert.match(conflicts, /jobs.started_at IS NOT NULL OR jobs.publish_status <> 'PENDING'/);
+  for (const name of ['save-postiz-media', 'begin-postiz-submit', 'save-postiz-submission', 'complete-postiz-publish']) {
+    const sql = read(`n8n/postgres/queries/${name}.sql`);
+    assert.match(sql, /claimed_by = \$2/);
+    assert.match(sql, /lease_expires_at > now\(\)/);
+    assert.match(sql, /publishing_backend = 'POSTIZ'/);
+    assert.doesNotMatch(sql, /\{\{/);
+  }
+  const intent = read('n8n/postgres/queries/begin-postiz-submit.sql');
+  assert.match(intent, /provider_stage = 'POSTIZ_MEDIA_READY'/);
+  assert.match(intent, /postiz_submitted_at IS NULL/);
+  assert.match(read('n8n/postgres/queries/release-due-publishing-retries.sql'), /automatic resubmission blocked/);
+});

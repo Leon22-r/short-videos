@@ -52,6 +52,8 @@ const redactProviderStateCode = `return $input.all().map((item, index) => {
   delete json.payload;
   delete json.public_video_url;
   delete json.local_file_path;
+  delete json.postiz_media_path;
+  delete json.postiz_submit_payload;
   return { json, pairedItem: { item: index } };
 });`;
 
@@ -185,6 +187,12 @@ const ifNode = (id, name, position, leftValue, rightValue, type, operation) => n
 const routeIfNode = (id, name, position, route) => ifNode(id, name, position, '={{ $json.route }}', route, 'string', 'equals');
 
 function writeWorkflow(file, workflow) {
+  if (path.basename(file) === '12-publish-to-platforms.json') {
+    require('./postiz-workflow').extendPostizWorkflow(workflow, {
+      helper, postgresSql, postgresNode, httpNode, codeNode, fallibleCodeNode,
+      switchNode, fullJsonResponse, credentialRef,
+    });
+  }
   const outputFile = path.join(WORKFLOW_OUTPUT_DIR, path.basename(file));
   fs.mkdirSync(path.dirname(outputFile), { recursive: true });
   fs.writeFileSync(outputFile, `${JSON.stringify({
@@ -836,11 +844,13 @@ function wf14() {
     nodes: [
       node('wf14-001', 'Schedule Hourly', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'hours', hoursInterval: 1 }] } }),
       postgresNode('wf14-002', 'Release Due Retries Atomically', [220, 0], postgresSql('release-due-publishing-retries')),
+      codeNode('wf14-002b', 'Redact Retry State For Sheet', [330, 0], redactProviderStateCode),
       sheetsNode('wf14-003', 'Mirror Retry State', [440, 0], sheet('appendOrUpdate', 'Publishing_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['publish_id'] } })),
     ],
     connections: {
       'Schedule Hourly': { main: [[{ node: 'Release Due Retries Atomically', type: 'main', index: 0 }]] },
-      'Release Due Retries Atomically': { main: [[{ node: 'Mirror Retry State', type: 'main', index: 0 }]] },
+      'Release Due Retries Atomically': { main: [[{ node: 'Redact Retry State For Sheet', type: 'main', index: 0 }]] },
+      'Redact Retry State For Sheet': { main: [[{ node: 'Mirror Retry State', type: 'main', index: 0 }]] },
     },
   });
 }

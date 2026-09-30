@@ -142,10 +142,11 @@ approved_id	created_clip_id	niche	platform	final_title	final_caption	final_descr
 ## Tab 12: `Publishing_Channels`
 
 ```
-channel_id	niche	platform	enabled_status	credential_name	credential_slot	youtube_channel_id	facebook_page_id	instagram_user_id	tiktok_open_id	meta_graph_version	instagram_graph_host	tiktok_domain_verified	tiktok_verified_url_prefix	default_privacy	requires_manual_publish	audit_status	token_expires_at	last_expiry_audit_at	last_health_status	notes	created_at	updated_at
+channel_id	niche	platform	enabled_status	publishing_backend	postiz_integration_id	credential_name	credential_slot	youtube_channel_id	facebook_page_id	instagram_user_id	tiktok_open_id	meta_graph_version	instagram_graph_host	tiktok_domain_verified	tiktok_verified_url_prefix	default_privacy	requires_manual_publish	audit_status	token_expires_at	last_expiry_audit_at	last_health_status	notes	created_at	updated_at
 ```
 
 - One active row per destination account you want the publishing workflows to target.
+- `publishing_backend`: blank/`DIRECT` for existing provider branches, or opt-in `POSTIZ` with an exact `postiz_integration_id`. Postiz jobs use `POSTIZ_PRIMARY`; native platform IDs and direct credential fields below apply only to DIRECT. See [Postiz configuration](postiz-publishing.md).
 - `platform`: `YOUTUBE_SHORTS` | `FACEBOOK_REELS` | `INSTAGRAM_REELS` | `TIKTOK`
 - `enabled_status`: `TRUE` / `FALSE`
 - `credential_name` is a human reminder only. Real OAuth tokens and API secrets stay in n8n credentials, not Sheets.
@@ -160,11 +161,12 @@ channel_id	niche	platform	enabled_status	credential_name	credential_slot	youtube
 ## Tab 13: `Publishing_Jobs`
 
 ```
-publish_id	approved_id	render_id	created_clip_id	niche	platform	channel_id	destination_id	youtube_channel_id	facebook_page_id	instagram_user_id	tiktok_open_id	credential_slot	meta_graph_version	instagram_graph_host	tiktok_domain_verified	tiktok_verified_url_prefix	default_privacy	requires_manual_publish	audit_status	video_source	video_file_id	video_url	public_video_url	local_file_path	title	caption	description	hashtags	scheduled_at	publish_status	retry_count	next_retry_at	last_error	post_id	post_url	provider_stage	provider_ref	poll_after	provider_poll_count	provider_poll_deadline	created_at	updated_at	started_at	completed_at	claimed_at	claimed_by	lease_expires_at
+publish_id	publishing_backend	postiz_integration_id	postiz_post_id	postiz_media_id	postiz_submitted_at	approved_id	render_id	created_clip_id	niche	platform	channel_id	destination_id	youtube_channel_id	facebook_page_id	instagram_user_id	tiktok_open_id	credential_slot	meta_graph_version	instagram_graph_host	tiktok_domain_verified	tiktok_verified_url_prefix	default_privacy	requires_manual_publish	audit_status	video_source	video_file_id	video_url	public_video_url	local_file_path	title	caption	description	hashtags	scheduled_at	publish_status	retry_count	next_retry_at	last_error	post_id	post_url	provider_stage	provider_ref	poll_after	provider_poll_count	provider_poll_deadline	created_at	updated_at	started_at	completed_at	claimed_at	claimed_by	lease_expires_at
 ```
 
 - WF11 creates one row per completed render + explicitly authorized approval + explicitly selected platform + enabled matching destination channel.
-- `destination_id` is copied from the matching platform-specific channel field (`youtube_channel_id`, `facebook_page_id`, `instagram_user_id`, or `tiktok_open_id`). WF11 also preserves those source fields plus `default_privacy`, `requires_manual_publish`, and `audit_status` on the job for an inspectable routing decision. Missing or mismatched destination identity fails closed.
+- For POSTIZ, `destination_id` is the immutable `postiz_integration_id`; `postiz_post_id` tracks the accepted Postiz record separately from platform `post_id`. Media paths and `postiz_submit_payload` are database-only and must not be added to Sheets. Metadata freezes on first dispatch.
+- For DIRECT, `destination_id` is copied from the matching platform-specific channel field (`youtube_channel_id`, `facebook_page_id`, `instagram_user_id`, or `tiktok_open_id`). WF11 also preserves those source fields plus `default_privacy`, `requires_manual_publish`, and `audit_status` on the job for an inspectable routing decision. Missing or mismatched destination identity fails closed.
 - `credential_slot`, `meta_graph_version`, `instagram_graph_host`, `tiktok_domain_verified`, and `tiktok_verified_url_prefix` are copied from `Publishing_Channels`; `public_video_url` is copied from the approval/render metadata.
 - `provider_stage`, `provider_ref`, and `poll_after` provide safe operator visibility into asynchronous work. Signed `provider_upload_url` values and raw `provider_response` payloads stay in Postgres only and must not be added to the Sheet.
 - Google Sheets is the operator-facing mirror; `short_videos.publishing_jobs` in Postgres is the publishing queue source of truth.
@@ -173,7 +175,7 @@ publish_id	approved_id	render_id	created_clip_id	niche	platform	channel_id	desti
 - Sheet updates happen after database transitions. If a Sheet mirror write fails, Postgres remains authoritative and the workflow-level error path should alert the operator.
 - `publish_status`: `PENDING` → `CLAIMED` → `UPLOADING` → `PROCESSING` → `PUBLISHED`; retryable failures use `RETRY_PENDING`; auth failures use `AUTH_REQUIRED`; permanent platform/content failures use `REJECTED` or `FAILED`.
 - A retryable failure becomes `FAILED` at the configured maximum attempt count. WF14 must never leave an exhausted row stranded as `RETRY_PENDING`.
-- `PUBLISHED` requires the platform's terminal processing check; an initialization response, upload receipt, or processing container is not sufficient. YouTube and Meta also require a durable media `post_id`. TikTok keeps its tracking `publish_id` only in `provider_ref`; `post_id` stays blank unless TikTok returns `publicaly_available_post_id`. TikTok inbox delivery uses `DRAFT_UPLOADED` and is not a public post.
+- `PUBLISHED` requires the platform's terminal processing check; an initialization response, upload receipt, or processing container is not sufficient. DIRECT YouTube and Meta also require a durable media `post_id`. POSTIZ requires its PUBLISHED state, exact saved identity and platform release URL; a missing platform `releaseId` leaves `post_id` blank. TikTok keeps its tracking `publish_id` only in `provider_ref`; `post_id` stays blank unless TikTok returns `publicaly_available_post_id`. TikTok inbox delivery uses `DRAFT_UPLOADED` and is not a public post.
 - `video_source`: `LOCAL_FILE` when WF8c still has `/data/jobs/<render_id>/output.mp4`; otherwise `DRIVE`.
 - `video_url` is the Google Drive/operator reference. `public_video_url` is the separate provider-fetchable HTTPS URL required by Facebook, Instagram, and TikTok. A Drive share URL does not become provider-fetchable merely because it opens in a browser.
 

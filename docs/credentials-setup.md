@@ -1,6 +1,8 @@
 # Credentials Setup
 
-This repo commits workflow placeholders only. Real secrets live in n8n credentials, Lambda environment variables, or the Google Sheet.
+This repo commits workflow placeholders only. Real secrets live in n8n credentials or Lambda environment variables, never the Google Sheet.
+
+For the opt-in Postiz backend, create a **Header Auth** credential named `Postiz Public API` with header `Authorization` and the raw API key. Bind it to WF12's Postiz HTTP nodes; the exported ID is a placeholder. See [Postiz setup and activation gates](postiz-publishing.md). Existing direct-platform credentials remain necessary for jobs using `DIRECT`.
 
 ## Google Cloud
 

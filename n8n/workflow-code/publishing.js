@@ -72,6 +72,7 @@ function truthy(value) {
 }
 
 function destinationIdFor(channel, platform) {
+  if (clean(channel?.publishing_backend).toUpperCase() === 'POSTIZ') return clean(channel.postiz_integration_id);
   const fields = {
     YOUTUBE_SHORTS: 'youtube_channel_id',
     FACEBOOK_REELS: 'facebook_page_id',
@@ -82,6 +83,7 @@ function destinationIdFor(channel, platform) {
 }
 
 function channelCanPublish(channel, platform) {
+  if (!['DIRECT', 'POSTIZ'].includes(clean(channel.publishing_backend).toUpperCase() || 'DIRECT')) return false;
   const auditStatus = clean(channel.audit_status).toUpperCase();
   if (!['APPROVED_PUBLIC', 'DEV_PRIVATE_ONLY'].includes(auditStatus)) return false;
   if (!clean(channel.channel_id) || !destinationIdFor(channel, platform)) return false;
@@ -242,12 +244,15 @@ function buildPublishingJobs(approvedRows, renderRows, createdRows, channelRows,
           niche,
           platform,
           channel_id: channelId,
+          publishing_backend: clean(channel.publishing_backend).toUpperCase() || 'DIRECT',
+          postiz_integration_id: clean(channel.postiz_integration_id),
           destination_id: destinationId,
           youtube_channel_id: clean(channel.youtube_channel_id),
           facebook_page_id: clean(channel.facebook_page_id),
           instagram_user_id: clean(channel.instagram_user_id),
           tiktok_open_id: clean(channel.tiktok_open_id),
-          credential_slot: clean(channel.credential_slot).toUpperCase() || CREDENTIAL_SLOTS[platform],
+          credential_slot: clean(channel.publishing_backend).toUpperCase() === 'POSTIZ'
+            ? 'POSTIZ_PRIMARY' : clean(channel.credential_slot).toUpperCase() || CREDENTIAL_SLOTS[platform],
           meta_graph_version: clean(channel.meta_graph_version),
           instagram_graph_host: clean(channel.instagram_graph_host).toLowerCase() || 'graph.facebook.com',
           tiktok_domain_verified: truthy(channel.tiktok_domain_verified) ? 'TRUE' : 'FALSE',
@@ -544,6 +549,7 @@ function buildCredentialHealthRows(channels, now = new Date()) {
       let status = 'HEALTHY';
       if (Number.isFinite(expiresAt) && expiresAt < Date.parse(timestamp)) status = 'INVALID';
       else if (Number.isFinite(expiresAt) && expiresAt - Date.parse(timestamp) < 7 * 86400000) status = 'EXPIRING';
+      if (clean(channel.publishing_backend).toUpperCase() === 'POSTIZ') status = 'NOT_CHECKED';
       return {
         channel_id: clean(channel.channel_id || channel.destination_id || channel.credential_name),
         platform: normalizePlatform(channel.platform),

@@ -4,7 +4,7 @@ WITH incoming AS (
   WHERE NULLIF(btrim(value->>'publish_id'), '') IS NOT NULL
 )
 INSERT INTO short_videos.publishing_jobs AS jobs (
-  publish_id, approved_id, render_id, created_clip_id, niche, platform,
+  publish_id, publishing_backend, postiz_integration_id, approved_id, render_id, created_clip_id, niche, platform,
   channel_id, destination_id, youtube_channel_id, facebook_page_id,
   instagram_user_id, tiktok_open_id, credential_slot, meta_graph_version,
   instagram_graph_host, tiktok_domain_verified, tiktok_verified_url_prefix, default_privacy,
@@ -16,6 +16,8 @@ INSERT INTO short_videos.publishing_jobs AS jobs (
 )
 SELECT
   btrim(row->>'publish_id'),
+  upper(COALESCE(NULLIF(btrim(row->>'publishing_backend'), ''), 'DIRECT')),
+  COALESCE(btrim(row->>'postiz_integration_id'), ''),
   COALESCE(row->>'approved_id', ''),
   COALESCE(row->>'render_id', ''),
   COALESCE(row->>'created_clip_id', ''),
@@ -94,4 +96,7 @@ ON CONFLICT (publish_id) DO UPDATE SET
   scheduled_at = EXCLUDED.scheduled_at,
   payload = jobs.payload || EXCLUDED.payload,
   updated_at = now()
+WHERE NOT (jobs.publishing_backend = 'POSTIZ' AND (
+  jobs.provider_stage <> '' OR jobs.started_at IS NOT NULL OR jobs.publish_status <> 'PENDING'
+))
 RETURNING *;
