@@ -168,6 +168,10 @@ automations/                       # repo root (was short-videos/)
 │   │   ├── postgres/              # migrations + queries
 │   │   ├── tests/
 │   │   ├── docs/
+│   │   ├── services/              # sidecars this domain needs
+│   │   │   ├── provider-uploader/ # from n8n/provider-uploader/
+│   │   │   └── transcript/        # from lamba-function/ (sic) + local server
+│   │   ├── scratch/               # throwaway experiments, wired to nothing
 │   │   └── domain.json            # host, database, mounts
 │   └── whatsapp-access/
 │       ├── domain.json
@@ -176,11 +180,13 @@ automations/                       # repo root (was short-videos/)
 ├── shared/
 │   └── workflow-code/             # only genuinely cross-domain code
 │
-├── services/
-│   └── provider-uploader/         # from n8n/provider-uploader/
-│
 └── package.json                   # test glob spans domains/*/tests/
 ```
+
+There is no top-level `services/`. Both sidecars serve only the video pipeline, so
+they live in the domain, and a domain then carries everything it needs. A service that
+genuinely becomes cross-domain can be promoted later, on the same reasoning that keeps
+`shared/` nearly empty.
 
 `domain.json` is the seam: a small manifest naming each domain's host, database, and
 mounts. It starts as documentation. No tooling reads it until that earns its place.
@@ -243,6 +249,44 @@ Both hosts get, from the start:
    side stays identical.
 6. Create `hosts/public/compose.yaml` and `domains/whatsapp-access/` as scaffolding.
 
+## The root Python files
+
+All of them move. What each one actually is decides where it goes.
+
+| File | What it is | Destination |
+|---|---|---|
+| `local-transcript-server.py` | Dev HTTP wrapper serving WF-04's transcript contract, wraps `handler.py` | `domains/short-videos/services/transcript/local-server.py` |
+| `lamba-function/handler.py` | The real Lambda: YouTube transcript fetch with `x-api-key` auth | `domains/short-videos/services/transcript/handler.py` |
+| `lamba-function/build.sh` | Packages `function.zip` | same directory, with the change below |
+| `lamba-function/requirements.txt` | Dep list | same directory, merged with the root one |
+| root `requirements.txt` | Only `youtube-transcript-api` | Folded into the service's own |
+| `transcript.py` | 6-line experiment, hardcoded video id `Pzfle5WWaTo` | `domains/short-videos/scratch/` |
+| `transcript.txt` | 262 KB of output from that script | **Deleted.** Regenerable, referenced by nothing; git history retains it |
+| `lamba-function/` vendored deps | 286 files, 6.9 MB of `pip install -t .` output, plus the built `function.zip` | **No longer tracked.** See below |
+
+The directory misspelling is fixed on the way through: `lamba-function` becomes
+`services/transcript`.
+
+### The Lambda build becomes reproducible
+
+`lamba-function/` holds 289 tracked files totalling 6.9 MB, of which three are
+first-party: `handler.py`, `build.sh`, `requirements.txt`. The rest is committed
+`pip install -t .` output — `certifi`, `urllib3`, `requests`, `defusedxml`, `idna`,
+`charset_normalizer`, a compiled `.so` — alongside `function.zip`, the built artifact,
+also committed.
+
+`build.sh` currently zips those vendored directories directly, so the committed
+dependencies *are* the build input. That makes the deps load-bearing and the build
+unreproducible from `requirements.txt`.
+
+The change: `build.sh` gains a `pip install -r requirements.txt -t .` step before
+zipping, the vendored directories and `function.zip` are added to `.gitignore`, and
+they stop being tracked. The repo loses 286 files and 6.9 MB, and the zip becomes
+reproducible from the dep list.
+
+This is the one part of the migration that changes behavior rather than only moving
+files, so it carries its own verification gate below.
+
 ## Verification
 
 | Gate | What it proves |
@@ -254,6 +298,8 @@ Both hosts get, from the start:
 | `public` cannot load `executeCommand` | The trust boundary is real, not intended |
 | `public`'s DB role cannot read the video database | D3 holds |
 | One real clip through WF6 + WF8c | `/data` survived; the only gate tests cannot fake |
+| `build.sh` produces a working `function.zip` from a clean checkout | The Lambda build is genuinely reproducible from `requirements.txt`, not from the deps that were deleted |
+| `local-server.py` answers a transcript request | The moved service still resolves `handler.py` after its `sys.path` insert changed |
 | `git log --follow` traces a moved file | History preserved |
 
 The `executeCommand` check requires an authed call to the node types endpoint;
@@ -273,10 +319,7 @@ one commit despite the size.
 
 - **WhatsApp automation logic** — payment verification, invite mechanics, single-use
   enforcement. `whatsapp-access/` gets a directory and a `domain.json`, nothing more.
-- **Root Python files** — `.venv`, `lamba-function/`, `local-transcript-server.py`,
-  `transcript.py`, `transcript.txt`. Left exactly where they are; which of these is
-  live is not yet established, and moving code that is not understood is how a clean
-  migration breaks something.
+- **`.venv/`** — a local virtualenv, not tracked content. Stays at the repo root.
 - **The Facebook release-URL gap** in `postiz-publishing.js:124`, tracked in PR #1.
   It needs a live Meta test to establish the real Reels URL shape.
 - **Renaming the GitHub repository.**
@@ -285,9 +328,10 @@ one commit despite the size.
 
 ## Open questions
 
-1. Which of the root Python files are live? `local-transcript-server.py` wraps a
-   Lambda handler for WF-04 transcripts; whether that path is still in use decides
-   whether it becomes a `services/` entry or gets deleted.
-2. Does the WhatsApp domain need its own Postgres database from day one, or does it
+1. Does the WhatsApp domain need its own Postgres database from day one, or does it
    start stateless? D3 provisions one either way; this only affects whether the
    migration runner is wired up for it now.
+2. Is the Lambda deployment path still used at all, or has
+   `local-transcript-server.py` replaced it for good? Both move either way, but if the
+   Lambda is dead then `build.sh` and the packaging step can be dropped entirely
+   rather than made reproducible.
