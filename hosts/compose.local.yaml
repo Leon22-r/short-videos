@@ -1,0 +1,27 @@
+# Pinned so the project keeps the name it had when the compose file lived in
+# n8n/. Without this the volumes become hosts_n8n_data and
+# hosts_publishing_db_data — empty, and every workflow looks lost. The volume
+# resource names are pinned too, because this line loses to -p and to
+# COMPOSE_PROJECT_NAME.
+name: n8n
+
+include:
+  - path: ./shared/postgres/compose.yaml
+  - path: ./heavy/compose.yaml
+
+services:
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    mem_limit: 512m
+    networks: [heavy-net]
+    ports:
+      - "127.0.0.1:16686:16686" # UI
+      - "127.0.0.1:4317:4317"   # OTLP gRPC
+      - "127.0.0.1:4318:4318"   # OTLP HTTP
+
+networks:
+  heavy-net:
+  public-net:
+
+volumes:
+  jaeger_data:

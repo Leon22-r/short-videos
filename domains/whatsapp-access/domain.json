@@ -1,0 +1,9 @@
+{
+  "name": "whatsapp-access",
+  "description": "Payment-gated WhatsApp group access. Structure only; no automation logic yet.",
+  "host": "public",
+  "database": "whatsapp_access",
+  "mounts": [],
+  "services": [],
+  "workflows": "domains/whatsapp-access/workflows"
+}

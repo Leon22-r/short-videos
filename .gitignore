@@ -1,20 +1,22 @@
 .worktrees
 .worktrees/
+.superpowers/
 
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
-# n8n FFmpeg render runtime data
-n8n/render-data/**
-!n8n/render-data/**/
-!n8n/render-data/**/.gitkeep
-!n8n/render-data/.gitkeep
+# FFmpeg render runtime data, per domain
+domains/short-videos/render-data/**
+!domains/short-videos/render-data/**/
+!domains/short-videos/render-data/**/.gitkeep
+!domains/short-videos/render-data/.gitkeep
 reports/
 
-# Local n8n configuration and runtime state
-n8n/.env
-n8n/local-files/
-n8n/.n8n/
+# Host runtime state and secrets. One .env per host tree, never committed.
+hosts/.env
+hosts/*/.n8n/
+domains/short-videos/local-files/
 
 # Graphify output is reproducible local analysis state
 graphify-out/

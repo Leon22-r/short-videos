@@ -1,10 +1,10 @@
 {
-  "name": "short-videos-n8n-pipeline",
+  "name": "automations",
   "version": "0.1.0",
   "private": true,
-  "description": "n8n short-form video automation pipeline (workflow code + tests)",
+  "description": "Multi-domain automation monorepo: n8n hosts split by trust level, plus per-domain workflow code and tests",
   "scripts": {
     "channel:engagement": "node scripts/youtube-channel-engagement.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test \"tests/*.test.js\" \"domains/*/tests/*.test.js\""
   }
 }

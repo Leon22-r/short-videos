@@ -1,0 +1,57 @@
+# One Postgres server, one database and role per domain. Paths are relative to
+# this file's directory: Compose resolves an included file's relative paths
+# against that file, not against the composition that includes it.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 512m
+    # On both networks on purpose: it is the one resource both trust levels
+    # share. The boundary between them is enforced by database privileges and
+    # a per-role connection limit, not by reachability.
+    networks: [heavy-net, public-net]
+    environment:
+      POSTGRES_DB: ${PUBLISHING_DB_NAME:-short_videos}
+      POSTGRES_USER: ${PUBLISHING_DB_USER:-short_videos}
+      POSTGRES_PASSWORD: ${PUBLISHING_DB_PASSWORD:-local-publishing-password-change-me}
+    ports:
+      - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${PUBLISHING_DB_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - publishing_db_data:/var/lib/postgresql/data
+      # Only ever runs on a fresh data directory. The bootstrap service added in
+      # Task 3 is what reaches an already-initialised volume.
+      - ../../../domains/short-videos/postgres/init:/docker-entrypoint-initdb.d:ro
+
+  short-videos-migrations:
+    image: postgres:16-alpine
+    restart: "no"
+    networks: [heavy-net]
+    environment:
+      DATABASE_URL: postgresql://${PUBLISHING_DB_USER:-short_videos}:${PUBLISHING_DB_PASSWORD:-local-publishing-password-change-me}@postgres:5432/${PUBLISHING_DB_NAME:-short_videos}
+    command: ["/run-migrations.sh"]
+    volumes:
+      - ./run-migrations.sh:/run-migrations.sh:ro
+      - ../../../domains/short-videos/postgres/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+# Declared identically in every host file so each one also validates alone.
+networks:
+  heavy-net:
+  public-net:
+
+volumes:
+  publishing_db_data:
+    # Pinned so the real Docker volume name cannot drift with the project name.
+    # Compose precedence is -p > COMPOSE_PROJECT_NAME > in-file name: > directory
+    # basename, so `name: n8n` alone is beaten by a stray env var or by running
+    # `docker compose -f hosts/heavy/compose.yaml` directly — either of which
+    # would bind an empty volume and bring the stack up with no data.
+    name: n8n_publishing_db_data

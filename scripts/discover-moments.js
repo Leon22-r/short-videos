@@ -18,14 +18,14 @@ const {
   clusterCommentTimestamps,
   extractChapters,
   scoreCandidateWindows,
-} = require('../n8n/workflow-code/moment-discovery');
+} = require('../domains/short-videos/workflow-code/moment-discovery');
 
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = path.join(__dirname, '..');
 
 function loadApiKey() {
   if (process.env.YOUTUBE_API_KEY) return process.env.YOUTUBE_API_KEY;
-  for (const envPath of [path.join(REPO_ROOT, '.env'), path.join(REPO_ROOT, 'n8n', '.env')]) {
+  for (const envPath of [path.join(REPO_ROOT, '.env'), path.join(REPO_ROOT, 'hosts', '.env')]) {
     if (!fs.existsSync(envPath)) continue;
     for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
       const match = line.match(/^\s*YOUTUBE_API_KEY\s*=\s*"?([^"\s#]+)"?/);
@@ -205,7 +205,7 @@ async function main() {
     }
   }
 
-  // n8n/local-files is a root-owned docker mount — keep reports in repo-root reports/ instead
+  // domains/short-videos/local-files is a root-owned docker mount — keep reports in repo-root reports/ instead
   const reportDir = path.join(REPO_ROOT, 'reports');
   fs.mkdirSync(reportDir, { recursive: true });
   const reportPath = path.join(reportDir, `moment-discovery-report-${new Date().toISOString().slice(0, 10)}.md`);
