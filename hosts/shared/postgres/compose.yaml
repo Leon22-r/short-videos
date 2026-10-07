@@ -45,6 +45,48 @@ services:
       postgres:
         condition: service_healthy
 
+  # Reaches an already-initialised volume, which docker-entrypoint-initdb.d
+  # cannot: that only runs on an empty data directory, so whatsapp_access would
+  # otherwise never be created on this server. Every statement is idempotent.
+  postgres-bootstrap:
+    image: postgres:16-alpine
+    restart: "no"
+    networks: [heavy-net]
+    environment:
+      POSTGRES_HOST: postgres
+      ADMIN_USER: ${PUBLISHING_DB_USER:-short_videos}
+      ADMIN_PASSWORD: ${PUBLISHING_DB_PASSWORD:?set PUBLISHING_DB_PASSWORD in hosts/.env}
+      ADMIN_DB: ${PUBLISHING_DB_NAME:-short_videos}
+      VIDEO_DB_NAME: ${PUBLISHING_DB_NAME:-short_videos}
+      VIDEO_DB_USER: ${PUBLISHING_DB_USER:-short_videos}
+      WHATSAPP_DB_NAME: ${WHATSAPP_DB_NAME:-whatsapp_access}
+      WHATSAPP_DB_USER: ${WHATSAPP_DB_USER:-whatsapp_access}
+      WHATSAPP_DB_PASSWORD: ${WHATSAPP_DB_PASSWORD:?set WHATSAPP_DB_PASSWORD in hosts/.env}
+    command: ["/bootstrap-databases.sh"]
+    volumes:
+      - ./bootstrap-databases.sh:/bootstrap-databases.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  whatsapp-access-migrations:
+    image: postgres:16-alpine
+    restart: "no"
+    networks: [heavy-net]
+    environment:
+      DATABASE_URL: postgresql://${WHATSAPP_DB_USER:-whatsapp_access}:${WHATSAPP_DB_PASSWORD:?set WHATSAPP_DB_PASSWORD in hosts/.env}@postgres:5432/${WHATSAPP_DB_NAME:-whatsapp_access}
+    command: ["/run-migrations.sh"]
+    volumes:
+      - ./run-migrations.sh:/run-migrations.sh:ro
+      # Empty today. run-migrations.sh guards each file with [ -f ], so an empty
+      # directory is a no-op rather than an error.
+      - ../../../domains/whatsapp-access/postgres/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-bootstrap:
+        condition: service_completed_successfully
+
 # Declared identically in every host file so each one also validates alone.
 networks:
   heavy-net:

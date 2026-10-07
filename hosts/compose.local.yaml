@@ -8,6 +8,7 @@ name: n8n
 include:
   - path: ./shared/postgres/compose.yaml
   - path: ./heavy/compose.yaml
+  - path: ./public/compose.yaml
 
 services:
   jaeger:

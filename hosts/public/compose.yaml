@@ -1,0 +1,77 @@
+# Untrusted host: webhook-facing work. Stock n8n image, so there is no ffmpeg,
+# no yt-dlp and no shell tooling in the container at all. NODES_EXCLUDE is left
+# unset on purpose — n8n's default blocklist then blocks executeCommand and
+# localFileTrigger. Setting the variable at all, even to [], unblocks them.
+services:
+  public-n8n:
+    # Named public-n8n, not n8n. Compose include: merges both hosts into one
+    # project, so a shared service name would have handed this instance heavy's
+    # credential store.
+    image: docker.io/n8nio/n8n:${N8N_VERSION:-2.25.7}
+    restart: unless-stopped
+    mem_limit: 512m
+    # public-net only. No route to heavy-net, so nothing here can resolve the
+    # heavy instance or its task-runner broker.
+    networks: [public-net]
+    ports:
+      - "${PUBLIC_BIND_ADDRESS:-127.0.0.1}:${PUBLIC_PORT:-5679}:5678"
+    labels:
+      # Off by default. Turning this on is the deliberate act of publishing this
+      # instance to the internet; heavy has no labels at all and cannot be
+      # published, because Traefik has no route to heavy-net.
+      - traefik.enable=${PUBLIC_TRAEFIK_ENABLE:-false}
+      - traefik.http.routers.public-n8n.rule=Host(`${PUBLIC_SUBDOMAIN:-automations}.${DOMAIN_NAME}`)
+      - traefik.http.routers.public-n8n.tls=true
+      - traefik.http.routers.public-n8n.entrypoints=websecure
+      - traefik.http.routers.public-n8n.tls.certresolver=mytlschallenge
+      - traefik.http.services.public-n8n.loadbalancer.server.port=5678
+      # Reject an oversized body at the edge, before it reaches Node. 2 MB
+      # against webhooks that are under 50 KB in practice.
+      - traefik.http.middlewares.public-n8n-buffer.buffering.maxRequestBodyBytes=2097152
+      - traefik.http.routers.public-n8n.middlewares=public-n8n-buffer
+    environment:
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      # Required, no default, and must differ from heavy's. heavy's key lives
+      # inside its own volume and is never set here; this instance has no
+      # credentials to lose yet, so it pins one from the start.
+      - N8N_ENCRYPTION_KEY=${PUBLIC_N8N_ENCRYPTION_KEY:?set PUBLIC_N8N_ENCRYPTION_KEY in hosts/.env, different from heavy key}
+      # n8n defaults this to 16. Five concurrent 16 MB JSON bodies parsed into V8
+      # exceed the 512 MB limit above and OOM-kill the instance.
+      - N8N_PAYLOAD_SIZE_MAX=${PUBLIC_PAYLOAD_SIZE_MAX:-4}
+      - N8N_CONCURRENCY_PRODUCTION_LIMIT=${PUBLIC_CONCURRENCY:-5}
+      - N8N_HOST=${PUBLIC_N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${PUBLIC_N8N_PROTOCOL:-http}
+      - N8N_SECURE_COOKIE=${PUBLIC_SECURE_COOKIE:-false}
+      - WEBHOOK_URL=${PUBLIC_WEBHOOK_URL:-http://localhost:5679/}
+      - NODE_ENV=${NODE_ENV:-development}
+      - N8N_DIAGNOSTICS_ENABLE=false
+      - N8N_VERSION_NOTIFICATION_ENABLED=false
+      - N8N_LOG_LEVEL=${N8N_LOG_LEVEL:-info}
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=${EXECUTIONS_DATA_MAX_AGE:-336}
+      - EXECUTIONS_DATA_PRUNE_MAX_COUNT=${EXECUTIONS_DATA_PRUNE_MAX_COUNT:-10000}
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-Africa/Nairobi}
+      - TZ=${GENERIC_TIMEZONE:-Africa/Nairobi}
+      # Its own database and role. The video database's name is not even present
+      # in this file, and the role cannot connect to it.
+      - WHATSAPP_DATABASE_URL=postgresql://${WHATSAPP_DB_USER:-whatsapp_access}:${WHATSAPP_DB_PASSWORD:?set WHATSAPP_DB_PASSWORD in hosts/.env}@postgres:5432/${WHATSAPP_DB_NAME:-whatsapp_access}
+    volumes:
+      # Its own volume. No render-data, no local-files: nothing on the host
+      # filesystem is reachable from here.
+      - public_n8n_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-bootstrap:
+        condition: service_completed_successfully
+      whatsapp-access-migrations:
+        condition: service_completed_successfully
+
+networks:
+  heavy-net:
+  public-net:
+
+volumes:
+  public_n8n_data:
+    name: n8n_public_n8n_data
