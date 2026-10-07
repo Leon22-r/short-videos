@@ -20,7 +20,12 @@ services:
       # instance to the internet; heavy has no labels at all and cannot be
       # published, because Traefik has no route to heavy-net.
       - traefik.enable=${PUBLIC_TRAEFIK_ENABLE:-false}
-      - traefik.http.routers.public-n8n.rule=Host(`${PUBLIC_SUBDOMAIN:-automations}.${DOMAIN_NAME}`)
+      # Only the webhook surface is published. The editor UI, /rest and
+      # /settings stay unreachable from the internet and are served solely on
+      # the bound port above (localhost, or a Tailscale address in production).
+      # An n8n editor is an admin interface for an instance that holds
+      # credentials; a Host() rule with no path matcher would publish all of it.
+      - traefik.http.routers.public-n8n.rule=Host(`${PUBLIC_SUBDOMAIN:-automations}.${DOMAIN_NAME:-example.invalid}`) && (PathPrefix(`/webhook`) || PathPrefix(`/webhook-test`) || PathPrefix(`/webhook-waiting`) || PathPrefix(`/form`) || PathPrefix(`/form-test`) || PathPrefix(`/form-waiting`))
       - traefik.http.routers.public-n8n.tls=true
       - traefik.http.routers.public-n8n.entrypoints=websecure
       - traefik.http.routers.public-n8n.tls.certresolver=mytlschallenge

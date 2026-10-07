@@ -173,3 +173,47 @@ test('both databases are fenced from PUBLIC and public is connection-capped', ()
 
   assert.match(bootstrap, /CONNECTION LIMIT 20/);
 });
+
+// Found in the whole-branch review. Neither of these can be caught by reading
+// the YAML for the thing it configures: one is a property of the base image,
+// the other is the absence of a matcher.
+test('the bootstrap one-shot runs under the shell its image actually has', () => {
+  const bootstrap = readRaw('hosts/shared/postgres/bootstrap-databases.sh');
+  const migrations = readRaw('hosts/shared/postgres/run-migrations.sh');
+
+  // Both run in postgres:16-alpine, which is not guaranteed to carry bash.
+  // A bash shebang there fails at exec time with "no such file or directory",
+  // and the container exits before any SQL runs.
+  assert.match(bootstrap, /^#!\/bin\/sh$/m);
+  assert.match(migrations, /^#!\/bin\/sh$/m);
+  assert.doesNotMatch(bootstrap, /#!.*bash/);
+
+  // Shell comments explain why bash and pipefail are avoided, so the rest of
+  // the assertion reads the executable lines only. Third time this file has
+  // needed that distinction.
+  const executable = bootstrap
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+  // pipefail is not POSIX, so it would fail under the shell above.
+  assert.doesNotMatch(executable, /pipefail/);
+  assert.match(executable, /^set -eu$/m);
+});
+
+test('only public n8n webhook paths are published, never the editor', () => {
+  const rule = /traefik\.http\.routers\.public-n8n\.rule=(.+)/.exec(
+    read('hosts/public/compose.yaml'),
+  );
+  assert.ok(rule, 'public-n8n must have a router rule');
+
+  // A Host() rule on its own publishes "/" — the editor, /rest and /settings —
+  // for an instance that holds credentials. The rule must narrow by path.
+  assert.match(rule[1], /PathPrefix\(`\/webhook`\)/);
+  assert.match(rule[1], /PathPrefix\(`\/form`\)/);
+  assert.match(rule[1], /&&/, 'the Host() match must be ANDed with a path match');
+
+  // Nothing may publish the editor surface.
+  for (const forbidden of ['PathPrefix(`/`)', 'PathPrefix(`/rest`)', 'PathPrefix(`/settings`)']) {
+    assert.ok(!rule[1].includes(forbidden), `router must not publish ${forbidden}`);
+  }
+});

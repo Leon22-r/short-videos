@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Create one role and one database per domain, idempotently.
 #
 # The official Postgres entrypoint only runs docker-entrypoint-initdb.d on an
@@ -6,7 +6,10 @@
 # scripts will never run again and the whatsapp_access role and database would
 # otherwise never exist. This one-shot runs on every `up` instead, and every
 # statement here is safe to repeat.
-set -euo pipefail
+# POSIX sh, not bash: the postgres alpine image is not guaranteed to carry
+# bash, and run-migrations.sh next to this file is already /bin/sh.
+# `pipefail` is not POSIX, and nothing here pipes.
+set -eu
 
 : "${POSTGRES_HOST:?}" "${ADMIN_USER:?}" "${ADMIN_PASSWORD:?}" "${ADMIN_DB:?}"
 : "${VIDEO_DB_NAME:?}" "${VIDEO_DB_USER:?}"
