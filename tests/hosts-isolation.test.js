@@ -187,7 +187,7 @@ test('public bounds its webhook payload at both layers', () => {
   const pub = read('hosts/public/compose.yaml');
   assert.match(pub, /N8N_PAYLOAD_SIZE_MAX=\$\{PUBLIC_PAYLOAD_SIZE_MAX:-4\}/);
   assert.match(pub, /buffering\.maxRequestBodyBytes=2097152/);
-  assert.match(pub, /mem_limit: 512m/);
+  assert.match(pub, /mem_limit: 640m/);
 });
 
 // Amendments 7 and 8. CONNECT is granted to PUBLIC on every new database, so

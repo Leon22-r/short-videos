@@ -9,7 +9,10 @@ services:
     # credential store.
     image: docker.io/n8nio/n8n:${N8N_VERSION:-2.25.7}
     restart: unless-stopped
-    mem_limit: 512m
+    # 640m, not 512m: it idles at ~277 MB, and five concurrent executions plus
+    # queued webhook bodies did not fit in the remaining ~235 MB. Raising the cap
+    # keeps throughput; the prod cap total is then 2944 MB on a 4 GB box.
+    mem_limit: 640m
     # public-net only. No route to heavy-net, so nothing here can resolve the
     # heavy instance or its task-runner broker.
     networks: [public-net]
@@ -45,7 +48,7 @@ services:
       # credentials to lose yet, so it pins one from the start.
       - N8N_ENCRYPTION_KEY=${PUBLIC_N8N_ENCRYPTION_KEY:?set PUBLIC_N8N_ENCRYPTION_KEY in hosts/.env, different from heavy key}
       # n8n defaults this to 16. Five concurrent 16 MB JSON bodies parsed into V8
-      # exceed the 512 MB limit above and OOM-kill the instance.
+      # exceed the cap above and OOM-kill the instance.
       - N8N_PAYLOAD_SIZE_MAX=${PUBLIC_PAYLOAD_SIZE_MAX:-4}
       - N8N_CONCURRENCY_PRODUCTION_LIMIT=${PUBLIC_CONCURRENCY:-5}
       - N8N_HOST=${PUBLIC_N8N_HOST:-localhost}

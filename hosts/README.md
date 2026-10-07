@@ -116,6 +116,25 @@ Verified against a live stack:
 - `whatsapp_access` connecting to `short_videos` fails with
   `permission denied for database "short_videos"`, and is capped at 20
   connections.
+- **The published host port is a way around the partition in production.** Not
+  fixed in this branch; it is the known gap to close next.
+  heavy publishes `${HEAVY_BIND_ADDRESS}:${HEAVY_PORT}:5678`. Locally that is
+  `127.0.0.1`, which no container can reach. In production you set it to the
+  host's Tailscale address so the editor is reachable over the tailnet — and a
+  port published on a host IP is reachable from any container that can route to
+  that IP, including `public-n8n`. The network partition stops `public-n8n`
+  resolving `n8n`; it does not stop it dialling the host.
+  What that reaches is heavy's `/webhook/*` endpoints, which carry no
+  authentication unless each webhook node is configured with a credential. The
+  editor itself still requires login.
+  Until this is closed, either keep `HEAVY_BIND_ADDRESS=127.0.0.1` and reach the
+  editor by SSH tunnel, or put a header credential on every webhook node in
+  heavy. The structural fix is to stop publishing the port and front it with a
+  Tailscale sidecar inside the Docker network, or to block container-to-host
+  traffic to the tailnet address with a DOCKER-USER iptables rule.
+  (Not reproduced locally: WSL does not route the host IP from containers, so
+  this is derived from how Docker publishes ports, not measured here.)
+
 - The reverse direction is **not** fenced. `short_videos` is the cluster
   superuser that `initdb` created on this volume, and superusers bypass
   `REVOKE CONNECT`, so it can still connect to `whatsapp_access`. The mirrored

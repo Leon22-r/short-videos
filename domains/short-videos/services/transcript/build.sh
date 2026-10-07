@@ -9,7 +9,17 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 rm -f function.zip
-python3 -m pip install --quiet --upgrade --target . -r requirements.txt
+# Pinned to the Lambda runtime, not to this machine. One dependency ships a
+# compiled binary (charset_normalizer), so an install resolved for the build
+# host's Python or architecture produces a zip that builds fine and then fails
+# at import inside AWS. --only-binary makes pip refuse rather than fall back to
+# a source build for the wrong target. No --upgrade: two builds of the same
+# commit should resolve the same versions.
+python3 -m pip install --quiet --target . \
+  --platform manylinux2014_x86_64 \
+  --python-version 3.12 \
+  --only-binary=:all: \
+  -r requirements.txt
 
 zip -qr function.zip . \
   -x "build.sh" \

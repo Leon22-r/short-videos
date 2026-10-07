@@ -135,8 +135,21 @@ test('the Lambda build is reproducible from requirements.txt, not from committed
   const service = 'domains/short-videos/services/transcript';
   const build = fs.readFileSync(path.join(repoRoot, service, 'build.sh'), 'utf8');
 
-  assert.match(build, /pip install .*-r requirements\.txt/);
+  // The pip invocation spans continuation lines, so match its parts.
+  assert.match(build, /pip install/);
+  assert.match(build, /-r requirements\.txt/);
   assert.match(build, /--target \.|-t \./);
+  // Pinned to the Lambda runtime rather than the build host: one dependency
+  // ships a compiled binary, so a host-resolved install can produce a zip that
+  // only fails once it is running in AWS.
+  assert.match(build, /--platform manylinux2014_x86_64/);
+  assert.match(build, /--python-version 3\.12/);
+  assert.match(build, /--only-binary=:all:/);
+  // Comment-stripped: the script explains why --upgrade is absent, and a
+  // scanner that reads prose flags its own explanation. Fourth time in this
+  // branch, hence the helper.
+  const buildSettings = build.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+  assert.doesNotMatch(buildSettings, /--upgrade/);
   assert.match(build, /rm -f function\.zip/);
   // the zip must not swallow first-party sources that are not part of the Lambda
   for (const excluded of ['build.sh', 'function.zip', 'requirements.txt', 'test_handler.py', 'local-server.py', 'README.md']) {
