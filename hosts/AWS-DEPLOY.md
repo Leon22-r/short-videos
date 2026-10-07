@@ -1,6 +1,14 @@
 # Deploying n8n to AWS (Production)
 
-This guide covers going live with `compose.prod.yaml` on an AWS EC2 instance. The setup runs two containers: n8n itself and Traefik, a reverse proxy that handles HTTPS routing and automatically issues/renews Let's Encrypt TLS certificates.
+This guide covers going live with `hosts/compose.prod.yaml` on an AWS EC2 instance.
+
+It brings up the whole stack, not just n8n and a proxy: the `heavy` host (n8n with
+ffmpeg and yt-dlp, plus its task runners and the provider uploader), the `public`
+host (stock n8n for webhook-facing automations), one Postgres with a database per
+domain, and Traefik for HTTPS with automatic Let's Encrypt certificates.
+
+Read `hosts/README.md` first. It explains which host holds credentials, why
+`heavy` has no Traefik router, and what must not be set.
 
 ## Prerequisites
 
@@ -35,7 +43,12 @@ In Route 53 (or your DNS provider), create an A record:
 |-------------|------|-------|
 | A | `n8n` (subdomain) | Your Elastic IP |
 
-Result: `n8n.yourdomain.com` points at the server. Wait for propagation before starting the stack — Let's Encrypt needs the record to resolve to issue the certificate.
+Result: `automations.yourdomain.com` points at the server. Wait for propagation
+before starting the stack — Let's Encrypt needs the record to resolve to issue
+the certificate.
+
+This subdomain serves the **public** host's webhook paths. The `heavy` editor is
+deliberately not published; see "Reaching the heavy editor" below.
 
 ## 4. Install Docker on the server
 
@@ -65,15 +78,20 @@ scp -r hosts/ domains/ ubuntu@<elastic-ip>:~/automations
 On the server:
 
 ```bash
-cd ~/n8n-compose
-cp .env.example .env
+cd ~/automations
+cp hosts/.env.example hosts/.env
 ```
 
-Edit `.env` with your real values:
+Edit `hosts/.env` with your real values. The four secret lines are commented
+out in the template on purpose — Compose refuses to start until you set them,
+which is what stops a copied template booting with a password that is readable
+in this repo:
 
 ```bash
 DOMAIN_NAME=yourdomain.com
-SUBDOMAIN=n8n
+PUBLIC_SUBDOMAIN=automations
+PUBLIC_TRAEFIK_ENABLE=true   # publishing the public host is a deliberate act
+HEAVY_BIND_ADDRESS=100.x.y.z  # this host's Tailscale address, never 0.0.0.0
 GENERIC_TIMEZONE=Africa/Nairobi
 EXECUTIONS_DATA_MAX_AGE=336
 EXECUTIONS_DATA_PRUNE_MAX_COUNT=10000
@@ -89,13 +107,34 @@ mkdir -p local-files
 ## 6. Start the stack
 
 ```bash
-docker compose -f compose.prod.yaml up -d
+docker compose -f hosts/compose.prod.yaml up -d
 ```
 
 Traefik will obtain the TLS certificate automatically on first start (can take a minute). Then open:
 
 ```
-https://n8n.yourdomain.com
+https://automations.yourdomain.com/webhook/...
+```
+
+Only the webhook and form paths are published. There is no editor on that
+hostname, by design: an n8n editor can create an Execute Command node, so
+publishing one would hand the internet a shell in a container holding every
+credential.
+
+### Reaching the heavy editor
+
+`heavy` binds to `HEAVY_BIND_ADDRESS`, which in production is the server's
+Tailscale address. Open it over the tailnet:
+
+```
+http://<tailscale-address>:5678
+```
+
+Note the gap documented in `hosts/README.md`: a port published on a host IP is
+also reachable from containers that can route to that IP, including the public
+n8n instance. Until that is closed, either keep `HEAVY_BIND_ADDRESS=127.0.0.1`
+and use an SSH tunnel, or put a header credential on every webhook node in
+`heavy`.
 ```
 
 Set up your owner account immediately — the first visitor to the URL gets to create it.
@@ -103,11 +142,13 @@ Set up your owner account immediately — the first visitor to the URL gets to c
 Useful commands:
 
 ```bash
-docker compose -f compose.prod.yaml logs -f n8n     # tail n8n logs
-docker compose -f compose.prod.yaml logs -f traefik # tail traefik logs (cert issues show here)
-docker compose -f compose.prod.yaml stop            # stop
-docker compose -f compose.prod.yaml pull && \
-docker compose -f compose.prod.yaml up -d           # upgrade n8n to latest
+docker compose -f hosts/compose.prod.yaml logs -f n8n        # heavy n8n
+docker compose -f hosts/compose.prod.yaml logs -f public-n8n # public n8n
+docker compose -f hosts/compose.prod.yaml logs -f traefik    # cert issues show here
+docker compose -f hosts/compose.prod.yaml logs postgres-bootstrap # database provisioning
+docker compose -f hosts/compose.prod.yaml stop               # stop
+docker compose -f hosts/compose.prod.yaml pull && \
+docker compose -f hosts/compose.prod.yaml up -d              # upgrade
 ```
 
 ## 7. Backups — critical
@@ -121,7 +162,7 @@ The `n8n_data` Docker volume holds:
 
 ```bash
 # One-off backup of the data volume to a tarball
-docker run --rm -v n8n-compose_n8n_data:/data -v $(pwd):/backup \
+docker run --rm -v n8n_n8n_data:/data -v $(pwd):/backup \
   alpine tar czf /backup/n8n-data-backup.tar.gz -C /data .
 ```
 
@@ -142,10 +183,11 @@ Store the output somewhere safe (password manager).
 
 - [ ] SSH: key-based auth only, disable password login (`/etc/ssh/sshd_config`)
 - [ ] Keep the OS patched: `sudo apt update && sudo apt upgrade` regularly (or enable unattended-upgrades)
-- [ ] Restrict the Traefik dashboard: `--api.insecure=true` in `compose.prod.yaml` exposes the dashboard on port 8080 inside the Docker network. The security group blocks it externally, but consider removing that flag entirely in production.
+- [ ] Replace the Docker socket mount on Traefik with a socket proxy. `:ro` applies to the socket file, not the API behind it, so anything that can make Traefik issue requests there can create a container with a host bind mount. The dashboard is already off (`--api=false`).
 - [ ] Set up monitoring: at minimum a CloudWatch alarm on instance status checks; n8n exposes `/healthz` for HTTP health checks
 - [ ] Watch disk usage: execution history grows the SQLite DB. This compose file enables `EXECUTIONS_DATA_PRUNE=true`, sets `EXECUTIONS_DATA_MAX_AGE`, and caps retained executions with `EXECUTIONS_DATA_PRUNE_MAX_COUNT`.
-- [ ] Verify webhooks work end-to-end after going live: external services must be able to reach `https://n8n.yourdomain.com/webhook/...`
+- [ ] Verify webhooks work end-to-end after going live: external services must be able to reach `https://automations.yourdomain.com/webhook/...`
+- [ ] Rotate the Postgres password if the volume predates this layout. `POSTGRES_PASSWORD` only applies at initdb; see `hosts/README.md`.
 
 ## 9. Scaling notes (later, if needed)
 

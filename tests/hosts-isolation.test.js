@@ -252,3 +252,18 @@ test('only public n8n webhook paths are published, never the editor', () => {
     assert.ok(!rule[1].includes(forbidden), `router must not publish ${forbidden}`);
   }
 });
+
+// Codex found this: `${VAR:?}` rejects unset or empty, but NOT a committed
+// placeholder. A template that shipped usable values meant a copied-unchanged
+// .env booted with a Postgres superuser password readable in git history, on a
+// server reachable from the untrusted instance's network.
+test('the env template supplies no usable value for any required secret', () => {
+  const example = readRaw('hosts/.env.example');
+  for (const line of example.split('\n')) {
+    if (/^\s*#/.test(line)) continue;
+    const match = /^([A-Z0-9_]*(PASSWORD|TOKEN|SECRET|KEY)[A-Z0-9_]*)=(.*)$/.exec(line.trim());
+    if (!match) continue;
+    assert.equal(match[3].trim(), '',
+      `${match[1]} ships a usable value in the template; required secrets must be unset or commented out`);
+  }
+});
