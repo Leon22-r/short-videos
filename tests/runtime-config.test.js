@@ -11,6 +11,18 @@ const read = (relativePath) => fs.readFileSync(path.join(repoRoot, relativePath)
 // Lines that actually set something, with comments stripped. The compose files
 // discuss N8N_ENCRYPTION_KEY at length in comments precisely because it must not
 // be set, so a naive match on the whole file would assert the opposite.
+// Just the services section. Every host file declares both networks at top
+// level so it also validates under `docker compose -f <file> config` alone, so
+// a negative assertion over the whole file would always find both names.
+const serviceSettings = (relativePath) => {
+  const body = settings(relativePath);
+  const start = /^services:$/m.exec(body);
+  if (!start) throw new Error(`no services block in ${relativePath}`);
+  const rest = body.slice(start.index + start[0].length + 1);
+  const end = rest.search(/^[a-zA-Z0-9_-]+:/m);
+  return end === -1 ? rest : rest.slice(0, end);
+};
+
 const settings = (relativePath) =>
   read(relativePath)
     .split('\n')
@@ -79,7 +91,9 @@ test('heavy is memory-capped, concurrency-capped, and off public-net', () => {
   assert.match(heavy, /mem_limit: 512m/);
   assert.match(heavy, /mem_limit: 256m/);
   // Nothing in the heavy host may sit on public-net.
-  assert.doesNotMatch(heavy, /public-net\]/);
+  // Scoped to the services block, and without the closing bracket: /public-net\]/
+  // only matched when it was the last item in the list.
+  assert.doesNotMatch(serviceSettings('hosts/heavy/compose.yaml'), /public-net/);
   assert.match(settings('hosts/shared/postgres/compose.yaml'), /mem_limit: 512m/);
 });
 
@@ -103,5 +117,5 @@ test('traefik is pinned, has no exposed API, and cannot reach heavy-net', () => 
   assert.doesNotMatch(traefik, /--api\.insecure=true/);
   assert.match(traefik, /--providers\.docker\.network=public-net/);
   assert.match(traefik, /networks: \[public-net\]/);
-  assert.doesNotMatch(traefik, /heavy-net\]/);
+  assert.doesNotMatch(serviceSettings('hosts/shared/traefik/compose.yaml'), /heavy-net/);
 });

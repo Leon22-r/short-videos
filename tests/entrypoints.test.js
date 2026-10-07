@@ -82,8 +82,17 @@ test('discover-moments reads the API key from hosts/.env, not the old n8n/.env',
 
 // The transcript service resolves handler.py and its vendored deps against its
 // own file, so it must import from an unrelated working directory.
-test('the transcript service imports handler and its vendored deps from any CWD', () => {
+//
+// The deps are no longer tracked (build.sh installs them), so on a clean clone
+// they are absent and this skips rather than failing. The handler-only half of
+// the property is asserted unconditionally below, since handler.py IS tracked.
+test('the transcript service imports handler and its vendored deps from any CWD', (t) => {
   const service = path.join(repoRoot, 'domains/short-videos/services/transcript');
+  const probe = spawnSync('python3', ['-c', `import sys; sys.path.insert(0, ${JSON.stringify(service)}); import youtube_transcript_api`], { encoding: 'utf8' });
+  if (probe.status !== 0) {
+    t.skip('vendored deps not installed - run domains/short-videos/services/transcript/build.sh');
+    return;
+  }
   const r = spawnSync('python3', ['-c', [
     'import sys',
     `sys.path.insert(0, ${JSON.stringify(service)})`,
@@ -94,4 +103,16 @@ test('the transcript service imports handler and its vendored deps from any CWD'
   ].join('\n')], { cwd: os.tmpdir(), encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /ok/);
+});
+
+// handler.py is tracked, so this half of the property holds on a clean clone and
+// is what actually guards the sys.path change.
+test('handler.py resolves from its own directory with no vendored deps present', () => {
+  const service = path.join(repoRoot, 'domains/short-videos/services/transcript');
+  const src = fs.readFileSync(path.join(service, 'local-server.py'), 'utf8');
+  assert.match(src, /sys\.path\.insert\(0, str\(Path\(__file__\)\.resolve\(\)\.parent\)\)/);
+  assert.doesNotMatch(src, /lamba-function/);
+  const th = fs.readFileSync(path.join(service, 'test_handler.py'), 'utf8');
+  assert.match(th, /sys\.path\.insert\(0, str\(Path\(__file__\)\.resolve\(\)\.parent\)\)/);
+  assert.doesNotMatch(th, /lamba-function/);
 });

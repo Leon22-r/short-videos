@@ -28,7 +28,10 @@ const servicesBlock = (relativePath) => {
   // Comment-stripped, these files begin with `services:` on line 1, so anchor
   // on the line rather than on a preceding newline.
   const match = /^services:$/m.exec(body);
-  if (!match) return '';
+  // Fail closed. Returning '' here made the service-overlap and network
+  // assertions pass on empty input, which is how a green trust-boundary test
+  // came to check nothing at all.
+  if (!match) throw new Error(`no services block parsed from ${relativePath}`);
   const rest = body.slice(match.index + match[0].length + 1);
   const end = rest.search(/^[a-zA-Z0-9_-]+:/m);
   return end === -1 ? rest : rest.slice(0, end);
@@ -39,6 +42,11 @@ const serviceNames = (relativePath) =>
 
 // The networks each service actually attaches to, as opposed to the networks
 // the file declares.
+// How many services declare a networks line at all. Distinct from the names
+// below, because one service may list two networks.
+const networkLineCount = (relativePath) =>
+  (servicesBlock(relativePath).match(/^    networks: \[/gm) || []).length;
+
 const attachedNetworks = (relativePath) =>
   [...servicesBlock(relativePath).matchAll(/^    networks: \[([^\]]+)\]$/gm)]
     .flatMap((m) => m[1].split(',').map((name) => name.trim()));
@@ -81,9 +89,7 @@ test('the two hosts share no service name and no volume', () => {
 test('the two hosts have different encryption keys', () => {
   // heavy keeps the key already inside its volume (so it sets none);
   // public pins its own, and Compose refuses to start without it.
-  const heavySettings = read('hosts/heavy/compose.yaml')
-    .split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
-  assert.doesNotMatch(heavySettings, /N8N_ENCRYPTION_KEY/);
+  assert.doesNotMatch(read('hosts/heavy/compose.yaml'), /N8N_ENCRYPTION_KEY/);
   assert.match(read('hosts/public/compose.yaml'), /N8N_ENCRYPTION_KEY=\$\{PUBLIC_N8N_ENCRYPTION_KEY:\?/);
 });
 
@@ -112,6 +118,12 @@ test('the whatsapp database and role are created idempotently on an existing vol
   assert.match(bootstrap, /NOT EXISTS \(SELECT 1 FROM pg_roles WHERE rolname/);
   assert.match(bootstrap, /NOT EXISTS \(SELECT 1 FROM pg_database WHERE datname/);
   assert.match(bootstrap, /\\gexec/);
+  // Postgres does the quoting, not the shell: a password containing a quote
+  // used to break the script, and a role name could escape its identifier.
+  assert.doesNotMatch(bootstrap, /PASSWORD '\$\{/);
+  assert.match(bootstrap, /format\('ALTER ROLE %I LOGIN PASSWORD %L CONNECTION LIMIT 20', :'wuser', :'wpass'\)/);
+  // A domain pointed at the admin role would silently reset the superuser password.
+  assert.match(bootstrap, /WHATSAPP_DB_USER must differ from VIDEO_DB_USER and ADMIN_USER/);
   // the point of two databases: public's role must not be able to connect to the video one
   assert.match(bootstrap, /REVOKE CONNECT ON DATABASE/);
 });
@@ -131,6 +143,24 @@ test('both compositions include both hosts', () => {
 // project default bridge, and heavy's task-runner broker listens on all
 // interfaces: a workflow on the webhook-facing instance could register as a
 // runner and execute arbitrary code beside every credential.
+test('every service declares a networks line, so none falls back to the default', () => {
+  // A service with no networks key joins the Compose project default network.
+  // Counting attachments against services is what makes the Set-based
+  // assertions below non-vacuous: one correct line could otherwise mask any
+  // number of unattached services.
+  for (const file of [
+    'hosts/heavy/compose.yaml',
+    'hosts/public/compose.yaml',
+    'hosts/shared/postgres/compose.yaml',
+    'hosts/shared/traefik/compose.yaml',
+  ]) {
+    const names = serviceNames(file);
+    assert.ok(names.length > 0, `${file}: no services parsed`);
+    assert.equal(networkLineCount(file), names.length,
+      `${file}: a service has no recognised 'networks: [...]' line`);
+  }
+});
+
 test('public-net and heavy-net do not meet except at postgres', () => {
   // Every service in the public host is on public-net and nothing else.
   assert.deepEqual([...new Set(attachedNetworks('hosts/public/compose.yaml'))], ['public-net']);
@@ -141,13 +171,13 @@ test('public-net and heavy-net do not meet except at postgres', () => {
   // Traefik reaches public-net only, so a stray label on heavy cannot publish it.
   assert.deepEqual([...new Set(attachedNetworks('hosts/shared/traefik/compose.yaml'))], ['public-net']);
 
-  // postgres is the one service on both, and the only one.
-  const shared = attachedNetworks('hosts/shared/postgres/compose.yaml');
-  const onBoth = [...new Set(shared)].length === 2 ? 1 : 0;
-  assert.equal(onBoth, 1, 'postgres must be the bridge between the two networks');
+  // postgres is the one service on both, and the only one. Name it, rather than
+  // counting how many distinct network names appear in the file.
   const postgresBlock = servicesBlock('hosts/shared/postgres/compose.yaml');
-  assert.equal((postgresBlock.match(/networks: \[heavy-net, public-net\]/g) || []).length, 1,
-    'exactly one service may sit on both networks');
+  const onBoth = [...postgresBlock.matchAll(/^  ([a-zA-Z0-9_-]+):$[\s\S]*?^    networks: \[([^\]]+)\]$/gm)]
+    .filter((m) => m[2].includes('heavy-net') && m[2].includes('public-net'))
+    .map((m) => m[1]);
+  assert.deepEqual(onBoth, ['postgres'], 'only postgres may bridge the two networks');
 });
 
 // Amendment 10. n8n defaults to 16 MB; five concurrent 16 MB JSON bodies parsed
@@ -166,10 +196,12 @@ test('public bounds its webhook payload at both layers', () => {
 test('both databases are fenced from PUBLIC and public is connection-capped', () => {
   const bootstrap = read('hosts/shared/postgres/bootstrap-databases.sh');
 
-  const revokes = bootstrap.match(/REVOKE CONNECT ON DATABASE/g) || [];
-  assert.equal(revokes.length, 2, 'both databases must be fenced, not just the video one');
-  const grants = bootstrap.match(/GRANT CONNECT ON DATABASE/g) || [];
-  assert.equal(grants.length, 2, 'each database must grant CONNECT back to its own role');
+  // Count-only matching let an echo or an SQL comment satisfy this. Pin the
+  // target database and the FROM PUBLIC clause on each side.
+  assert.match(bootstrap, /REVOKE CONNECT ON DATABASE %I FROM PUBLIC', :'vdb'/);
+  assert.match(bootstrap, /GRANT CONNECT ON DATABASE %I TO %I', :'vdb', :'vuser'/);
+  assert.match(bootstrap, /REVOKE CONNECT ON DATABASE %I FROM PUBLIC', :'wdb'/);
+  assert.match(bootstrap, /GRANT CONNECT ON DATABASE %I TO %I', :'wdb', :'wuser'/);
 
   assert.match(bootstrap, /CONNECTION LIMIT 20/);
 });
@@ -208,12 +240,15 @@ test('only public n8n webhook paths are published, never the editor', () => {
 
   // A Host() rule on its own publishes "/" — the editor, /rest and /settings —
   // for an instance that holds credentials. The rule must narrow by path.
-  assert.match(rule[1], /PathPrefix\(`\/webhook`\)/);
-  assert.match(rule[1], /PathPrefix\(`\/form`\)/);
   assert.match(rule[1], /&&/, 'the Host() match must be ANDed with a path match');
-
+  // Anchored regex, not PathPrefix: a prefix also matches /webhookfoo.
+  assert.ok(rule[1].includes('PathRegexp(`^/(webhook|webhook-waiting|form|form-waiting)(/|$)`)'),
+    `rule must anchor the published paths, got: ${rule[1]}`);
+  assert.doesNotMatch(rule[1], /PathPrefix/, 'use an anchored PathRegexp, not a loose prefix');
+  // The -test endpoints are armed from the editor; they are not internet-facing.
+  assert.doesNotMatch(rule[1], /webhook-test|form-test/);
   // Nothing may publish the editor surface.
-  for (const forbidden of ['PathPrefix(`/`)', 'PathPrefix(`/rest`)', 'PathPrefix(`/settings`)']) {
+  for (const forbidden of ['/rest', '/settings']) {
     assert.ok(!rule[1].includes(forbidden), `router must not publish ${forbidden}`);
   }
 });

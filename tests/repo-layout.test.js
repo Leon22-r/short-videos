@@ -107,14 +107,23 @@ test('no tracked source file still points at the old n8n/ paths', () => {
     .split('\0')
     .filter(Boolean)
     .filter((file) => /\.(js|mjs|cjs|py|sh|json|ya?ml)$/.test(file))
-    // Plans and specs quote the old paths by design, and this file names them
-    // in the comment above, so neither can be its own counterexample.
+    // Plans and specs quote the old paths by design, in prose this scanner does
+    // not strip, so they stay excluded wholesale.
     .filter((file) => !file.startsWith('docs/superpowers/'))
-    .filter((file) => file !== 'tests/repo-layout.test.js');
+    // Tests are excluded for the same reason, and one more: a test that asserts
+    // the old path is gone has to name it, in its title and its failure message.
+    // Tests are verified by running them, not by scanning them.
+    .filter((file) => !/(^|\/)tests\//.test(file));
 
   const offenders = [];
   for (const file of tracked) {
-    const body = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+    // Strip line comments first. Comments legitimately discuss the old layout —
+    // explaining why a path moved is documentation, not a stale reference — and
+    // a scanner that reads prose flags its own explanation.
+    const body = fs.readFileSync(path.join(repoRoot, file), 'utf8')
+      .split('\n')
+      .filter((line) => !/^\s*(\/\/|#)/.test(line))
+      .join('\n');
     for (const pattern of [/\bn8n\/\.env\b/, /['"`]n8n\/(workflows|workflow-code|postgres|provider-uploader|render-data)\//, /\.\.\/n8n\//]) {
       if (pattern.test(body)) offenders.push(`${file} :: ${pattern}`);
     }

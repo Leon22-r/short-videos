@@ -8,6 +8,9 @@ services:
     # middleware and provider keys the public host's buffering middleware uses.
     image: "traefik:v3.3"
     restart: always
+    mem_limit: 128m
+    security_opt:
+      - no-new-privileges:true
     # public-net only. This is the structural half of the trust boundary: even if
     # someone adds traefik.enable=true to the heavy n8n service by mistake, there
     # is no route from here to heavy-net, so it cannot be published.
@@ -35,10 +38,14 @@ services:
       - "443:443"
     volumes:
       - traefik_data:/letsencrypt
-      # Read-only, but still enumerates every container, image and environment
-      # variable on the host. Accepted for now because the API is off and nothing
-      # on public-net can reach it; the fix is a docker-socket-proxy sidecar
-      # restricted to container-list reads, tracked as separate work.
+      # NOT a read-only Docker API. `:ro` applies to the socket FILE, not to the
+      # API behind it: anything that can make Traefik issue requests here can
+      # POST /containers/create with a host bind mount and obtain host root, and
+      # can read every container's environment via inspect. Traefik is the only
+      # internet-facing process in this stack.
+      # Accepted for now only because --api=false leaves no request path into it
+      # from public-net. The fix is a docker-socket-proxy sidecar with
+      # CONTAINERS=1 and everything else 0; tracked as separate work.
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
 networks:

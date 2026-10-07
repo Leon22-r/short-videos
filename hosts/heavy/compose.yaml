@@ -122,4 +122,6 @@ volumes:
     # Pinned: this volume holds every credential and the encryption key that
     # decrypts them. A project-name change must not be able to substitute an
     # empty volume, which would look exactly like total data loss.
+    # The `n8n_` prefix is historical — it comes from the old n8n/ directory the
+    # project was named after. Do not "tidy" it without migrating the data.
     name: n8n_n8n_data
