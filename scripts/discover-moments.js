@@ -23,9 +23,11 @@ const {
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = path.join(__dirname, '..');
 
-function loadApiKey() {
+// `root` is injectable so a test can exercise the lookup against a fixture tree
+// instead of the real hosts/.env, which holds live secrets.
+function loadApiKey(root = REPO_ROOT) {
   if (process.env.YOUTUBE_API_KEY) return process.env.YOUTUBE_API_KEY;
-  for (const envPath of [path.join(REPO_ROOT, '.env'), path.join(REPO_ROOT, 'hosts', '.env')]) {
+  for (const envPath of [path.join(root, '.env'), path.join(root, 'hosts', '.env')]) {
     if (!fs.existsSync(envPath)) continue;
     for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
       const match = line.match(/^\s*YOUTUBE_API_KEY\s*=\s*"?([^"\s#]+)"?/);
@@ -213,4 +215,8 @@ async function main() {
   console.log(`\nReport written: ${reportPath}`);
 }
 
-main();
+if (require.main === module) main();
+
+// Exported for tests. The hosts/.env lookup had no coverage, which is how it
+// survived the n8n/ -> hosts/ move pointing at a path that no longer existed.
+module.exports = { loadApiKey };
