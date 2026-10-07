@@ -13,7 +13,10 @@ services:
     environment:
       POSTGRES_DB: ${PUBLISHING_DB_NAME:-short_videos}
       POSTGRES_USER: ${PUBLISHING_DB_USER:-short_videos}
-      POSTGRES_PASSWORD: ${PUBLISHING_DB_PASSWORD:-local-publishing-password-change-me}
+      # Required, no default. POSTGRES_USER is a superuser, and this server is
+      # on public-net so the untrusted instance can reach port 5432 — a password
+      # committed to git would be a superuser login anyone with the repo can read.
+      POSTGRES_PASSWORD: ${PUBLISHING_DB_PASSWORD:?set PUBLISHING_DB_PASSWORD in hosts/.env}
     ports:
       - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${PUBLISHING_DB_PORT:-5433}:5432"
     healthcheck:
@@ -33,7 +36,7 @@ services:
     restart: "no"
     networks: [heavy-net]
     environment:
-      DATABASE_URL: postgresql://${PUBLISHING_DB_USER:-short_videos}:${PUBLISHING_DB_PASSWORD:-local-publishing-password-change-me}@postgres:5432/${PUBLISHING_DB_NAME:-short_videos}
+      DATABASE_URL: postgresql://${PUBLISHING_DB_USER:-short_videos}:${PUBLISHING_DB_PASSWORD:?set PUBLISHING_DB_PASSWORD in hosts/.env}@postgres:5432/${PUBLISHING_DB_NAME:-short_videos}
     command: ["/run-migrations.sh"]
     volumes:
       - ./run-migrations.sh:/run-migrations.sh:ro

@@ -56,6 +56,22 @@ test('the task runner broker token has no default on either side', () => {
   }
 });
 
+test('no credential in the host tree carries a committed default', () => {
+  // postgres sits on public-net so the untrusted instance can reach 5432, and
+  // POSTGRES_USER is a superuser there. A default password in git is a login.
+  for (const file of [
+    'hosts/heavy/compose.yaml',
+    'hosts/shared/postgres/compose.yaml',
+    'hosts/shared/traefik/compose.yaml',
+  ]) {
+    const body = settings(file);
+    const defaulted = body.match(/\$\{[A-Z0-9_]*(PASSWORD|TOKEN|SECRET|KEY)[A-Z0-9_]*:-[^}]*\}/g) || [];
+    assert.deepEqual(defaulted, [], `${file} defaults a credential: ${defaulted.join(', ')}`);
+  }
+  assert.match(settings('hosts/shared/postgres/compose.yaml'),
+    /POSTGRES_PASSWORD: \$\{PUBLISHING_DB_PASSWORD:\?/);
+});
+
 test('heavy is memory-capped, concurrency-capped, and off public-net', () => {
   const heavy = settings('hosts/heavy/compose.yaml');
   assert.match(heavy, /mem_limit: 1g/);

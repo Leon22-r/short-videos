@@ -107,7 +107,10 @@ test('no tracked source file still points at the old n8n/ paths', () => {
     .split('\0')
     .filter(Boolean)
     .filter((file) => /\.(js|mjs|cjs|py|sh|json|ya?ml)$/.test(file))
-    .filter((file) => !file.startsWith('docs/superpowers/'));
+    // Plans and specs quote the old paths by design, and this file names them
+    // in the comment above, so neither can be its own counterexample.
+    .filter((file) => !file.startsWith('docs/superpowers/'))
+    .filter((file) => file !== 'tests/repo-layout.test.js');
 
   const offenders = [];
   for (const file of tracked) {
@@ -117,4 +120,34 @@ test('no tracked source file still points at the old n8n/ paths', () => {
     }
   }
   assert.deepEqual(offenders, [], `stale n8n/ references:\n${offenders.join('\n')}`);
+});
+
+test('the Lambda build is reproducible from requirements.txt, not from committed deps', () => {
+  const service = 'domains/short-videos/services/transcript';
+  const build = fs.readFileSync(path.join(repoRoot, service, 'build.sh'), 'utf8');
+
+  assert.match(build, /pip install .*-r requirements\.txt/);
+  assert.match(build, /--target \.|-t \./);
+  assert.match(build, /rm -f function\.zip/);
+  // the zip must not swallow first-party sources that are not part of the Lambda
+  for (const excluded of ['build.sh', 'function.zip', 'requirements.txt', 'test_handler.py', 'local-server.py', 'README.md']) {
+    assert.ok(build.includes(`-x "${excluded}"`), `build.sh must exclude ${excluded}`);
+  }
+  // amendment 16: a local pytest run must not leak into the artifact
+  assert.ok(build.includes('-x ".pytest_cache/*"'), 'build.sh must exclude .pytest_cache');
+
+  const ignore = fs.readFileSync(path.join(repoRoot, '.gitignore'), 'utf8');
+  assert.match(ignore, /^domains\/short-videos\/services\/transcript\/function\.zip$/m);
+  assert.match(ignore, /^domains\/short-videos\/services\/transcript\/\*\.dist-info\/$/m);
+  assert.match(ignore, /^domains\/short-videos\/services\/transcript\/youtube_transcript_api\/$/m);
+});
+
+test('only first-party files in the transcript service are tracked', () => {
+  const tracked = execFileSync('git', ['ls-files', 'domains/short-videos/services/transcript'], {
+    cwd: repoRoot, encoding: 'utf8',
+  }).trim().split('\n').map((p) => path.basename(p)).sort();
+
+  assert.deepEqual(tracked, [
+    'README.md', 'build.sh', 'handler.py', 'local-server.py', 'requirements.txt', 'test_handler.py',
+  ]);
 });
