@@ -21,3 +21,18 @@ domains/short-videos/local-files/
 # Graphify output is reproducible local analysis state
 graphify-out/
 .graphify/
+
+# The transcript Lambda installs its deps at build time (see build.sh), so the
+# installed tree and the built artifact are not tracked.
+domains/short-videos/services/transcript/function.zip
+domains/short-videos/services/transcript/bin/
+domains/short-videos/services/transcript/*.dist-info/
+domains/short-videos/services/transcript/*.libs/
+domains/short-videos/services/transcript/*.so
+domains/short-videos/services/transcript/certifi/
+domains/short-videos/services/transcript/charset_normalizer/
+domains/short-videos/services/transcript/defusedxml/
+domains/short-videos/services/transcript/idna/
+domains/short-videos/services/transcript/requests/
+domains/short-videos/services/transcript/urllib3/
+domains/short-videos/services/transcript/youtube_transcript_api/
