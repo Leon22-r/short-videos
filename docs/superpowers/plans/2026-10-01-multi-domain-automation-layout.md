@@ -35,6 +35,136 @@
 4. **Postgres `init/` only runs on an empty data directory.** The `publishing_db_data` volume is already initialised, so nothing under `docker-entrypoint-initdb.d` will ever run again and the `whatsapp_access` database and role would never exist. Expected: an idempotent bootstrap one-shot creates them on an existing volume. Asserted in Task 3.
 5. **`.gitignore` is scoped to `n8n/render-data/**`.** After the move, render output under `domains/short-videos/render-data/` becomes trackable and the next `git add -A` commits gigabytes of video. Expected: the ignore rules follow the directory. Asserted in Task 1.
 
+## Amendments (2026-10-07, after adversarial review in Agent Room AM-DJ74)
+
+These 17 items are authoritative over the task steps below. Where a step
+contradicts an amendment, the amendment wins. Findings 1-10 came from the
+reviewing agent (Antigravity); 11-12 and the severity re-grades are mine.
+
+**Security — the boundary the original plan left open**
+
+1. **Split the networks.** Under `include:` every service lands on the project
+   default bridge, so `public-n8n` resolves `n8n` by Docker DNS. Declare
+   `heavy-net` (`n8n`, `task-runners`, `provider-uploader`, `postgres`) and
+   `public-net` (`public-n8n`, `postgres`, `traefik`). `public-n8n` gets no
+   route to `n8n`. Without this, spec D1 — "an internet-facing automation
+   cannot reach the video pipeline's shell access or credentials" — is false
+   on first boot.
+2. **`N8N_RUNNERS_AUTH_TOKEN` loses its default.** `compose.local.yaml:73`
+   and `:108` carry `${N8N_RUNNERS_AUTH_TOKEN:-local-dev-task-runner-token-change-me}`
+   while `N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0`. On a shared network a
+   workflow in `public-n8n` registers as a task runner with a token readable in
+   git and then executes arbitrary JS inside the instance holding every
+   credential. Becomes `${N8N_RUNNERS_AUTH_TOKEN:?set N8N_RUNNERS_AUTH_TOKEN in hosts/.env}`,
+   with a generated value in `hosts/.env.example`.
+3. **Remove `--api.insecure=true`** from the traefik command (carried verbatim
+   from `n8n/compose.prod.yaml:6`). Port 8080 was never host-bound, but on
+   `public-net` it would serve the whole router and service catalog to
+   `public-n8n`. The dashboard is unused.
+4. **Pin the traefik image.** `image: "traefik"` (`compose.prod.yaml:3`) has no
+   tag, so `docker compose pull` can take a major version; v2→v3 renamed the
+   middleware and provider keys that amendment 10 relies on. Pin to a v3 tag.
+5. **Assert the boundary instead of trusting it.** `tests/hosts-isolation.test.js`
+   asserts that traefik's network list and heavy's network list do not
+   intersect, so a stray `traefik.enable=true` on heavy fails the suite rather
+   than failing closed at runtime with a 502.
+
+**Data — volumes and database privileges**
+
+6. **Pin volume resource names, not just the project name.** Compose precedence
+   is `-p` > `COMPOSE_PROJECT_NAME` > in-file `name:` > directory basename, so
+   `name: n8n` is beaten by a stray env var or by
+   `docker compose -f hosts/heavy/compose.yaml` run directly — either of which
+   binds an empty volume and brings n8n up with zero workflows. Pin the
+   resources: `n8n_data: {name: n8n_n8n_data}`,
+   `publishing_db_data: {name: n8n_publishing_db_data}`. Keep `name: n8n` as
+   belt-and-braces. Not `external: true` — that fails hard on a fresh clone
+   where the volume legitimately does not exist, and this file serves local and
+   prod both.
+7. **Fence `whatsapp_access` in both directions.** Postgres grants `CONNECT` to
+   `PUBLIC` on every new database, so the original plan's single
+   `REVOKE CONNECT ON DATABASE short_videos FROM PUBLIC` left the WhatsApp
+   database open to the publishing role. Mirror it, and add the reverse-direction
+   gate in Task 4 — the original gate only tested
+   `psql -U whatsapp_access -d short_videos`.
+   The explicit `GRANT CONNECT ... TO` the owning role goes in too; a database
+   owner holds privileges by ownership and cannot be locked out by
+   `REVOKE ... FROM PUBLIC`, so it is insurance against ownership diverging
+   later rather than a fix for a present bug.
+8. **Bound public's connection pool.** `ALTER ROLE "${WHATSAPP_DB_USER}" CONNECTION LIMIT 20;`
+   Privilege fencing stops cross-database reads but not slot exhaustion: a
+   looping workflow on the internet-facing instance could consume all 100
+   default slots and starve heavy's publishing queue. Converts a cross-tenant
+   DoS into a bounded local failure.
+9. **Document key extraction.** A host README section on reading
+   `N8N_ENCRYPTION_KEY` out of `/home/node/.n8n/config` inside the volume
+   before any volume migration. It is the one piece of state whose loss is
+   unrecoverable.
+
+**Availability on a 4 GB box**
+
+10. **Cap the public webhook payload.** `N8N_PAYLOAD_SIZE_MAX=4` on
+    `public-n8n` plus a Traefik buffering middleware at 2 MB
+    (`buffering.maxRequestBodyBytes=2097152`). n8n defaults to 16 MB; five
+    concurrent 16 MB JSON bodies parsed into V8 exceed the 512 MB `mem_limit`
+    and OOM-kill the instance. Payment and WhatsApp webhooks are under 50 KB,
+    so 4 MB is 80x headroom.
+
+**Correctness — paths the original sweep missed**
+
+11. **The generators were never rewritten.**
+    `grep -rno 'n8n/' n8n/workflow-code/create-*.js | wc -l` → 24, in
+    `create-remaining-workflows.js` (lines 4, 5, 8, 14, and ten `writeWorkflow`
+    calls) and `create-wf2`/`wf3`/`wf4`/`wf5`. Step 9's `sed` only targets
+    `domains/short-videos/tests/*.test.js`.
+    This is *not* silent: `tests/workflow-generator-hardening.test.js:22` calls
+    `generateAll()` without stubbing `postgresSql()`, so the reads throw ENOENT
+    and Step 18 fails. It is an instance of the plan's own claim — a missed path
+    fails a test rather than failing at render time — rather than a
+    counterexample to it.
+    Fix by resolving against `path.join(__dirname, '..')`, not by rewriting the
+    literal prefix. The literals are working-directory relative, so a prefix
+    rewrite would keep that fragility and still only work from repo root.
+12. **`scripts/discover-moments.js:28` is the one genuinely silent miss.**
+    `[path.join(REPO_ROOT, '.env'), path.join(REPO_ROOT, 'n8n', '.env')]` — Step 8
+    rewrites only the `require` on line 21. No test calls `loadApiKey()`, so the
+    suite stays green and the script degrades to "no API key" the next time a
+    human runs it. Repoint to `hosts/.env` and add a test asserting no source
+    file outside `hosts/` references `n8n/.env`.
+13. **Run pytest in the Task 1 gate too.** `npm test` runs only Node tests, so
+    `local-transcript-server.py` and `tests/test_handler.py` are unverified
+    until Task 2. Add `python3 -m pytest` to Task 1's gate.
+
+**Process and errata**
+
+14. **`docker compose -f n8n/compose.local.yaml down` becomes Task 1 Step 0.**
+    The service renames `publishing-db` → `postgres` while both bind
+    `127.0.0.1:5433` and both mount `publishing_db_data`. A left-up old stack is
+    an orphan Compose will not stop without `--remove-orphans`, and two
+    postmasters against one PGDATA is a corruption path.
+    (The reviewer also argued `git mv` could fail on a busy `render-data`. Rated
+    lower and not the reason for this step: `rename(2)` does not care about open
+    file descriptors, and `render-data` content is gitignored.)
+15. **Step 18 expects `pass 223`, not 213.** Measured baseline is 213.
+    `runtime-config.test.js` goes 1 → 5 (+4), `repo-layout.test.js` adds 7, and
+    `publishing-postgres.test.js:67` — a whole test — moves out (−1).
+    213 + 4 + 7 − 1 = 223. The old step also hedged "213 plus the newly written
+    tests", which is an expectation that cannot fail.
+16. **`.gitignore` widens to `hosts/*/.n8n/`** rather than `hosts/heavy/.n8n/`,
+    and `build.sh` adds `-x ".pytest_cache/*"` so a local pytest run cannot leak
+    into the Lambda zip.
+17. **File Structure errata.** The table lists `tests/hosts-compose.test.js`,
+    but the steps create `tests/runtime-config.test.js` (Task 1 Step 10) and
+    `tests/hosts-isolation.test.js` (Task 3 Step 1). The table is wrong; two
+    focused files beat one omnibus.
+
+**Deferred, not fixed in this branch:** `/var/run/docker.sock:/var/run/docker.sock:ro`
+is mounted into traefik, which now sits on `public-net`. Read-only still
+enumerates every container, image and environment variable on the host. With
+`--api.insecure` removed and no 8080 ingress there is no route to it from
+`public-n8n`, so this is a Minor. The fix is a docker-socket-proxy sidecar
+restricted to container-list reads, which is its own piece of work.
+
 ## File Structure
 
 ### Moved (via `git mv`, contents unchanged unless noted)
@@ -79,7 +209,8 @@
 | `domains/whatsapp-access/domain.json` | Same shape, empty pipeline |
 | `domains/whatsapp-access/postgres/migrations/.gitkeep` | Empty migrations dir the runner points at |
 | `tests/repo-layout.test.js` | Asserts the target tree exists and the old paths are gone |
-| `tests/hosts-compose.test.js` | Asserts project name, volume names, mounts, limits, trust boundary |
+| `tests/runtime-config.test.js` (rewritten) | Asserts pinned volume names, mounts, mem_limit, concurrency |
+| `tests/hosts-isolation.test.js` (Task 3) | Asserts the trust boundary: node blocklist, networks, no Traefik router on heavy |
 
 ### Deleted
 
@@ -768,7 +899,7 @@ Expected: `clean`.
 - [ ] **Step 18: Run the full suite**
 
 Run: `npm test`
-Expected: `pass 213` from the new layout — the 206 moved domain tests, the 5 in `tests/runtime-config.test.js`, and the compose test relocated from `publishing-postgres.test.js`, plus the 7 in `tests/repo-layout.test.js`. If the total differs from 213 plus the newly written tests, a path rewrite was missed; `npm test` names the failing file.
+Expected: `pass 223`, `fail 0`. Arithmetic: 213 baseline + 4 (`tests/runtime-config.test.js` goes 1 → 5) + 7 (`tests/repo-layout.test.js`) − 1 (the compose test leaves `publishing-postgres.test.js`). Any other number means a path rewrite was missed; `npm test` names the failing file. Then run `python3 -m pytest tests/test_handler.py -q` (amendment 13) — `npm test` does not cover the Python side.
 
 - [ ] **Step 19: Verify Compose resolves and the volumes are the existing ones**
 
