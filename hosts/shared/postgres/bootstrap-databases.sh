@@ -42,7 +42,7 @@ psql_admin() {
       echo "bootstrap: psql failed (exit $status). If this is an authentication" >&2
       echo "  failure on a volume that already existed, the stored password was" >&2
       echo "  set at initdb and POSTGRES_PASSWORD does not change it. See" >&2
-      echo "  hosts/README.md, 'Bringing an existing volume onto this layout'." >&2
+      echo "  hosts/README.md, 'Upgrading an existing deployment', step 2." >&2
       return $status
     }
 }

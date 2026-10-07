@@ -187,7 +187,7 @@ Store the output somewhere safe (password manager).
 - [ ] Set up monitoring: at minimum a CloudWatch alarm on instance status checks; n8n exposes `/healthz` for HTTP health checks
 - [ ] Watch disk usage: execution history grows the SQLite DB. This compose file enables `EXECUTIONS_DATA_PRUNE=true`, sets `EXECUTIONS_DATA_MAX_AGE`, and caps retained executions with `EXECUTIONS_DATA_PRUNE_MAX_COUNT`.
 - [ ] Verify webhooks work end-to-end after going live: external services must be able to reach `https://automations.yourdomain.com/webhook/...`
-- [ ] Rotate the Postgres password if the volume predates this layout. `POSTGRES_PASSWORD` only applies at initdb; see `hosts/README.md`.
+- [ ] Rotate the Postgres password if the volume predates this layout. `POSTGRES_PASSWORD` only applies at initdb; see `hosts/README.md`, 'Upgrading an existing deployment'.
 
 ## 9. Scaling notes (later, if needed)
 
