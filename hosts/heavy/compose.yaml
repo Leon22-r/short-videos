@@ -1,0 +1,127 @@
+# Trusted host: self-triggered work that needs shell access (yt-dlp in WF6,
+# ffmpeg in WF8c). Environment differences between local and prod come from
+# hosts/.env, never from a second copy of these service definitions.
+services:
+  provider-uploader:
+    build:
+      context: ../../domains/short-videos/services/provider-uploader
+    image: short-videos/provider-uploader:local
+    restart: unless-stopped
+    mem_limit: 256m
+    networks: [heavy-net]
+    environment:
+      - PORT=8080
+      - PROVIDER_TIMEOUT_MS=1800000
+    volumes:
+      - ../../domains/short-videos/render-data:/data:ro
+
+  n8n:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        N8N_VERSION: ${N8N_VERSION:-2.25.7}
+    image: short-videos/n8n-ffmpeg:${N8N_VERSION:-2.25.7}
+    restart: unless-stopped
+    # ffmpeg runs in this container. A runaway render dies here instead of
+    # leaving the kernel OOM killer to pick a victim on a 4 GB box.
+    mem_limit: 1g
+    # heavy-net only. This instance holds every credential and can run arbitrary
+    # shell, so nothing on public-net may reach it — not Traefik, and above all
+    # not public-n8n, which serves untrusted webhooks.
+    networks: [heavy-net]
+    # Locally this is 127.0.0.1. In prod HEAVY_BIND_ADDRESS is the host's
+    # Tailscale address: this editor can create an Execute Command node, so it
+    # is deliberately not reachable from the internet and has no Traefik router.
+    ports:
+      - "${HEAVY_BIND_ADDRESS:-127.0.0.1}:${HEAVY_PORT:-5678}:5678"
+    environment:
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      # No N8N_ENCRYPTION_KEY here on purpose. The n8n_data volume already holds
+      # a generated key in /home/node/.n8n/config; pinning a different value
+      # makes every stored credential undecryptable. See hosts/README.md for how
+      # to read that key out of the volume before any migration.
+      #
+      # n8n 2.0+ blocks executeCommand and localFileTrigger by default. WF6
+      # (yt-dlp) and WF8c (FFmpeg) need executeCommand, so narrow the blocklist to
+      # keep localFileTrigger blocked rather than clearing it entirely.
+      # Single-tenant only — executeCommand runs arbitrary shell in this container,
+      # which can read every mounted volume and every env var here.
+      - "NODES_EXCLUDE=[\"n8n-nodes-base.localFileTrigger\"]"
+      # n8n 2.x defaults N8N_RESTRICT_FILE_ACCESS_TO to "~/.n8n-files", which blocks
+      # readWriteFile nodes from writing/reading the /data render volume ("... is not
+      # writable"). Scope allowed file access to the mounted work dirs instead.
+      - N8N_RESTRICT_FILE_ACCESS_TO=/data;/files
+      # Provider uploads can be hundreds of MB. Keep workflow binary payloads
+      # on the durable n8n volume instead of retaining them in process memory.
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      # Concurrent ffmpeg renders are the specific thing to avoid on 4 GB.
+      - N8N_CONCURRENCY_PRODUCTION_LIMIT=${HEAVY_CONCURRENCY:-2}
+      - N8N_RUNNERS_MODE=external
+      # Binds every interface inside the container, which is safe only because
+      # heavy-net is private. The token below has no default for the same reason:
+      # a broker reachable with a committed token is remote code execution in the
+      # container that holds every credential.
+      - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
+      - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN:?set N8N_RUNNERS_AUTH_TOKEN in hosts/.env}
+      - N8N_NATIVE_PYTHON_RUNNER=true
+      - N8N_HOST=${HEAVY_N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${HEAVY_N8N_PROTOCOL:-http}
+      - N8N_SECURE_COOKIE=${HEAVY_SECURE_COOKIE:-false}
+      - WEBHOOK_URL=${HEAVY_WEBHOOK_URL:-http://localhost:5678/}
+      - NODE_ENV=${NODE_ENV:-development}
+      - N8N_METRICS=true
+      - N8N_DIAGNOSTICS_ENABLE=false
+      - N8N_VERSION_NOTIFICATION_ENABLED=false
+      - N8N_LOG_LEVEL=${N8N_LOG_LEVEL:-debug}
+      - N8N_OTEL_ENABLED=${N8N_OTEL_ENABLED:-false}
+      - N8N_OTEL_TRACES_PRODUCTION_ONLY=false
+      - N8N_OTEL_EXPORTER_OTLP_ENDPOINT=${N8N_OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318/}
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=${EXECUTIONS_DATA_MAX_AGE:-336}
+      - EXECUTIONS_DATA_PRUNE_MAX_COUNT=${EXECUTIONS_DATA_PRUNE_MAX_COUNT:-10000}
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-Africa/Nairobi}
+      - TZ=${GENERIC_TIMEZONE:-Africa/Nairobi}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ../../domains/short-videos/local-files:/files
+      - ../../domains/short-videos/render-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      short-videos-migrations:
+        condition: service_completed_successfully
+      provider-uploader:
+        condition: service_healthy
+
+  task-runners:
+    build:
+      context: ./runners
+      args:
+        N8N_VERSION: ${N8N_VERSION:-2.25.7}
+    image: short-videos/n8n-runners:${N8N_VERSION:-2.25.7}
+    restart: unless-stopped
+    mem_limit: 512m
+    networks: [heavy-net]
+    environment:
+      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n:5679
+      - N8N_RUNNERS_AUTH_TOKEN=${N8N_RUNNERS_AUTH_TOKEN:?set N8N_RUNNERS_AUTH_TOKEN in hosts/.env}
+      - N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT=0
+    volumes:
+      - ../../domains/short-videos/render-data:/data
+    depends_on:
+      - n8n
+
+networks:
+  heavy-net:
+  public-net:
+
+volumes:
+  n8n_data:
+    # Pinned: this volume holds every credential and the encryption key that
+    # decrypts them. A project-name change must not be able to substitute an
+    # empty volume, which would look exactly like total data loss.
+    # The `n8n_` prefix is historical — it comes from the old n8n/ directory the
+    # project was named after. Do not "tidy" it without migrating the data.
+    name: n8n_n8n_data

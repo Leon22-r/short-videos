@@ -1,0 +1,56 @@
+# Public ingress. Lifted from n8n/compose.prod.yaml, which also carried an n8n
+# service; that service is now hosts/heavy/compose.yaml and deliberately has no
+# router here.
+services:
+  traefik:
+    # Pinned. The original was `image: "traefik"` with no tag, so a
+    # `docker compose pull` could take a major version — and v2 to v3 renamed the
+    # middleware and provider keys the public host's buffering middleware uses.
+    image: "traefik:v3.3"
+    restart: always
+    mem_limit: 128m
+    security_opt:
+      - no-new-privileges:true
+    # public-net only. This is the structural half of the trust boundary: even if
+    # someone adds traefik.enable=true to the heavy n8n service by mistake, there
+    # is no route from here to heavy-net, so it cannot be published.
+    networks: [public-net]
+    command:
+      # --api.insecure=true was in the original. Port 8080 was never host-bound,
+      # but on a shared network it serves the whole router and service catalog to
+      # anything that can reach it, including the public n8n instance. The
+      # dashboard is unused, so the API is off entirely.
+      - "--api=false"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      # Route only over public-net, so a container Traefik can see but should not
+      # reach fails to resolve rather than being published by accident.
+      - "--providers.docker.network=public-net"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.mytlschallenge.acme.tlschallenge=true"
+      - "--certificatesresolvers.mytlschallenge.acme.email=${SSL_EMAIL}"
+      - "--certificatesresolvers.mytlschallenge.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - traefik_data:/letsencrypt
+      # NOT a read-only Docker API. `:ro` applies to the socket FILE, not to the
+      # API behind it: anything that can make Traefik issue requests here can
+      # POST /containers/create with a host bind mount and obtain host root, and
+      # can read every container's environment via inspect. Traefik is the only
+      # internet-facing process in this stack.
+      # Accepted for now only because --api=false leaves no request path into it
+      # from public-net. The fix is a docker-socket-proxy sidecar with
+      # CONTAINERS=1 and everything else 0; tracked as separate work.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+networks:
+  heavy-net:
+  public-net:
+
+volumes:
+  traefik_data:

@@ -1,0 +1,12 @@
+{
+  "name": "short-videos",
+  "description": "Short-form video pipeline: discovery, transcript, AI moment selection, render, publish.",
+  "host": "heavy",
+  "database": "short_videos",
+  "mounts": [
+    { "host": "domains/short-videos/render-data", "container": "/data" },
+    { "host": "domains/short-videos/local-files", "container": "/files" }
+  ],
+  "services": ["provider-uploader", "transcript"],
+  "workflows": "domains/short-videos/workflows"
+}

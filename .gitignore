@@ -1,21 +1,38 @@
 .worktrees
 .worktrees/
+.superpowers/
 
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
-# n8n FFmpeg render runtime data
-n8n/render-data/**
-!n8n/render-data/**/
-!n8n/render-data/**/.gitkeep
-!n8n/render-data/.gitkeep
+# FFmpeg render runtime data, per domain
+domains/short-videos/render-data/**
+!domains/short-videos/render-data/**/
+!domains/short-videos/render-data/**/.gitkeep
+!domains/short-videos/render-data/.gitkeep
 reports/
 
-# Local n8n configuration and runtime state
-n8n/.env
-n8n/local-files/
-n8n/.n8n/
+# Host runtime state and secrets. One .env per host tree, never committed.
+hosts/.env
+hosts/*/.n8n/
+domains/short-videos/local-files/
 
 # Graphify output is reproducible local analysis state
 graphify-out/
 .graphify/
+
+# The transcript Lambda installs its deps at build time (see build.sh), so the
+# installed tree and the built artifact are not tracked.
+domains/short-videos/services/transcript/function.zip
+domains/short-videos/services/transcript/bin/
+domains/short-videos/services/transcript/*.dist-info/
+domains/short-videos/services/transcript/*.libs/
+domains/short-videos/services/transcript/*.so
+domains/short-videos/services/transcript/certifi/
+domains/short-videos/services/transcript/charset_normalizer/
+domains/short-videos/services/transcript/defusedxml/
+domains/short-videos/services/transcript/idna/
+domains/short-videos/services/transcript/requests/
+domains/short-videos/services/transcript/urllib3/
+domains/short-videos/services/transcript/youtube_transcript_api/

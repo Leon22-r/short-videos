@@ -1,0 +1,11 @@
+name: n8n
+
+include:
+  - path: ./shared/postgres/compose.yaml
+  - path: ./shared/traefik/compose.yaml
+  - path: ./heavy/compose.yaml
+  - path: ./public/compose.yaml
+
+networks:
+  heavy-net:
+  public-net:
