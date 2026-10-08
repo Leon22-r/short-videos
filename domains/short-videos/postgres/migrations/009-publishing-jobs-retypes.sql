@@ -35,6 +35,20 @@ UPDATE short_videos.publishing_jobs SET approved_id = NULL WHERE approved_id = '
 UPDATE short_videos.publishing_jobs SET provider_stage = NULL WHERE provider_stage = '';
 UPDATE short_videos.publishing_jobs SET claimed_by = NULL WHERE claimed_by = '';
 
+ALTER TABLE short_videos.publishing_jobs
+  DROP CONSTRAINT IF EXISTS publishing_jobs_platform_destination_check;
+
+ALTER TABLE short_videos.publishing_jobs
+  ADD CONSTRAINT publishing_jobs_platform_destination_check CHECK (
+    (publishing_backend = 'POSTIZ' AND COALESCE(btrim(postiz_integration_id), '') <> '')
+    OR (publishing_backend = 'DIRECT' AND (
+      (platform = 'YOUTUBE_SHORTS' AND COALESCE(youtube_channel_id, '') <> '')
+      OR (platform = 'FACEBOOK_REELS' AND COALESCE(facebook_page_id, '') <> '')
+      OR (platform = 'INSTAGRAM_REELS' AND COALESCE(instagram_user_id, '') <> '')
+      OR (platform = 'TIKTOK' AND COALESCE(tiktok_open_id, '') <> '')
+    ))
+  );
+
 -- A bad date string cannot reach a timestamptz column, so the function that
 -- converted one into 'infinity' has nothing left to do.
 DROP FUNCTION IF EXISTS short_videos.safe_schedule_at(text);

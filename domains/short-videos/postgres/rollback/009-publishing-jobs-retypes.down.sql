@@ -40,3 +40,17 @@ END $$;
 
 UPDATE short_videos.publishing_jobs SET approved_id = '' WHERE approved_id IS NULL;
 ALTER TABLE short_videos.publishing_jobs ALTER COLUMN approved_id SET NOT NULL;
+
+ALTER TABLE short_videos.publishing_jobs
+  DROP CONSTRAINT IF EXISTS publishing_jobs_platform_destination_check;
+
+ALTER TABLE short_videos.publishing_jobs
+  ADD CONSTRAINT publishing_jobs_platform_destination_check CHECK (
+    (publishing_backend = 'POSTIZ' AND btrim(postiz_integration_id) <> '')
+    OR (publishing_backend = 'DIRECT' AND (
+      (platform = 'YOUTUBE_SHORTS' AND youtube_channel_id <> '')
+      OR (platform = 'FACEBOOK_REELS' AND facebook_page_id <> '')
+      OR (platform = 'INSTAGRAM_REELS' AND instagram_user_id <> '')
+      OR (platform = 'TIKTOK' AND tiktok_open_id <> '')
+    ))
+  );

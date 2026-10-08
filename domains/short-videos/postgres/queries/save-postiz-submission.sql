@@ -11,6 +11,6 @@ WHERE publish_id = $1
   AND publishing_backend = 'POSTIZ'
   AND provider_stage IN ('POSTIZ_SUBMIT_REQUESTED', 'POSTIZ_SUBMITTED')
   AND postiz_submitted_at IS NOT NULL
-  AND btrim($3) <> ''
-  AND (postiz_post_id = '' OR postiz_post_id = $3)
+  AND NULLIF(btrim($3), '') IS NOT NULL
+  AND (postiz_post_id IS NULL OR postiz_post_id = $3)
 RETURNING *;

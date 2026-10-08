@@ -6,8 +6,8 @@ SET publish_status = CASE
       ELSE 'PROCESSING'
     END,
     provider_stage = $3,
-    provider_ref = COALESCE(NULLIF($4, ''), provider_ref),
-    provider_response = COALESCE(NULLIF($5, '')::jsonb, provider_response),
+    provider_ref = CASE WHEN NULLIF(btrim($4), '') IS NULL THEN provider_ref ELSE $4 END,
+    provider_response = CASE WHEN NULLIF(btrim($5), '') IS NULL THEN provider_response ELSE $5::jsonb END,
     poll_after = CASE
       WHEN provider_poll_count + 1 >= 180
         OR COALESCE(provider_poll_deadline, now() + interval '24 hours') <= now()
@@ -23,7 +23,7 @@ SET publish_status = CASE
       ELSE last_error
     END,
     claimed_at = NULL,
-    claimed_by = '',
+    claimed_by = NULL,
     lease_expires_at = NULL,
     updated_at = now()
 WHERE publish_id = $1
@@ -33,7 +33,7 @@ WHERE publish_id = $1
     lease_expires_at > now()
     AND provider_stage = 'POSTIZ_SUBMITTED'
     AND $3 = 'POSTIZ_SUBMITTED'
-    AND postiz_post_id <> ''
+    AND postiz_post_id IS NOT NULL
     AND $4 = postiz_post_id
   ))
 RETURNING *;

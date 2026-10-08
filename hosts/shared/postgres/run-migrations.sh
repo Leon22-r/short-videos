@@ -33,14 +33,14 @@ psql --set ON_ERROR_STOP=1 "$TARGET_URL" -c "
     version text PRIMARY KEY,
     applied_at timestamptz NOT NULL DEFAULT now()
   );
-" 2>/dev/null || true
+"
 
 for migration in "$MIGRATIONS_DIR"/*.sql; do
   [ -f "$migration" ] || continue
   version="$(basename "$migration")"
   echo "Applying $version..."
 
-  psql --set ON_ERROR_STOP=1 -v v="$version" "$TARGET_URL" << EOSQL
+  psql --set ON_ERROR_STOP=1 --single-transaction -v v="$version" "$TARGET_URL" << EOSQL
 \i $migration
 INSERT INTO short_videos.schema_migrations (version, applied_at)
 VALUES (:'v', now())

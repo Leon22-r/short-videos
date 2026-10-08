@@ -86,3 +86,28 @@ test('Postiz intent and immutable backend contracts are explicit in SQL', () => 
   assert.match(intent, /postiz_submitted_at IS NULL/);
   assert.match(read('postgres/queries/release-due-publishing-retries.sql'), /automatic resubmission blocked/);
 });
+
+test('queue queries use NULL semantics, not the empty-string convention', () => {
+  const files = fs.readdirSync(path.join(domainRoot, 'postgres/queries'))
+    .filter((file) => file.endsWith('.sql'));
+  assert.equal(files.length, 14, 'query count changed; update this test deliberately');
+
+  const offenders = [];
+  for (const file of files) {
+    const sql = read(`postgres/queries/${file}`);
+    // A string literal '' is now always a bug: the columns are nullable.
+    for (const pattern of [/<> ''/, /= ''/, /COALESCE\([^)]*, ''\)/]) {
+      if (pattern.test(sql)) offenders.push(`${file}: ${pattern}`);
+    }
+  }
+  assert.deepEqual(offenders, []);
+});
+
+test('the metadata freeze still fires on a dispatched POSTIZ job', () => {
+  const upsert = read('postgres/queries/upsert-publishing-jobs.sql');
+  // The old guard was provider_stage <> ''. With nullable columns that is
+  // always false for a fresh row and must become IS NOT NULL.
+  assert.match(upsert, /jobs\.provider_stage IS NOT NULL/);
+  assert.doesNotMatch(upsert, /safe_schedule_at/);
+  assert.match(upsert, /NULLIF\(btrim\(row->>'scheduled_at'\), ''\)::timestamptz/);
+});

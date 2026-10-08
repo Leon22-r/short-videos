@@ -5,7 +5,7 @@ WITH updated AS (
       last_error = $4,
       next_retry_at = NULL,
       claimed_at = NULL,
-      claimed_by = '',
+      claimed_by = NULL,
       lease_expires_at = NULL,
       updated_at = now()
   WHERE publish_id = $1

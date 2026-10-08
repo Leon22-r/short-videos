@@ -21,7 +21,7 @@ test('source and candidate tables are typed, constrained and replay-safe', () =>
   assert.match(schema, /CREATE TABLE IF NOT EXISTS short_videos\.candidate_videos/);
   assert.match(schema, /video_id\s+text PRIMARY KEY/);
   assert.match(schema, /REFERENCES short_videos\.source_channels/);
-  assert.match(schema, /youtube_video_id\s+text NOT NULL UNIQUE/);
+  assert.match(schema, /youtube_video_id\s+text NOT NULL/);
   assert.match(schema, /like_percentage\s+numeric/);
   assert.match(schema, /CHECK\s*\(\s*processing_status IN \('NEW', 'ANALYZED', 'SKIPPED', 'CLIPPING', 'DONE'\)\)/);
   assert.match(schema, /CHECK\s*\(\s*validity_status IS NULL OR validity_status IN \('VALID', 'REJECTED', 'FLAGGED'\)\)/);

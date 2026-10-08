@@ -1,5 +1,3 @@
-BEGIN;
-
 ALTER TABLE short_videos.publishing_jobs
   ADD COLUMN IF NOT EXISTS credential_slot text NOT NULL DEFAULT '',
   ADD COLUMN IF NOT EXISTS meta_graph_version text NOT NULL DEFAULT '',
@@ -36,5 +34,3 @@ $$;
 CREATE INDEX IF NOT EXISTS publishing_jobs_provider_poll_idx
   ON short_videos.publishing_jobs (poll_after)
   WHERE publish_status = 'PROCESSING';
-
-COMMIT;
