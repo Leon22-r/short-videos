@@ -16,7 +16,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const e = $input.first().json;\nconst exec = e.execution || {};\nconst err = exec.error || {};\nreturn [{\n  json: {\n    error_id: `ERR-${Date.now()}`,\n    workflow_name: (e.workflow && e.workflow.name) || 'unknown',\n    node_name: exec.lastNodeExecuted || (err.node && err.node.name) || 'unknown',\n    related_video_id: '',\n    error_type: err.name || 'WorkflowError',\n    error_message: (err.message || JSON.stringify(e)).slice(0, 1000),\n    raw_payload: JSON.stringify(e).slice(0, 40000),\n    created_at: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "const e = $input.first().json;\nconst exec = e.execution || {};\nconst err = exec.error || {};\nreturn [{\n  json: {\n    error_id: `ERR-${Date.now()}`,\n    workflow_name: (e.workflow && e.workflow.name) || 'unknown',\n    node_name: exec.lastNodeExecuted || (err.node && err.node.name) || 'unknown',\n    related_video_id: '',\n    error_type: err.name || 'WorkflowError',\n    error_message: err.message || JSON.stringify(e),\n    raw_payload: e,\n    created_at: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
       },
       "id": "a1b2c3d4-0001-4000-8000-000000000002",
       "name": "Normalize Error",
@@ -29,28 +29,19 @@
     },
     {
       "parameters": {
-        "operation": "append",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Error_Log"
-        },
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": []
-        },
-        "options": {}
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "-- WF10 appends and never updates, so this is an INSERT rather than an upsert.\n-- A repeated error_id is the same error being retried, which must not create\n-- a second row.\nINSERT INTO short_videos.error_log (\n  error_id, workflow_name, node_name, related_video_id, error_type, error_message, raw_payload\n)\nSELECT\n  (record).error_id, (record).workflow_name, (record).node_name,\n  (record).related_video_id, (record).error_type, (record).error_message, (record).raw_payload\nFROM (\n  SELECT jsonb_populate_record(NULL::short_videos.error_log, row) AS record\n  FROM (\n    SELECT (\n      SELECT jsonb_object_agg(field.key, field.value)\n      FROM jsonb_each(element) AS field\n      WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n    ) AS row\n    FROM jsonb_array_elements($1::jsonb) AS element\n    WHERE NULLIF(btrim(element->>'error_id'), '') IS NOT NULL\n  ) rows\n  WHERE row IS NOT NULL\n) typed\nON CONFLICT (error_id) DO NOTHING\nRETURNING *;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
+        }
       },
       "id": "a1b2c3d4-0001-4000-8000-000000000003",
       "name": "Log To Error_Log",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         440,
         0

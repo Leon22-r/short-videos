@@ -276,3 +276,88 @@ test('real Postgres: every committed WF4-WF6 query runs against the schema', { s
     }
   }, ['004-pipeline-store-sources.sql', '005-pipeline-store-analysis.sql', '006-pipeline-store-clips.sql']);
 });
+
+// WF8, WF8b, WF8c, WF8d and WF10. The arrays and the two jsonb columns are the
+// reason this one matters: a newline-joined string fails a text[] column as a
+// malformed array literal, and a stringified object lands in jsonb as a string
+// scalar rather than an object.
+test('real Postgres: every committed WF8-WF10 query runs against the schema', { skip: !available }, async () => {
+  const q = (name) => fs.readFileSync(path.join(root, 'postgres/queries', `${name}.sql`), 'utf8');
+  await withCluster(async ({ sql, run }) => {
+    sql(`INSERT INTO short_videos.source_channels (source_id, niche, source_name, youtube_channel_url)
+         VALUES ('src-1', 'FINANCE_BUSINESS', 'Example', 'https://youtube.com/@example');`);
+    run(q('upsert-candidate-videos'), [{ video_id: 'v1', niche: 'FINANCE_BUSINESS', source_id: 'src-1', youtube_video_id: 'yt1', processing_status: 'NEW' }]);
+    run(q('upsert-created-clips'), [{
+      created_clip_id: 'CC-1', download_job_id: 'YTDLP-CM-1', video_id: 'v1',
+      niche: 'FINANCE_BUSINESS', review_status: 'AWAITING_DOWNLOAD', created_at: '2026-10-08T00:00:00Z',
+    }]);
+
+    run(q('update-clip-drive-ids'), [{
+      created_clip_id: 'CC-1', local_file_name: 'CC-1.mp4',
+      google_drive_file_id: 'drive-1', google_drive_url: 'https://drive.google.com/file/d/drive-1/view',
+    }]);
+
+    // The four list columns are text[] and the plan is jsonb, so the Code node
+    // hands over arrays and an object.
+    run(q('update-clip-transformation'), [{
+      created_clip_id: 'CC-1', suggested_title: 'A Title', suggested_caption: 'Caption',
+      content_thesis: 'Thesis', hook: 'Hook', narration_script: 'Script',
+      commentary_angle: 'Angle', kenyan_african_localization: 'Local', bible_verse_if_relevant: '',
+      alternative_titles: ['Alt One', 'Alt Two'],
+      on_screen_text_beats: ['Beat one', 'Beat two'],
+      broll_plan: ['Founder on phone'],
+      editing_style: 'Fast', hashtags: ['#KenyaBusiness', '#Startups'],
+      cta: 'Follow', risk_warning: '', originality_checklist: ['Adds local context'],
+      transformation_plan: { render_plan: { use_blurred_background: true } },
+      review_status: 'NEEDS_REVIEW',
+    }]);
+    assert.equal(sql("SELECT array_length(alternative_titles, 1), hashtags[1], transformation_plan->'render_plan'->>'use_blurred_background', review_status FROM short_videos.created_clips WHERE created_clip_id = 'CC-1';"), '2|#KenyaBusiness|true|NEEDS_REVIEW');
+
+    // WF8 writes NEEDS_RETRY when the plan fails to parse. It has to be a
+    // value the review_status CHECK accepts.
+    run(q('update-clip-transformation'), [{
+      created_clip_id: 'CC-1', suggested_title: '', review_status: 'NEEDS_RETRY',
+      transformation_plan: { parse_error: 'not valid JSON' },
+    }]);
+    assert.equal(sql("SELECT review_status, transformation_plan->>'parse_error' FROM short_videos.created_clips WHERE created_clip_id = 'CC-1';"), 'NEEDS_RETRY|not valid JSON');
+
+    run(q('upsert-render-jobs'), [{
+      render_id: 'RENDER-CC-1', created_clip_id: 'CC-1', niche: 'FINANCE_BUSINESS',
+      source_drive_file_id: 'drive-1', source_file_name: 'CC-1.mp4',
+      cta_start_second: '41', cta_end_second: '45', music_volume: '0.12',
+      use_blurred_background: 'TRUE', render_status: 'PENDING',
+      created_at: '2026-10-08T00:00:00Z',
+    }]);
+    run(q('update-render-asset-plan'), [{
+      render_id: 'RENDER-CC-1', final_drive_folder_id: 'folder-1', hook_text: 'Hook',
+      music_id: 'MUS-1', music_volume: '0.1', use_blurred_background: 'FALSE',
+      ffmpeg_command: 'ffmpeg -y', render_status: 'DOWNLOADING_ASSETS',
+      started_at: '', completed_at: '', warning_message: '', error_message: '',
+    }]);
+    run(q('update-render-status'), [{ render_id: 'RENDER-CC-1', render_status: 'RENDERING', started_at: '2026-10-08T01:00:00Z', completed_at: '' }]);
+    run(q('update-render-completed'), [{
+      render_id: 'RENDER-CC-1', render_status: 'COMPLETED', started_at: '2026-10-08T01:00:00Z',
+      completed_at: '2026-10-08T01:05:00Z', final_drive_file_id: 'final-1',
+      final_drive_url: 'https://drive.google.com/file/d/final-1/view',
+      final_local_path: '/data/jobs/RENDER-CC-1/final.mp4', error_message: '',
+    }]);
+    assert.equal(sql("SELECT render_status, use_blurred_background, music_volume, completed_at IS NOT NULL FROM short_videos.render_jobs WHERE render_id = 'RENDER-CC-1';"), 'COMPLETED|f|0.1|t');
+
+    run(q('update-render-failed'), [{ render_id: 'RENDER-CC-1', render_status: 'FAILED', started_at: '2026-10-08T01:00:00Z', completed_at: '2026-10-08T01:02:00Z', error_message: 'ffmpeg exited 1' }]);
+    assert.equal(sql("SELECT render_status, error_message FROM short_videos.render_jobs WHERE render_id = 'RENDER-CC-1';"), 'FAILED|ffmpeg exited 1');
+
+    // WF10 appends and never updates, so a repeated error_id must not add a row.
+    const errorRow = [{
+      error_id: 'ERR-1', workflow_name: 'WF8c FFmpeg Render', node_name: 'Run FFmpeg',
+      related_video_id: 'v1', error_type: 'WorkflowError', error_message: 'boom',
+      raw_payload: { execution: { id: '42' } },
+    }];
+    run(q('insert-error-log'), errorRow);
+    run(q('insert-error-log'), errorRow);
+    assert.equal(sql("SELECT count(*), max(raw_payload->'execution'->>'id') FROM short_videos.error_log;"), '1|42');
+
+    for (const name of ['select-render-jobs', 'select-music-library', 'select-channel-branding']) {
+      sql(q(name).replace(/;\s*$/, ''));
+    }
+  }, ['004-pipeline-store-sources.sql', '005-pipeline-store-analysis.sql', '006-pipeline-store-clips.sql', '007-pipeline-store-assets.sql']);
+});

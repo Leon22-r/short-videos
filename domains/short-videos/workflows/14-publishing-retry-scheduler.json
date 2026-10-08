@@ -38,7 +38,7 @@
       "parameters": {
         "resource": "database",
         "operation": "executeQuery",
-        "query": "UPDATE short_videos.publishing_jobs\nSET publish_status = CASE WHEN retry_count >= 4 OR (publishing_backend = 'POSTIZ' AND (postiz_submitted_at IS NOT NULL OR postiz_post_id <> '')) THEN 'FAILED' ELSE 'PENDING' END,\n    next_retry_at = NULL,\n    last_error = CASE WHEN publishing_backend = 'POSTIZ' AND (postiz_submitted_at IS NOT NULL OR postiz_post_id <> '') THEN 'POSTIZ_RECONCILIATION_REQUIRED: automatic resubmission blocked' ELSE last_error END,\n    claimed_at = NULL,\n    claimed_by = '',\n    lease_expires_at = NULL,\n    updated_at = now()\nWHERE publish_status = 'RETRY_PENDING'\n  AND (retry_count >= 4 OR next_retry_at IS NULL OR next_retry_at <= now())\nRETURNING *;",
+        "query": "UPDATE short_videos.publishing_jobs\nSET publish_status = CASE WHEN retry_count >= 4 OR (publishing_backend = 'POSTIZ' AND (postiz_submitted_at IS NOT NULL OR postiz_post_id IS NOT NULL)) THEN 'FAILED' ELSE 'PENDING' END,\n    next_retry_at = NULL,\n    last_error = CASE WHEN publishing_backend = 'POSTIZ' AND (postiz_submitted_at IS NOT NULL OR postiz_post_id IS NOT NULL) THEN 'POSTIZ_RECONCILIATION_REQUIRED: automatic resubmission blocked' ELSE last_error END,\n    claimed_at = NULL,\n    claimed_by = NULL,\n    lease_expires_at = NULL,\n    updated_at = now()\nWHERE publish_status = 'RETRY_PENDING'\n  AND (retry_count >= 4 OR next_retry_at IS NULL OR next_retry_at <= now())\nRETURNING *;",
         "options": {
           "queryBatching": "single",
           "queryReplacement": "",

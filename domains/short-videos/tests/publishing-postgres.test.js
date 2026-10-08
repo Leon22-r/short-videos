@@ -90,10 +90,10 @@ test('Postiz intent and immutable backend contracts are explicit in SQL', () => 
 test('queue queries use NULL semantics, not the empty-string convention', () => {
   const files = fs.readdirSync(path.join(domainRoot, 'postgres/queries'))
     .filter((file) => file.endsWith('.sql'));
-  // 14 publishing-queue files, plus the 19 pipeline-store files Tasks 12 and 13
+  // 14 publishing-queue files, plus the 30 pipeline-store files Tasks 12-14
   // added. The count is a deliberate tripwire: update it when you add a query,
   // so a file that slipped in without being checked below cannot hide.
-  assert.equal(files.length, 33, 'query count changed; update this test deliberately');
+  assert.equal(files.length, 44, 'query count changed; update this test deliberately');
 
   const offenders = [];
   for (const file of files) {

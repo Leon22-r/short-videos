@@ -24,27 +24,22 @@
     {
       "id": "wf8c-002",
       "name": "Read Render_Jobs",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         220,
         0
       ],
       "parameters": {
-        "operation": "read",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Render_Jobs"
-        },
-        "options": {}
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT * FROM short_videos.render_jobs;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "",
+          "replaceEmptyStrings": true
+        }
       },
-      "executeOnce": true,
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000
@@ -66,27 +61,22 @@
     {
       "id": "wf8c-004",
       "name": "Read Channel_Branding",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         660,
         0
       ],
       "parameters": {
-        "operation": "read",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Channel_Branding"
-        },
-        "options": {}
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT * FROM short_videos.channel_branding;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "",
+          "replaceEmptyStrings": true
+        }
       },
-      "executeOnce": true,
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000,
@@ -95,27 +85,22 @@
     {
       "id": "wf8c-005",
       "name": "Read Music_Library",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         880,
         0
       ],
       "parameters": {
-        "operation": "read",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Music_Library"
-        },
-        "options": {}
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT * FROM short_videos.music_library;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "",
+          "replaceEmptyStrings": true
+        }
       },
-      "executeOnce": true,
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000,
@@ -138,31 +123,20 @@
     {
       "id": "wf8c-007",
       "name": "Save Asset Plan",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         1320,
         0
       ],
       "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Render_Jobs"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "render_id"
-          ]
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH rows AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'render_id'), '') IS NOT NULL\n), incoming AS (\n  SELECT jsonb_populate_record(NULL::short_videos.render_jobs, row) AS record\n  FROM rows\n  WHERE row IS NOT NULL\n)\nUPDATE short_videos.render_jobs AS target SET\n  final_drive_folder_id = (incoming.record).final_drive_folder_id,\n  hook_text = (incoming.record).hook_text,\n  cta_text = (incoming.record).cta_text,\n  cta_start_second = (incoming.record).cta_start_second,\n  cta_end_second = (incoming.record).cta_end_second,\n  music_mood = (incoming.record).music_mood,\n  music_energy_level = (incoming.record).music_energy_level,\n  music_id = (incoming.record).music_id,\n  music_drive_file_id = (incoming.record).music_drive_file_id,\n  music_file_name = (incoming.record).music_file_name,\n  music_volume = (incoming.record).music_volume,\n  watermark_drive_file_id = (incoming.record).watermark_drive_file_id,\n  watermark_file_name = (incoming.record).watermark_file_name,\n  progress_bar_color = (incoming.record).progress_bar_color,\n  use_blurred_background = (incoming.record).use_blurred_background,\n  ffmpeg_command = (incoming.record).ffmpeg_command,\n  render_status = (incoming.record).render_status,\n  warning_message = (incoming.record).warning_message,\n  error_message = (incoming.record).error_message,\n  started_at = (incoming.record).started_at,\n  completed_at = (incoming.record).completed_at\nFROM incoming\nWHERE target.render_id = (incoming.record).render_id\nRETURNING target.*;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
         }
       },
       "retryOnFail": true,
@@ -345,31 +319,20 @@
     {
       "id": "wf8c-017",
       "name": "Mark Rendering",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         3520,
         -120
       ],
       "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Render_Jobs"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "render_id"
-          ]
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH rows AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'render_id'), '') IS NOT NULL\n), incoming AS (\n  SELECT jsonb_populate_record(NULL::short_videos.render_jobs, row) AS record\n  FROM rows\n  WHERE row IS NOT NULL\n)\nUPDATE short_videos.render_jobs AS target SET\n  render_status = (incoming.record).render_status,\n  started_at = (incoming.record).started_at,\n  completed_at = (incoming.record).completed_at\nFROM incoming\nWHERE target.render_id = (incoming.record).render_id\nRETURNING target.*;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
         }
       },
       "retryOnFail": true,
@@ -407,31 +370,20 @@
     {
       "id": "wf8c-020",
       "name": "Save Uploading",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         4180,
         -120
       ],
       "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Render_Jobs"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "render_id"
-          ]
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH rows AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'render_id'), '') IS NOT NULL\n), incoming AS (\n  SELECT jsonb_populate_record(NULL::short_videos.render_jobs, row) AS record\n  FROM rows\n  WHERE row IS NOT NULL\n)\nUPDATE short_videos.render_jobs AS target SET\n  render_status = (incoming.record).render_status,\n  started_at = (incoming.record).started_at,\n  completed_at = (incoming.record).completed_at\nFROM incoming\nWHERE target.render_id = (incoming.record).render_id\nRETURNING target.*;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
         }
       },
       "retryOnFail": true,
@@ -499,31 +451,20 @@
     {
       "id": "wf8c-024",
       "name": "Mark Render Completed",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         5060,
         -120
       ],
       "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Render_Jobs"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "render_id"
-          ]
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH rows AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'render_id'), '') IS NOT NULL\n), incoming AS (\n  SELECT jsonb_populate_record(NULL::short_videos.render_jobs, row) AS record\n  FROM rows\n  WHERE row IS NOT NULL\n)\nUPDATE short_videos.render_jobs AS target SET\n  render_status = (incoming.record).render_status,\n  started_at = (incoming.record).started_at,\n  completed_at = (incoming.record).completed_at,\n  final_drive_file_id = (incoming.record).final_drive_file_id,\n  final_drive_url = (incoming.record).final_drive_url,\n  final_local_path = (incoming.record).final_local_path,\n  error_message = (incoming.record).error_message\nFROM incoming\nWHERE target.render_id = (incoming.record).render_id\nRETURNING target.*;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
         }
       },
       "retryOnFail": true,
@@ -547,31 +488,20 @@
     {
       "id": "wf8c-026",
       "name": "Mark Asset Failure",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         1980,
         160
       ],
       "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Render_Jobs"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "render_id"
-          ]
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH rows AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'render_id'), '') IS NOT NULL\n), incoming AS (\n  SELECT jsonb_populate_record(NULL::short_videos.render_jobs, row) AS record\n  FROM rows\n  WHERE row IS NOT NULL\n)\nUPDATE short_videos.render_jobs AS target SET\n  render_status = (incoming.record).render_status,\n  started_at = (incoming.record).started_at,\n  completed_at = (incoming.record).completed_at,\n  error_message = (incoming.record).error_message\nFROM incoming\nWHERE target.render_id = (incoming.record).render_id\nRETURNING target.*;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
         }
       },
       "retryOnFail": true,

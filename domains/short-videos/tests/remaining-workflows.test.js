@@ -451,14 +451,14 @@ test('WF8 parse promotes transformation plan fields into readable sheet columns'
   assert.equal(parsed.commentary_angle, payload.commentary_angle);
   assert.equal(parsed.kenyan_african_localization, payload.kenyan_african_localization);
   assert.equal(parsed.bible_verse_if_relevant, '');
-  assert.equal(parsed.alternative_titles, 'Build Distribution First\nStop Polishing in Private');
-  assert.equal(parsed.on_screen_text_beats, 'Distribution first\nTalk to buyers\nUse local channels');
-  assert.equal(parsed.broll_plan, 'Founder on phone\nM-Pesa payment screen');
+  assert.deepEqual(parsed.alternative_titles, ['Build Distribution First', 'Stop Polishing in Private']);
+  assert.deepEqual(parsed.on_screen_text_beats, ['Distribution first', 'Talk to buyers', 'Use local channels']);
+  assert.deepEqual(parsed.broll_plan, ['Founder on phone', 'M-Pesa payment screen']);
   assert.equal(parsed.editing_style, payload.editing_style);
-  assert.equal(parsed.hashtags, '#KenyanStartups #BusinessTips');
+  assert.deepEqual(parsed.hashtags, ['#KenyanStartups', '#BusinessTips']);
   assert.equal(parsed.cta, payload.cta);
   assert.equal(parsed.risk_warning, payload.risk_warning);
-  assert.equal(parsed.originality_checklist, 'Adds local context\nUses original narration');
+  assert.deepEqual(parsed.originality_checklist, ['Adds local context', 'Uses original narration']);
   assert.equal(parsed.review_status, 'NEEDS_REVIEW');
 });
 
@@ -601,8 +601,9 @@ test('WF8b backfills readable transformation columns from existing JSON plans', 
   assert.equal(rows[0].content_thesis, 'Old thesis');
   assert.equal(rows[0].suggested_title, 'Old Title');
   assert.equal(rows[0].suggested_caption, 'Old caption');
-  assert.equal(rows[0].hashtags, '#KenyaBusiness #Startups');
-  assert.equal(rows[0].alternative_titles, 'Alt One\nAlt Two');
+  // hashtags is text[] too, so the tags stay separate rather than joined.
+  assert.deepEqual(rows[0].hashtags, ['#KenyaBusiness', '#Startups']);
+  assert.deepEqual(rows[0].alternative_titles, ['Alt One', 'Alt Two']);
 });
 
 test('WF8 parse flags unrecoverable responses for retry instead of writing blanks', () => {
@@ -613,9 +614,10 @@ test('WF8 parse flags unrecoverable responses for retry instead of writing blank
 
   assert.equal(garbage.review_status, 'NEEDS_RETRY');
   assert.equal(garbage.suggested_title, '');
-  assert.match(garbage.transformation_plan, /parse_error/);
+  // transformation_plan is jsonb now, so the failure detail is an object.
+  assert.match(garbage.transformation_plan.parse_error, /not valid JSON/);
   assert.equal(apiError.review_status, 'NEEDS_RETRY');
-  assert.match(apiError.transformation_plan, /rate limited/);
+  assert.match(apiError.transformation_plan.parse_error, /rate limited/);
 });
 
 test('WF8 planner OpenAI node enforces strict json_schema structured output', () => {

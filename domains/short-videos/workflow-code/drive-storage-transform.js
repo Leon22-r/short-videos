@@ -261,18 +261,20 @@ function textValue(value, limit = 2000) {
   return text.slice(0, limit);
 }
 
+// These five columns are text[] in Postgres, so the list stays a list. It used
+// to be joined with newlines (and hashtags with spaces) because a sheet cell
+// holds one string; a JSON array lands in a text[] column directly, and a
+// newline-joined string would fail as a malformed array literal. The character
+// limits went with the join: they were cell limits.
 function listValue(value, options = {}) {
   const items = Array.isArray(value) ? value : (value ? [value] : []);
   const cleaned = items
     .map((item) => String(item || '').trim())
     .filter(Boolean);
   if (options.hashtags) {
-    return cleaned
-      .map((tag) => (tag.startsWith('#') ? tag : `#${tag.replace(/^#+/, '')}`))
-      .join(' ')
-      .slice(0, options.limit || 1000);
+    return cleaned.map((tag) => (tag.startsWith('#') ? tag : `#${tag.replace(/^#+/, '')}`));
   }
-  return cleaned.join('\n').slice(0, options.limit || 4000);
+  return cleaned;
 }
 
 function numberValue(value, fallback = 0) {
@@ -364,7 +366,10 @@ function parseTransformationPlan(meta, response) {
     risk_warning: textValue(plan.risk_warning, 1000),
     originality_checklist: listValue(plan.originality_checklist, { limit: 3000 }),
     render_plan: render,
-    transformation_plan: JSON.stringify(parseError ? { parse_error: parseError, raw: response } : plan).slice(0, 40000),
+    // transformation_plan is jsonb: the object goes in as an object. A JSON
+    // string would land as a string scalar, and the 40k slice was a cell limit
+    // that would now produce unparseable JSON.
+    transformation_plan: parseError ? { parse_error: parseError, raw: response } : plan,
     review_status: parseError || !title ? 'NEEDS_RETRY' : 'NEEDS_REVIEW',
   };
 }

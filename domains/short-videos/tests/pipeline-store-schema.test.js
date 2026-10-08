@@ -66,7 +66,7 @@ test('clip and render tables use arrays, jsonb and real timestamps', () => {
   assert.match(schema, /originality_checklist\s+text\[\]/);
   assert.match(schema, /transformation_plan\s+jsonb/);
 
-  assert.match(schema, /CHECK\s*\(\s*review_status IN\s*\(\s*'AWAITING_DOWNLOAD', 'NEEDS_REVIEW', 'APPROVED', 'REJECTED'\)\)/);
+  assert.match(schema, /CHECK\s*\(\s*review_status IN\s*\(\s*'AWAITING_DOWNLOAD', 'NEEDS_RETRY', 'NEEDS_REVIEW', 'APPROVED', 'REJECTED'\)\)/);
   assert.match(schema, /download_job_id\s+text/);
   assert.doesNotMatch(schema, /ssemble_job_id/);
 

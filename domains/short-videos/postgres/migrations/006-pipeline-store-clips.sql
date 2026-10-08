@@ -49,8 +49,12 @@ CREATE TABLE IF NOT EXISTS short_videos.created_clips (
   review_status              text NOT NULL DEFAULT 'AWAITING_DOWNLOAD',
   reviewer_notes             text,
   created_at                 timestamptz NOT NULL DEFAULT now(),
+  -- NEEDS_RETRY is what WF8 writes when the transformation plan fails to parse
+  -- or comes back without a title: the clip exists, the plan does not, and the
+  -- operator must not see it in the review queue. Leaving it out of this list
+  -- made every such write fail the constraint.
   CONSTRAINT created_clips_review_status_check CHECK (review_status IN (
-    'AWAITING_DOWNLOAD', 'NEEDS_REVIEW', 'APPROVED', 'REJECTED'))
+    'AWAITING_DOWNLOAD', 'NEEDS_RETRY', 'NEEDS_REVIEW', 'APPROVED', 'REJECTED'))
 );
 
 -- The review UI's first screen reads exactly this set.
