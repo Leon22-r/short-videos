@@ -4,7 +4,7 @@
 
 **Goal:** Move the entire short-videos pipeline state machine from 13 Google Sheets tabs to 12 Postgres tables in Supabase, and give the three human touchpoints a tailnet-private web UI.
 
-**Architecture:** All DDL ships as numbered, idempotent migration files replayed by the existing `run-migrations.sh`. The 5 workflow generators swap their local `sheet()` helper for a `table()` helper that emits `n8n-nodes-base.postgres` nodes reading from `.sql` files, so all 16 workflows are regenerated rather than hand-edited. Writes become one `INSERT ... ON CONFLICT` statement taking a `jsonb` row array, following the proven `upsert-publishing-jobs.sql` pattern. The review UI is a zero-dependency Node HTTP server talking to Supabase over PostgREST, with the one multi-table write done by a Postgres function.
+**Architecture:** All DDL ships as numbered, idempotent migration files replayed by `scripts/apply-migrations.sh` (and the container `run-migrations.sh`), recorded to `short_videos.schema_migrations`. The 5 workflow generators swap their local `sheet()` helper for a `table()` helper that emits `n8n-nodes-base.postgres` nodes reading from `.sql` files, so all 16 workflows are regenerated rather than hand-edited. Writes become one `INSERT ... ON CONFLICT` statement taking a `jsonb` row array, following the proven `upsert-publishing-jobs.sql` pattern. The review UI is a zero-dependency Node HTTP server talking to Supabase over PostgREST, with the one multi-table write done by a Postgres function.
 
 **Tech Stack:** Node 26 (no npm dependencies, no build step), `node --test`, Postgres 16 / Supabase, n8n 2.25.7, Docker Compose.
 
