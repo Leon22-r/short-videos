@@ -228,8 +228,11 @@ return [{ json: buildMomentStatus(req, 'COMPLETED'), pairedItem: { item: 0 } }];
       codeNode('wf6-020', 'Mark Moment Error', [2200, 240], `${h}
 const req = $('Download Loop').first().json;
 const out = $input.first().json;
-return [{ json: buildMomentStatus(req, 'ERROR', { error_message: String(out.stderr || out.error || out.message || 'yt-dlp download failed').slice(0, 1000) }), pairedItem: { item: 0 } }];`),
-      postgresNode('wf6-021', 'Update Moment Error', [2420, 240], postgresSql('update-moment-download-status'), ROWS),
+return [{ json: buildMomentStatus(req, 'ERROR', { error_message: String(out.stderr || out.error || out.message || 'yt-dlp download failed') }), pairedItem: { item: 0 } }];`),
+      // The error branch carries yt-dlp's stderr in error_message, so it writes one
+      // column more than the success path. clip_moments.error_message exists for
+      // exactly this (finding 16).
+      postgresNode('wf6-021', 'Update Moment Error', [2420, 240], postgresSql('update-moment-download-error'), ROWS),
       node('wf6-022', 'Wait 2s Completed', 'n8n-nodes-base.wait', 1.1, [4180, -40], { amount: 2 }),
       node('wf6-023', 'Wait 2s Failed', 'n8n-nodes-base.wait', 1.1, [2640, 240], { amount: 2 }),
     ],

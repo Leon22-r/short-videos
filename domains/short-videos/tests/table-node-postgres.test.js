@@ -384,3 +384,30 @@ test('real Postgres: every committed WF11-WF14 query runs against the schema', {
       '004-pipeline-store-sources.sql', '005-pipeline-store-analysis.sql', '006-pipeline-store-clips.sql',
       '007-pipeline-store-assets.sql', '008-pipeline-store-publishing.sql', '009-publishing-jobs-retypes.sql']);
 });
+
+// Finding 16: WF6's error branch carries yt-dlp's stderr. Before
+// clip_moments.error_message existed, the writer-scoped column list dropped it
+// and a failed download recorded the state but not the reason.
+test('real Postgres: a failed download keeps the reason, not just the state', { skip: !available }, async () => {
+  const q = (name) => fs.readFileSync(path.join(root, 'postgres/queries', `${name}.sql`), 'utf8');
+  await withCluster(async ({ sql, run }) => {
+    sql(`INSERT INTO short_videos.source_channels (source_id, niche, source_name, youtube_channel_url)
+         VALUES ('src-1', 'FINANCE_BUSINESS', 'Example', 'https://youtube.com/@example');`);
+    run(q('upsert-candidate-videos'), [{ video_id: 'v1', niche: 'FINANCE_BUSINESS', youtube_video_id: 'yt1', processing_status: 'NEW' }]);
+    // created_at is in the writer's column list, so the row must carry it: a
+    // named NOT NULL column lands as an explicit NULL rather than its default.
+    run(q('upsert-clip-moments'), [{
+      clip_moment_id: 'CM-1', video_id: 'v1', niche: 'FINANCE_BUSINESS',
+      download_status: 'PENDING', created_at: '2026-10-09T00:00:00Z',
+    }]);
+
+    run(q('update-moment-download-status'), [{ clip_moment_id: 'CM-1', download_status: 'SUBMITTED', download_job_id: 'YTDLP-CM-1' }]);
+    // stderr far longer than the 1000-character slice the Sheets cell needed.
+    const stderr = `ERROR: unable to download video data: HTTP Error 403\n${'stack frame\n'.repeat(400)}`;
+    run(q('update-moment-download-error'), [{
+      clip_moment_id: 'CM-1', download_status: 'ERROR',
+      download_job_id: 'YTDLP-CM-1', error_message: stderr,
+    }]);
+    assert.equal(sql("SELECT download_status, length(error_message) > 1000, error_message LIKE 'ERROR: unable%' FROM short_videos.clip_moments WHERE clip_moment_id = 'CM-1';"), 'ERROR|t|t');
+  }, ['004-pipeline-store-sources.sql', '005-pipeline-store-analysis.sql']);
+});
