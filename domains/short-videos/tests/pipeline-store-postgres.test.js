@@ -29,7 +29,7 @@ async function withCluster(body) {
     command('pg_ctl', ['-D', data, '-l', path.join(temp, 'postgres.log'), '-o', `-h '' -k ${temp} -p 55441`, '-w', 'start']);
     started = true;
     sql(fs.readFileSync(path.join(root, 'postgres/init/001-publishing-queue.sql'), 'utf8'));
-    await body({ sql, file });
+    await body({ sql, file, temp });
   } finally {
     if (started) { try { command('pg_ctl', ['-D', data, '-w', 'stop']); } catch {} }
     fs.rmSync(temp, { recursive: true, force: true });
@@ -99,6 +99,26 @@ test('real Postgres: a second active branding row for a niche is rejected at wri
     );
     // An inactive duplicate is how an operator keeps an old branding row around.
     insert('FINANCE_BUSINESS', 'false');
+  });
+});
+
+// Finding B: run-migrations.sh records applied migrations to schema_migrations atomically
+test('real Postgres: run-migrations records applied versions to schema_migrations', { skip: !available }, async () => {
+  await withCluster(async ({ sql, temp }) => {
+    const runner = path.resolve(root, '../../hosts/shared/postgres/run-migrations.sh');
+    const targetUrl = `postgresql://postgres@/postgres?host=${temp}&port=55441`;
+
+    // First run applies all migrations and writes the ledger
+    execFileSync(runner, [targetUrl, migrationsDir], { encoding: 'utf8', env: { ...process.env, PATH: `${pgBin}:${process.env.PATH}` } });
+
+    const expectedVersions = migrationFiles().map(f => path.basename(f));
+    const recorded = sql("SELECT string_agg(version, E'\\n' ORDER BY version) FROM short_videos.schema_migrations").split('\n');
+    assert.deepEqual(recorded, expectedVersions, 'schema_migrations should match disk migrations');
+
+    // Replay run does not duplicate versions
+    execFileSync(runner, [targetUrl, migrationsDir], { encoding: 'utf8', env: { ...process.env, PATH: `${pgBin}:${process.env.PATH}` } });
+    const count = sql('SELECT count(*) FROM short_videos.schema_migrations');
+    assert.equal(count, String(expectedVersions.length), 'replay must not duplicate rows');
   });
 });
 
