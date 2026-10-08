@@ -1,6 +1,6 @@
 #!/bin/sh
 # Probes a Postgres URL from inside a container on heavy-net, the way n8n will
-# reach it. Prints the server version and the pooling mode on success.
+# reach it. Prints the server version and connection target.
 set -eu
 
 if [ "$#" -ne 1 ]; then
@@ -18,4 +18,4 @@ docker run --rm --network "$NETWORK" \
   docker.io/library/postgres:16-alpine \
   psql "$1" -X -Atq -v ON_ERROR_STOP=1 \
     -c "SELECT 'connected: ' || version();" \
-    -c "SELECT 'pooling: ' || coalesce(current_setting('pgbouncer.pool_mode', true), 'none (direct)');"
+    -c "SELECT 'backend: ' || current_database() || ' on ' || inet_server_addr() || ':' || inet_server_port();"

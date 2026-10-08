@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS short_videos.candidate_videos (
   source_name           text,
   video_title           text,
   video_url             text,
-  youtube_video_id      text NOT NULL UNIQUE,
+  youtube_video_id      text NOT NULL,
   duration_seconds      integer,
   published_at          timestamptz,
   view_count            bigint,
@@ -71,3 +71,6 @@ CREATE TABLE IF NOT EXISTS short_videos.candidate_videos (
 CREATE INDEX IF NOT EXISTS candidate_videos_pending_idx
   ON short_videos.candidate_videos (processing_status, source_id)
   WHERE processing_status = 'NEW';
+
+CREATE INDEX IF NOT EXISTS candidate_videos_youtube_video_id_idx
+  ON short_videos.candidate_videos (youtube_video_id);

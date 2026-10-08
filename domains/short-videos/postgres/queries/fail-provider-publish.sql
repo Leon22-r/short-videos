@@ -9,11 +9,11 @@ SET publish_status = CASE
       WHEN publishing_backend = 'POSTIZ' AND postiz_submitted_at IS NOT NULL AND $3 = 'RETRY_PENDING' THEN 'POSTIZ_RECONCILIATION_REQUIRED: ' || $6
       ELSE $6
     END,
-    provider_response = COALESCE(NULLIF($7, '')::jsonb, provider_response),
+    provider_response = CASE WHEN NULLIF(btrim($7), '') IS NULL THEN provider_response ELSE $7::jsonb END,
     poll_after = NULL,
     provider_poll_deadline = NULL,
     claimed_at = NULL,
-    claimed_by = '',
+    claimed_by = NULL,
     lease_expires_at = NULL,
     updated_at = now()
 WHERE publish_id = $1
