@@ -1,0 +1,18 @@
+# Operator-facing, tailnet-only. Deliberately not on public-net and
+# deliberately not on the heavy host: this box holds exactly one secret,
+# the Supabase service key.
+services:
+  review-ui:
+    build: .
+    container_name: review-ui
+    restart: unless-stopped
+    mem_limit: 64m
+    # Bound to the tailnet address, never 0.0.0.0. The network is the
+    # authentication (D5), so a wrong bind address is the whole security model.
+    ports:
+      - "${REVIEW_BIND_ADDRESS:?REVIEW_BIND_ADDRESS must be set}:${REVIEW_PORT:-8080}:8080"
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:?SUPABASE_SERVICE_KEY must be set}
+      REVIEW_BIND_ADDRESS: "0.0.0.0"
+      REVIEW_PORT: "8080"

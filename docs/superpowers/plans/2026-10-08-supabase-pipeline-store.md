@@ -2702,6 +2702,23 @@ module.exports = { select, insert, patch, rpc };
 
 - [ ] **Step 6: Write `server.js`**
 
+Three changes to the sketch below, applied when this task was executed:
+
+1. `new URL(request.url, ...)` sits **inside** a `try`, and falls back to
+   `127.0.0.1` when `Host` is absent. As written outside the try, a malformed
+   or missing `Host` header throws out of the request handler rather than
+   answering 400.
+2. A `sameOrigin(request, host)` guard rejects any non-GET whose
+   `Sec-Fetch-Site` is `cross-site`/`same-site`, or whose `Origin` does not
+   match the host, with 403. D5 makes the network the authentication, so there
+   is no session to bind a CSRF token to — without this guard any page the
+   operator has open can POST an approval or a rejection. A client sending
+   neither header is treated as a plain form post.
+3. `server.listen` is guarded by `require.main === module` and the module
+   exports `{ server, sameOrigin }`, so the guard is unit-testable without
+   binding a port or reaching Supabase.
+
+
 ```js
 const http = require('node:http');
 const render = require('./render');
@@ -2866,6 +2883,15 @@ Run: `npm test`
 Expected: all PASS.
 
 - [ ] **Step 10: Smoke-test it against the real Supabase project**
+
+This step needs Tasks 3–7 and 10 merged (the tables and the `approve_clip` /
+`reject_clip` functions) plus `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`, which
+are the PostgREST API credentials from Project Settings → API and are *not* the
+database connection string from Task 1. Until both are available, run the same
+checks against a stub PostgREST on localhost: it proves the routes, the
+PostgREST query strings, the HTML escaping, the 403 on a cross-site POST and
+the absence of any credential in the page, and leaves only the real schema and
+the two functions unproven.
 
 ```bash
 docker compose -f hosts/compose.local.yaml up -d --build review-ui

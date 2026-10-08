@@ -267,3 +267,21 @@ test('the env template supplies no usable value for any required secret', () => 
       `${match[1]} ships a usable value in the template; required secrets must be unset or commented out`);
   }
 });
+
+// The review UI holds the Supabase service key, which bypasses row-level
+// security. D5 makes the tailnet the authentication, so the published bind
+// address is the entire boundary: a default would silently publish the UI.
+test('the review UI is not on public-net and is not published on all interfaces', () => {
+  const compose = read('hosts/review/compose.yaml');
+  assert.doesNotMatch(compose, /public-net/);
+  assert.doesNotMatch(compose, /"0\.0\.0\.0:/);
+  assert.match(compose, /REVIEW_BIND_ADDRESS:\?/, 'the bind address must be required, not defaulted');
+  assert.match(compose, /mem_limit: 64m/);
+});
+
+test('the review UI never renders its Supabase credential into a page', () => {
+  const render = readRaw('hosts/review/render.js');
+  for (const forbidden of [/SUPABASE_SERVICE_KEY/, /process\.env/]) {
+    assert.doesNotMatch(render, forbidden, 'render.js is pure and must read no credential');
+  }
+});

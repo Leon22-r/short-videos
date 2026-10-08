@@ -20,6 +20,11 @@ test('runtime lives under hosts/ and is split by trust level', () => {
     'hosts/shared/postgres/compose.yaml',
     'hosts/shared/postgres/run-migrations.sh',
     'hosts/shared/traefik/compose.yaml',
+    'hosts/review/compose.yaml',
+    'hosts/review/Dockerfile',
+    'hosts/review/server.js',
+    'hosts/review/render.js',
+    'hosts/review/postgrest.js',
     'hosts/.env.example',
     'hosts/AWS-DEPLOY.md',
   ]) {
