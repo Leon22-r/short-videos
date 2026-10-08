@@ -1,6 +1,8 @@
 # Postgres Publishing Queue
 
-Postgres is the source of truth for publishing job state. Google Sheets remains the human-readable mirror used for approvals, routing metadata, and operations.
+Postgres is the source of truth for publishing job state. The tailnet-private
+Review UI provides human approvals and operations over
+`short_videos.approved_for_posting` and `short_videos.publishing_channels`.
 
 Migration `003-postiz-publishing.sql` adds opt-in `POSTIZ` jobs while preserving existing jobs as `DIRECT`. Backend and Postiz integration are immutable through Sheet sync; all Postiz metadata freezes on first dispatch. Dedicated live-lease-guarded queries save media, acquire a single-winner submission intent, record the external post ID and complete reconciliation. Post-intent failures cannot be released for automatic resubmission by WF14. See [Postiz publishing](postiz-publishing.md) for the complete contract; direct-provider credential/media requirements below apply only to `DIRECT` jobs.
 
@@ -25,16 +27,15 @@ WF12 also contains four fixed provider credential bindings: `YouTube Publishing 
 
 ## Queue behavior
 
-- WF11 upserts the full Sheet snapshot plus newly approved jobs. Conflict updates refresh metadata but do not overwrite database-owned status, retry, claim, or provider-result fields.
+- WF11 builds jobs directly from approved rows in `short_videos.approved_for_posting` and enabled channels in `short_videos.publishing_channels`. Conflict updates refresh metadata but do not overwrite database-owned status, retry, claim, or provider-result fields.
 - WF12 atomically selects and claims one due row using `FOR UPDATE SKIP LOCKED`.
 - A retried claim with the same n8n execution ID returns that worker's existing live claim, preventing an ambiguous connection failure from claiming a second job.
 - `CLAIMED` and `UPLOADING` rows become recoverable after their lease expires.
 - Provider checkpoints are stored in `provider_stage`, `provider_ref`, `provider_response`, and `poll_after`. This allows later WF12 executions to resume YouTube sessions or poll asynchronous provider work without reinitializing it.
 - Provider reconciliation is bounded by `provider_poll_count` and `provider_poll_deadline`; an exhausted job becomes `FAILED` with a manual-reconciliation reason instead of starving newer work forever.
-- `provider_upload_url` stores YouTube resumable session URIs and Meta upload URLs. These URLs may be signed or bearer-like and remain Postgres-only. Do not mirror them to Google Sheets or application logs.
-- Safe provider stages visible in the Sheet mirror are `YOUTUBE_SESSION`, `YOUTUBE_PROCESSING`, `FACEBOOK_VIDEO_CREATED`, `FACEBOOK_PROCESSING`, `INSTAGRAM_CONTAINER`, `INSTAGRAM_PUBLISH_REQUESTED`, `INSTAGRAM_MEDIA_PUBLISHED`, `INSTAGRAM_PUBLISHED`, and `TIKTOK_PROCESSING`.
+- `provider_upload_url` stores YouTube resumable session URIs and Meta upload URLs. These URLs may be signed or bearer-like and remain Postgres-only. Do not leak them to external interfaces or application logs.
+- Safe provider stages visible to operators are `YOUTUBE_SESSION`, `YOUTUBE_PROCESSING`, `FACEBOOK_VIDEO_CREATED`, `FACEBOOK_PROCESSING`, `INSTAGRAM_CONTAINER`, `INSTAGRAM_PUBLISH_REQUESTED`, `INSTAGRAM_MEDIA_PUBLISHED`, `INSTAGRAM_PUBLISHED`, and `TIKTOK_PROCESSING`.
 - WF14 atomically resets due retries and terminalizes rows whose retry count reached four.
-- Database transitions are mirrored to Sheets after the transaction commits.
 
 ## Provider media and terminal boundaries
 
@@ -46,10 +47,9 @@ WF12 also contains four fixed provider credential bindings: `YouTube Publishing 
 
 ## Move to Neon
 
-1. Create a Neon database and run `domains/short-videos/postgres/init/001-publishing-queue.sql` against it.
+1. Create a Neon database and run `domains/short-videos/postgres/migrations/*.sql` against it.
 2. Create or update the n8n `Postgres` credential with Neon host, database, user, password, and required SSL.
 3. Bind that credential to every publishing Postgres node.
-4. Run WF11 once to seed the Neon queue from the current Sheet snapshot.
-5. Verify row counts and statuses, then test two concurrent private/draft claims before enabling provider work.
+4. Verify row counts and statuses, then test two concurrent private/draft claims before enabling provider work.
 
 The SQL uses standard PostgreSQL features and no local-only extensions, so the workflow files do not change when switching to Neon.

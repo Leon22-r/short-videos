@@ -34,11 +34,12 @@ token would execute arbitrary code inside the credential-holding instance.
 
 ```
 hosts/
-  compose.local.yaml      # name: n8n, includes shared/postgres + heavy (+ jaeger)
-  compose.prod.yaml       # name: n8n, includes shared/postgres + shared/traefik + heavy
+  compose.local.yaml      # name: n8n, includes shared/postgres + heavy + public + review (+ jaeger)
+  compose.prod.yaml       # name: n8n, includes shared/postgres + shared/traefik + heavy + review
   .env.example            # copy to hosts/.env, which is never committed
   heavy/                  # Dockerfile, runners/, compose.yaml
   public/                 # compose.yaml
+  review/                 # tailnet-private review UI (PostgREST-backed, zero dependencies)
   shared/postgres/        # one server, one database and role per domain
   shared/traefik/         # public ingress
 ```
