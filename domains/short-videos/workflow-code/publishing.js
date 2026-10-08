@@ -57,10 +57,16 @@ function normalizeStatus(status) {
   return PLATFORM_STATUSES.has(value) ? value : '';
 }
 
+// approved_for_posting.platforms is text[] now (Task 7), with a cardinality
+// check behind it, so there is nothing to split. A string is still accepted:
+// the column held a comma-separated list in the Sheets era, and a row carried
+// over from then must not silently resolve to no platforms. Blank still does
+// not mean all platforms.
 function splitPlatforms(value) {
-  if (!clean(value)) return [];
-  const platforms = String(value)
-    .split(/[,\n|]/)
+  const items = Array.isArray(value)
+    ? value
+    : (clean(value) ? String(value).split(/[,\n|]/) : []);
+  const platforms = items
     .map(normalizePlatform)
     .filter(Boolean)
     .filter((platform) => PLATFORMS.includes(platform));
@@ -223,7 +229,7 @@ function buildPublishingJobs(approvedRows, renderRows, createdRows, channelRows,
     if (!renderReady(render)) continue;
 
     const niche = clean(approved.niche || render.niche || created.niche);
-    const requestedPlatforms = splitPlatforms(approved.platform);
+    const requestedPlatforms = splitPlatforms(approved.platforms ?? approved.platform);
     for (const platform of requestedPlatforms) {
       const matchingChannels = channels.filter((channel) => {
         if (normalizePlatform(channel.platform) !== platform) return false;

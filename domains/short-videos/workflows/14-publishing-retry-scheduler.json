@@ -48,54 +48,6 @@
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000
-    },
-    {
-      "id": "wf14-002b",
-      "name": "Redact Retry State For Sheet",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        330,
-        0
-      ],
-      "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "return $input.all().map((item, index) => {\n  const json = { ...item.json };\n  delete json.provider_upload_url;\n  delete json.provider_response;\n  delete json.payload;\n  delete json.public_video_url;\n  delete json.local_file_path;\n  delete json.postiz_media_path;\n  delete json.postiz_submit_payload;\n  return { json, pairedItem: { item: index } };\n});"
-      }
-    },
-    {
-      "id": "wf14-003",
-      "name": "Mirror Retry State",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
-      "position": [
-        440,
-        0
-      ],
-      "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Publishing_Jobs"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "publish_id"
-          ]
-        }
-      },
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 5000
     }
   ],
   "connections": {
@@ -104,28 +56,6 @@
         [
           {
             "node": "Release Due Retries Atomically",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Release Due Retries Atomically": {
-      "main": [
-        [
-          {
-            "node": "Redact Retry State For Sheet",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Redact Retry State For Sheet": {
-      "main": [
-        [
-          {
-            "node": "Mirror Retry State",
             "type": "main",
             "index": 0
           }
