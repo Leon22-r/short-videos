@@ -55,3 +55,25 @@ test('analysis tables drop the truncation columns and apply the D7 rename', () =
 
   assert.doesNotMatch(schema, /text NOT NULL DEFAULT ''/);
 });
+
+test('clip and render tables use arrays, jsonb and real timestamps', () => {
+  const schema = read('postgres/migrations/006-pipeline-store-clips.sql');
+
+  // Section 1 item 3: the newline-separated lists become real arrays.
+  assert.match(schema, /alternative_titles\s+text\[\]/);
+  assert.match(schema, /on_screen_text_beats\s+text\[\]/);
+  assert.match(schema, /broll_plan\s+text\[\]/);
+  assert.match(schema, /originality_checklist\s+text\[\]/);
+  assert.match(schema, /transformation_plan\s+jsonb/);
+
+  assert.match(schema, /CHECK\s*\(\s*review_status IN\s*\(\s*'AWAITING_DOWNLOAD', 'NEEDS_REVIEW', 'APPROVED', 'REJECTED'\)\)/);
+  assert.match(schema, /download_job_id\s+text/);
+  assert.doesNotMatch(schema, /ssemble_job_id/);
+
+  assert.match(schema, /CHECK\s*\(\s*render_status IN\s*\(\s*'PENDING', 'DOWNLOADING_ASSETS', 'RENDERING', 'UPLOADING', 'COMPLETED', 'FAILED', 'SKIPPED'\)\)/);
+  assert.match(schema, /use_blurred_background\s+boolean/);
+  assert.match(schema, /started_at\s+timestamptz/);
+  assert.match(schema, /completed_at\s+timestamptz/);
+
+  assert.doesNotMatch(schema, /text NOT NULL DEFAULT ''/);
+});

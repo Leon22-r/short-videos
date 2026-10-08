@@ -61,4 +61,25 @@ test('real Postgres: the full migration set is idempotent under replay', { skip:
   });
 });
 
+// Review Focus 4: a newline-joined list that is empty must not become {""}.
+// A one-element array holding the empty string silently breaks every
+// downstream array_length() and unnest().
+test('real Postgres: empty newline lists become NULL or {}, never {""}', { skip: !available }, async () => {
+  await withCluster(async ({ sql, file }) => {
+    for (const migration of migrationFiles()) file(migration);
+
+    const split = (value) => sql(
+      `SELECT coalesce(array_to_json(short_videos.split_lines(${value}))::text, 'null')`);
+
+    assert.equal(split("''"), 'null', 'empty string must not become an array');
+    assert.equal(split("'   '"), 'null', 'whitespace-only must not become an array');
+    assert.equal(split('NULL'), 'null');
+    assert.equal(split("'a'"), '["a"]');
+    assert.equal(split("E'a\\nb'"), '["a","b"]');
+    // A trailing newline is what a Sheets cell actually contained.
+    assert.equal(split("E'a\\nb\\n'"), '["a","b"]', 'trailing newline must not add an empty element');
+    assert.equal(split("E'a\\n\\nb'"), '["a","b"]', 'blank interior lines must be dropped');
+  });
+});
+
 module.exports = { withCluster, migrationFiles, available, pgBin };
