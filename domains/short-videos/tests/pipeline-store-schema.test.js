@@ -32,3 +32,26 @@ test('source and candidate tables are typed, constrained and replay-safe', () =>
   // Status values live in CHECK constraints, not enum types.
   assert.doesNotMatch(schema, /CREATE TYPE/i);
 });
+
+test('analysis tables drop the truncation columns and apply the D7 rename', () => {
+  const schema = read('postgres/migrations/005-pipeline-store-analysis.sql');
+
+  assert.match(schema, /transcript_text\s+text/);
+  assert.match(schema, /ai_json_output\s+jsonb/);
+  assert.match(schema, /CHECK\s*\(\s*transcript_status IS NULL OR transcript_status IN \('FETCHED', 'FAILED'\)\)/);
+  assert.match(schema, /CHECK\s*\(\s*recommended_strategy IS NULL OR recommended_strategy IN \(\s*'USE_20_MIN_WINDOW', 'USE_EXACT_CLIPS_ONLY', 'SKIP_THIS_VIDEO'\)\)/);
+
+  // Section 1 item 1: Postgres text is unbounded, so the Drive stash is deleted.
+  assert.doesNotMatch(schema, /transcript_full_url/);
+  assert.doesNotMatch(schema, /transcript_full_file_id/);
+
+  // D7: the legacy ssemble_* names do not survive.
+  assert.match(schema, /download_status\s+text/);
+  assert.match(schema, /download_job_id\s+text/);
+  assert.doesNotMatch(schema, /ssemble_status/);
+  assert.doesNotMatch(schema, /ssemble_job_id/);
+  assert.match(schema, /CHECK\s*\(\s*download_status IN \(\s*'PENDING', 'SUBMITTED', 'COMPLETED', 'ERROR', 'AWAITING_MANUAL_APPROVAL'\)\)/);
+  assert.match(schema, /CHECK\s*\(\s*final_recommendation IS NULL OR final_recommendation IN\s*\(\s*'clip', 'use_as_idea_only', 'skip'\)\)/);
+
+  assert.doesNotMatch(schema, /text NOT NULL DEFAULT ''/);
+});
