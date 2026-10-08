@@ -6,6 +6,9 @@ const path = require('node:path');
 const DOMAIN_ROOT = path.join(__dirname, '..');
 
 const WORKFLOW_OUTPUT_DIR = process.env.N8N_WORKFLOW_OUTPUT_DIR || path.join(DOMAIN_ROOT, 'workflows');
+// Every item the node received, as a jsonb array in $1.
+const ROWS = '={{ JSON.stringify($input.all().map(item => item.json)) }}';
+
 const postgresSql = (name) => fs.readFileSync(path.join(DOMAIN_ROOT, 'postgres/queries', `${name}.sql`), 'utf8').trim();
 
 const helper = (name) => {
@@ -220,8 +223,8 @@ function wf6() {
     name: 'WF6 yt-dlp Clip Download',
     nodes: [
       node('wf6-001', 'Schedule 15m', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'minutes', minutesInterval: 15 }] } }),
-      sheetsNode('wf6-002', 'Read Clip_Moments', [220, 0], sheet('read', 'Clip_Moments')),
-      sheetsNode('wf6-003', 'Read Created_Clips', [440, 0], sheet('read', 'Created_Clips'), { alwaysOutputData: true }),
+      postgresNode('wf6-002', 'Read Clip_Moments', [220, 0], postgresSql('select-clip-moments')),
+      postgresNode('wf6-003', 'Read Created_Clips', [440, 0], postgresSql('select-created-clips'), '', { alwaysOutputData: true }),
       codeNode('wf6-004', 'Plan yt-dlp Downloads', [660, 0], `${h}
 const requests = planYtDlpDownloads(
   $('Read Clip_Moments').all().map(i => i.json),
@@ -238,7 +241,7 @@ return [{ json: { ...req, command }, pairedItem: { item: 0 } }];`),
       codeNode('wf6-007', 'Mark Moment Downloading', [1320, 120], `${h}
 const req = $('Download Loop').first().json;
 return [{ json: buildMomentStatus(req, 'SUBMITTED'), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf6-008', 'Update Moment Downloading', [1540, 120], sheet('appendOrUpdate', 'Clip_Moments', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] } })),
+      postgresNode('wf6-008', 'Update Moment Downloading', [1540, 120], postgresSql('update-moment-download-status'), ROWS),
       node('wf6-009', 'Run yt-dlp', 'n8n-nodes-base.executeCommand', 1, [1760, 120], { command: '={{ $("Build yt-dlp Command").first().json.command }}' }, { onError: 'continueRegularOutput' }),
       ifNode('wf6-010', 'Download Succeeded?', [1980, 120], '={{ $json.exitCode }}', 0, 'number', 'equals'),
       codeNode('wf6-011', 'Build Portrait Command', [2200, 40], `${h}
@@ -253,16 +256,16 @@ return [{ json: { ...req, command }, pairedItem: { item: 0 } }];`),
 const req = $('Download Loop').first().json;
 const drive = $input.first().json;
 return [{ json: buildCreatedClipRow(req, drive), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf6-017', 'Save Created Clip', [3520, -40], sheet('appendOrUpdate', 'Created_Clips', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['created_clip_id'] } })),
+      postgresNode('wf6-017', 'Save Created Clip', [3520, -40], postgresSql('upsert-created-clips'), ROWS),
       codeNode('wf6-018', 'Mark Moment Completed', [3740, -40], `${h}
 const req = $('Download Loop').first().json;
 return [{ json: buildMomentStatus(req, 'COMPLETED'), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf6-019', 'Update Moment Completed', [3960, -40], sheet('appendOrUpdate', 'Clip_Moments', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] } })),
+      postgresNode('wf6-019', 'Update Moment Completed', [3960, -40], postgresSql('update-moment-download-status'), ROWS),
       codeNode('wf6-020', 'Mark Moment Error', [2200, 240], `${h}
 const req = $('Download Loop').first().json;
 const out = $input.first().json;
 return [{ json: buildMomentStatus(req, 'ERROR', { error_message: String(out.stderr || out.error || out.message || 'yt-dlp download failed').slice(0, 1000) }), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf6-021', 'Update Moment Error', [2420, 240], sheet('appendOrUpdate', 'Clip_Moments', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] } })),
+      postgresNode('wf6-021', 'Update Moment Error', [2420, 240], postgresSql('update-moment-download-status'), ROWS),
       node('wf6-022', 'Wait 2s Completed', 'n8n-nodes-base.wait', 1.1, [4180, -40], { amount: 2 }),
       node('wf6-023', 'Wait 2s Failed', 'n8n-nodes-base.wait', 1.1, [2640, 240], { amount: 2 }),
     ],

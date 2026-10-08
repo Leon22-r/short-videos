@@ -19,7 +19,7 @@ const PORT = '55443';
 // it is to run it. These tables carry integer, bigint, numeric, boolean and
 // timestamptz columns, and the text projection the publishing queue uses fails
 // on every one of them.
-async function withCluster(body) {
+async function withCluster(body, migrations = ['004-pipeline-store-sources.sql']) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'table-node-test-'));
   const data = path.join(temp, 'data');
   const args = ['-X', '-h', temp, '-p', PORT, '-U', 'postgres', '-d', 'postgres', '-Atq', '-v', 'ON_ERROR_STOP=1'];
@@ -31,7 +31,9 @@ async function withCluster(body) {
     command('pg_ctl', ['-D', data, '-l', path.join(temp, 'postgres.log'), '-o', `-h '' -k ${temp} -p ${PORT}`, '-w', 'start']);
     started = true;
     sql('CREATE SCHEMA IF NOT EXISTS short_videos;');
-    sql(fs.readFileSync(path.join(root, 'postgres/migrations/004-pipeline-store-sources.sql'), 'utf8'));
+    for (const migration of migrations) {
+      sql(fs.readFileSync(path.join(root, 'postgres/migrations', migration), 'utf8'));
+    }
     // Rows arrive from a Code node as a jsonb array, so $1 is substituted the
     // way the Postgres node substitutes queryReplacement.
     const run = (statement, rows) => {
@@ -190,4 +192,87 @@ test('real Postgres: every committed WF1-WF3 query runs against the schema', { s
     assert.equal(sql("SELECT uploads_playlist_id, backfill_next_page_token IS NULL, videos_fetched_count FROM short_videos.source_channels WHERE source_id = 'src-1';"), 'UU0123456789012345678901|t|120');
     assert.equal(sql("SELECT validity_status, validity_score, rejection_reason IS NULL, processing_status FROM short_videos.candidate_videos WHERE video_id = 'v1';"), 'VALID|8|t|ANALYZED');
   });
+});
+
+// WF4, WF5 and WF6 write five more tables. Same reason as the WF1-WF3 case:
+// the committed .sql is what n8n runs, so a column renamed in a migration has
+// to fail here rather than at runtime.
+test('real Postgres: every committed WF4-WF6 query runs against the schema', { skip: !available }, async () => {
+  const q = (name) => fs.readFileSync(path.join(root, 'postgres/queries', `${name}.sql`), 'utf8');
+  await withCluster(async ({ sql, run }) => {
+    sql(`INSERT INTO short_videos.source_channels (source_id, niche, source_name, youtube_channel_url)
+         VALUES ('src-1', 'FINANCE_BUSINESS', 'Example', 'https://youtube.com/@example');`);
+    run(q('upsert-candidate-videos'), [{
+      video_id: 'v1', niche: 'FINANCE_BUSINESS', source_id: 'src-1', youtube_video_id: 'yt1',
+      video_title: 'A Title', duration_seconds: '1800', view_count: '50000', validity_status: 'VALID', processing_status: 'NEW',
+    }]);
+
+    // WF4: a transcript far past the old 45k cell limit, and no Drive columns.
+    const transcript = 'x'.repeat(120000);
+    run(q('upsert-transcript-analysis'), [{
+      analysis_id: 'AN-yt1', video_id: 'v1', niche: 'FINANCE_BUSINESS', source_id: 'src-1',
+      video_title: 'A Title', video_url: 'https://youtu.be/yt1', transcript_status: 'FETCHED',
+      transcript_text: transcript, transcript_length_words: '20000',
+      created_at: '2026-10-08T00:00:00Z',
+    }]);
+    assert.equal(sql("SELECT length(transcript_text) FROM short_videos.transcript_analysis WHERE analysis_id = 'AN-yt1';"), '120000');
+
+    run(q('update-candidate-transcript-ok'), [{ video_id: 'v1', transcript_available: 'true', language: 'en' }]);
+    run(q('update-candidate-transcript-failed'), [{
+      video_id: 'v1', transcript_available: 'false', validity_status: 'REJECTED',
+      rejection_reason: 'TRANSCRIPT_IP_BLOCKED', processing_status: 'SKIPPED',
+    }]);
+
+    // WF5: the AI fields, including jsonb, and a clip moment.
+    run(q('update-transcript-analysis-ai'), [{
+      analysis_id: 'AN-yt1', ai_episode_score: '8.5', recommended_strategy: 'USE_20_MIN_WINDOW',
+      recommended_start_sec: '120', recommended_end_sec: '1320', reason_for_strategy: 'dense',
+      rights_risk: 'low', permission_risk: 'low', monetization_risk: 'low',
+      originality_potential: '7', kenya_relevance: 'high',
+      // The Code node hands the object over, not a string: a JSON string would
+      // land in the jsonb column as a string scalar.
+      ai_json_output: { clips: [{ rank: 1 }] },
+    }]);
+    assert.equal(sql("SELECT ai_json_output->'clips'->0->>'rank', recommended_start_sec FROM short_videos.transcript_analysis WHERE analysis_id = 'AN-yt1';"), '1|120');
+
+    run(q('upsert-clip-moments'), [{
+      clip_moment_id: 'CM-1', video_id: 'v1', niche: 'FINANCE_BUSINESS', source_id: 'src-1',
+      rank: '1', start_sec: '120', end_sec: '180', clip_length_seconds: '60',
+      core_idea: 'An idea', needs_extra_context: 'false', originality_score: '7.5',
+      clip_score: '8', rights_risk: 'low', final_recommendation: 'clip',
+      download_status: 'AWAITING_MANUAL_APPROVAL', strategy: 'USE_20_MIN_WINDOW',
+      source_video_url: 'https://youtu.be/yt1', created_at: '2026-10-08T00:00:00Z',
+    }]);
+    run(q('update-candidate-analyzed'), [{ video_id: 'v1', processing_status: 'ANALYZED' }]);
+    run(q('update-candidate-skipped'), [{
+      video_id: 'v1', processing_status: 'SKIPPED', validity_status: 'REJECTED',
+      rejection_reason: 'Channel auto-paused: low yield',
+    }]);
+    run(q('update-source-health'), [{
+      source_id: 'src-1', total_analyzed_count: '12', channel_skip_rate: '0.75',
+      active_status: 'false', auto_paused_at: '2026-10-08T00:00:00Z',
+      auto_paused_reason: 'low yield', health_reset_at: '',
+    }]);
+    assert.equal(sql("SELECT active_status, channel_skip_rate, health_reset_at IS NULL FROM short_videos.source_channels WHERE source_id = 'src-1';"), 'f|0.75|t');
+
+    // WF6: the download status transition and the created clip.
+    run(q('update-moment-download-status'), [{ clip_moment_id: 'CM-1', download_status: 'SUBMITTED', download_job_id: 'YTDLP-CM-1' }]);
+    run(q('upsert-created-clips'), [{
+      created_clip_id: 'CC-CM-1', download_job_id: 'YTDLP-CM-1', video_id: 'v1',
+      clip_moment_id: 'CM-1', niche: 'FINANCE_BUSINESS', clip_title: 'A Clip',
+      clip_url: '', local_file_name: 'CC-CM-1.mp4', google_drive_file_id: 'drive-1',
+      google_drive_url: 'https://drive.google.com/file/d/drive-1/view',
+      duration_seconds: '60', transcript_excerpt: '', suggested_title: 'Suggested',
+      suggested_caption: 'Caption', transformation_plan: '', review_status: 'AWAITING_DOWNLOAD',
+      reviewer_notes: 'provider=yt-dlp', created_at: '2026-10-08T00:00:00Z',
+    }]);
+    run(q('update-moment-download-status'), [{ clip_moment_id: 'CM-1', download_status: 'COMPLETED', download_job_id: 'YTDLP-CM-1' }]);
+
+    assert.equal(sql("SELECT download_status FROM short_videos.clip_moments WHERE clip_moment_id = 'CM-1';"), 'COMPLETED');
+    assert.equal(sql("SELECT review_status, duration_seconds, transformation_plan IS NULL, clip_url IS NULL FROM short_videos.created_clips WHERE created_clip_id = 'CC-CM-1';"), 'AWAITING_DOWNLOAD|60|t|t');
+
+    for (const name of ['select-transcript-analysis', 'select-clip-moments', 'select-created-clips']) {
+      sql(q(name).replace(/;\s*$/, ''));
+    }
+  }, ['004-pipeline-store-sources.sql', '005-pipeline-store-analysis.sql', '006-pipeline-store-clips.sql']);
 });

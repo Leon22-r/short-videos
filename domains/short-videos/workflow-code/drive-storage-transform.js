@@ -166,15 +166,17 @@ function buildSchemaInstructions() {
 function pickAwaitingDownloads(clips, jobs, moments, folders, options = 5) {
   const limit = typeof options === 'number' ? options : Number(options.limit || 5);
   const perSourceLimit = typeof options === 'number' ? limit : Number(options.perSourceLimit || 1);
-  const jobsById = Object.fromEntries(jobs.map((job) => [job.ssemble_job_id, job]));
+  // D7 renamed the column on both sides. The legacy Ssemble_Jobs read itself
+  // goes away with WF8 in Task 14; until then it keys off the new name.
+  const jobsById = Object.fromEntries(jobs.map((job) => [job.download_job_id, job]));
   const momentsById = Object.fromEntries(moments.map((moment) => [moment.clip_moment_id, moment]));
 
   const enriched = clips
     .filter((clip) => String(clip.review_status) === 'AWAITING_DOWNLOAD')
     .map((clip) => {
-      const job = jobsById[clip.ssemble_job_id] || {};
-      const providerMomentId = String(clip.ssemble_job_id || '').startsWith('YTDLP-')
-        ? String(clip.ssemble_job_id).slice('YTDLP-'.length)
+      const job = jobsById[clip.download_job_id] || {};
+      const providerMomentId = String(clip.download_job_id || '').startsWith('YTDLP-')
+        ? String(clip.download_job_id).slice('YTDLP-'.length)
         : '';
       const createdMomentId = String(clip.created_clip_id || '').startsWith('CC-CM-')
         ? String(clip.created_clip_id).slice('CC-'.length)

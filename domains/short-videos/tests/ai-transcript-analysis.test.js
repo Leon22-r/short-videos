@@ -302,8 +302,10 @@ test('parses official OpenAI node output string wrappers', () => {
   assert.equal(result.analysisUpdate.ai_episode_score, 8);
   assert.equal(result.analysisUpdate.recommended_strategy, 'SKIP_THIS_VIDEO');
   assert.equal(result.analysisUpdate.reason_for_strategy, 'The video provides practical insights.');
-  assert.match(result.analysisUpdate.ai_json_output, /overall_episode_score/);
-  assert.doesNotMatch(result.analysisUpdate.ai_json_output, /msg_123/);
+  // ai_json_output is a jsonb column now, so the update carries the object.
+  assert.equal(typeof result.analysisUpdate.ai_json_output, 'object');
+  assert.match(JSON.stringify(result.analysisUpdate.ai_json_output), /overall_episode_score/);
+  assert.doesNotMatch(JSON.stringify(result.analysisUpdate.ai_json_output), /msg_123/);
   assert.equal(result.candidateUpdate.processing_status, 'SKIPPED');
   assert.deepEqual(result.momentRows, []);
 });
@@ -380,17 +382,19 @@ test('WF5 independently backfills missing window moments from sheet state', () =
   const buildMissing = workflow.nodes.find((node) => node.name === 'Build Missing Window Moments');
   const backfill = workflow.nodes.find((node) => node.name === 'Backfill Clip_Moments');
 
-  assert.equal(readMoments.type, 'n8n-nodes-base.googleSheets');
-  assert.equal(readMoments.parameters.operation, 'read');
-  assert.equal(readMoments.parameters.sheetName.value, 'Clip_Moments');
-  assert.equal(readMoments.executeOnce, true);
+  assert.equal(readMoments.type, 'n8n-nodes-base.postgres');
+  assert.equal(readMoments.parameters.query, 'SELECT * FROM short_videos.clip_moments;');
+  // executeOnce was a Sheets-read concern; a SELECT runs once by nature. The
+  // read still has to emit an item when the table is empty, because the
+  // backfill branch depends on it.
+  assert.equal(readMoments.executeOnce, undefined);
   assert.equal(readMoments.alwaysOutputData, true);
   assert.equal(buildMissing.type, 'n8n-nodes-base.code');
   assert.match(buildMissing.parameters.jsCode, /buildMissingWindowMoments/);
-  assert.equal(backfill.type, 'n8n-nodes-base.googleSheets');
-  assert.equal(backfill.parameters.operation, 'appendOrUpdate');
-  assert.equal(backfill.parameters.sheetName.value, 'Clip_Moments');
-  assert.deepEqual(backfill.parameters.columns.matchingColumns, ['clip_moment_id']);
+  assert.equal(backfill.type, 'n8n-nodes-base.postgres');
+  assert.match(backfill.parameters.query, /INSERT INTO short_videos\.clip_moments/);
+  assert.match(backfill.parameters.query, /ON CONFLICT \(clip_moment_id\) DO UPDATE SET/);
+  assert.equal(backfill.parameters.options.queryReplacement, '={{ JSON.stringify($input.all().map(item => item.json)) }}');
 
   assert.equal(
     workflow.connections['Read Candidate_Videos'].main[0][0].node,
@@ -469,7 +473,7 @@ test('downgrades weak 20-minute windows to exact clips', () => {
 
   assert.equal(result.analysisUpdate.recommended_strategy, 'USE_EXACT_CLIPS_ONLY');
   assert.equal(result.momentRows.length, 2);
-  assert(result.momentRows.every((row) => row.ssemble_status === 'PENDING'));
+  assert(result.momentRows.every((row) => row.download_status === 'PENDING'));
 });
 
 test('creates exact pending clip rows when there are enough strong clips in a window', () => {
@@ -494,7 +498,7 @@ test('creates exact pending clip rows when there are enough strong clips in a wi
   assert.equal(result.momentRows[0].clip_moment_id, 'CM-VID-video1234567-1');
   assert.equal(result.momentRows[0].start_sec, 100);
   assert.equal(result.momentRows[0].end_sec, 180);
-  assert.equal(result.momentRows[0].ssemble_status, 'PENDING');
+  assert.equal(result.momentRows[0].download_status, 'PENDING');
 });
 
 test('creates exact rows from valid 20-minute windows and caps total downloads at five', () => {
@@ -588,7 +592,7 @@ test('backfills one complete deterministic row for a missing window moment', () 
   assert.equal(rows[0].rank, 1);
   assert.equal(rows[0].clip_score, 8);
   assert.equal(rows[0].rights_risk, 'medium');
-  assert.equal(rows[0].ssemble_status, 'PENDING');
+  assert.equal(rows[0].download_status, 'PENDING');
   assert.equal(rows[0].core_idea, 'Budgeting matters');
   assert.equal(rows[0].why_valuable, 'Practical money lesson');
   assert.equal(rows[0].created_at, now);
@@ -675,7 +679,7 @@ test('high risk source requires manual approval before provider download', () =>
   const result = parseAndGate({ ...baseRow, source_risk: 'high', source_id: 'SRC-1' }, ai());
 
   assert.equal(result.candidateUpdate.processing_status, 'ANALYZED');
-  assert.equal(result.momentRows[0].ssemble_status, 'AWAITING_MANUAL_APPROVAL');
+  assert.equal(result.momentRows[0].download_status, 'AWAITING_MANUAL_APPROVAL');
   assert.equal(result.momentRows[0].source_id, 'SRC-1');
 });
 
@@ -750,27 +754,27 @@ test('accepts complete legacy exact-clip output', () => {
 
 test('accepts complete legacy window output and stores only bare analysis JSON', () => {
   const result = parseAndGate(baseRow, fixtures.validLegacyWindow);
-  const stored = JSON.parse(result.analysisUpdate.ai_json_output);
+  const stored = result.analysisUpdate.ai_json_output;
 
   assert.equal(result.retryable, false);
   assert.equal(result.analysisUpdate.recommended_strategy, 'USE_EXACT_CLIPS_ONLY');
   assert.deepEqual(stored, fixtures.normalizedWindowAnalysis);
   assert.equal(stored.output, undefined);
-  assert.doesNotMatch(result.analysisUpdate.ai_json_output, /msg_legacy_window|```/);
+  assert.doesNotMatch(JSON.stringify(result.analysisUpdate.ai_json_output), /msg_legacy_window|```/);
 });
 
 test('accepts canonical unfenced output in the n8n transport envelope', () => {
   const result = parseAndGate(baseRow, fixtures.canonicalUnfenced);
 
   assert.equal(result.retryable, false);
-  assert.deepEqual(JSON.parse(result.analysisUpdate.ai_json_output), fixtures.normalizedWindowAnalysis);
+  assert.deepEqual(result.analysisUpdate.ai_json_output, fixtures.normalizedWindowAnalysis);
 });
 
 test('accepts n8n structured output when content text is already an object', () => {
   const result = parseAndGate(baseRow, fixtures.structuredObject);
 
   assert.equal(result.retryable, false);
-  assert.deepEqual(JSON.parse(result.analysisUpdate.ai_json_output), fixtures.normalizedWindowAnalysis);
+  assert.deepEqual(result.analysisUpdate.ai_json_output, fixtures.normalizedWindowAnalysis);
 });
 
 test('rejects a SKIP response with an incomplete window object', () => {

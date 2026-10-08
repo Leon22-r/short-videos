@@ -19,8 +19,8 @@ const workflowFiles = () => readdirSync(workflowsDir).filter((file) => file.ends
 //
 // Unlike the test this replaces, it cannot pass vacuously: the ceiling must be
 // lowered as nodes go, and a reintroduced node breaks it immediately.
-const SHEETS_NODE_CEILING = 56;
-const SHEETS_PLACEHOLDER_CEILING = 13;
+const SHEETS_NODE_CEILING = 36;
+const SHEETS_PLACEHOLDER_CEILING = 10;
 
 const sheetsNodes = () => {
   const found = [];
