@@ -122,4 +122,24 @@ test('real Postgres: run-migrations records applied versions to schema_migration
   });
 });
 
+// The spec requires a tested down path for 009, the only step that alters
+// existing columns rather than adding.
+test('real Postgres: the 009 retyping round-trips through its down migration', { skip: !available }, async () => {
+  await withCluster(async ({ sql, file }) => {
+    for (const migration of migrationFiles()) file(migration);
+
+    sql(`INSERT INTO short_videos.publishing_jobs(publish_id, platform, youtube_channel_id)
+         VALUES ('round-trip', 'YOUTUBE_SHORTS', 'yt-ch-1')`);
+    assert.equal(sql("SELECT approved_id IS NULL FROM short_videos.publishing_jobs WHERE publish_id='round-trip'"), 't');
+
+    file(path.join(root, 'postgres/rollback/009-publishing-jobs-retypes.down.sql'));
+    assert.equal(sql("SELECT approved_id = '' FROM short_videos.publishing_jobs WHERE publish_id='round-trip'"), 't');
+    assert.equal(sql("SELECT count(*) FROM pg_proc WHERE proname = 'safe_schedule_at'"), '1');
+
+    // And forward again, because a rollback is sometimes followed by a re-land.
+    file(path.join(root, 'postgres/migrations/009-publishing-jobs-retypes.sql'));
+    assert.equal(sql("SELECT approved_id IS NULL FROM short_videos.publishing_jobs WHERE publish_id='round-trip'"), 't');
+  });
+});
+
 module.exports = { withCluster, migrationFiles, available, pgBin };

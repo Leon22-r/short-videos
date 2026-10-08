@@ -120,3 +120,25 @@ test('publishing tables fail closed on status and platform', () => {
 
   assert.doesNotMatch(schema, /text NOT NULL DEFAULT ''/);
 });
+
+test('publishing_jobs retyping removes the empty-string convention and safe_schedule_at', () => {
+  const migration = read('postgres/migrations/009-publishing-jobs-retypes.sql');
+
+  // Every column that defaulted to '' loses both the default and the NOT NULL.
+  assert.match(migration, /ALTER COLUMN approved_id DROP NOT NULL/);
+  assert.match(migration, /ALTER COLUMN approved_id DROP DEFAULT/);
+  assert.match(migration, /ALTER COLUMN provider_stage DROP NOT NULL/);
+  assert.match(migration, /ALTER COLUMN claimed_by DROP NOT NULL/);
+  // Existing '' values become NULL, or the queries in Task 9 would still see ''.
+  assert.match(migration, /SET approved_id = NULL WHERE approved_id = ''/);
+  // safe_schedule_at exists only to turn a bad date string into infinity.
+  // timestamptz cannot hold a bad date string, so it goes.
+  assert.match(migration, /DROP FUNCTION IF EXISTS short_videos\.safe_schedule_at/);
+  // Replay safety: this must survive a second application.
+  assert.match(migration, /DO \$\$/);
+
+  const down = read('postgres/rollback/009-publishing-jobs-retypes.down.sql');
+  assert.match(down, /SET approved_id = '' WHERE approved_id IS NULL/);
+  assert.match(down, /ALTER COLUMN approved_id SET NOT NULL/);
+  assert.match(down, /CREATE OR REPLACE FUNCTION short_videos\.safe_schedule_at/);
+});

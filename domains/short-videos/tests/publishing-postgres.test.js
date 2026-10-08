@@ -15,8 +15,10 @@ test('publishing Postgres schema is portable and constrains queue state', () => 
   assert.match(schema, /provider_stage text NOT NULL/);
   assert.match(schema, /provider_response jsonb NOT NULL/);
   assert.match(schema, /poll_after timestamptz/);
-  assert.match(schema, /safe_schedule_at/);
-  assert.match(schema, /RETURN 'infinity'::timestamptz/);
+  // 001 still creates safe_schedule_at; 009 drops it. Both are true of the
+  // repo, so assert on the migration rather than on the initial schema.
+  const retypes = read('postgres/migrations/009-publishing-jobs-retypes.sql');
+  assert.match(retypes, /DROP FUNCTION IF EXISTS short_videos\.safe_schedule_at/);
   assert.match(schema, /publish_status IN/);
   assert.match(schema, /publishing_jobs_platform_destination_check/);
   assert.match(schema, /'CLAIMED'/);
