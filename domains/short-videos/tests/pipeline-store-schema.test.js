@@ -48,6 +48,7 @@ test('analysis tables drop the truncation columns and apply the D7 rename', () =
   // D7: the legacy ssemble_* names do not survive.
   assert.match(schema, /download_status\s+text/);
   assert.match(schema, /download_job_id\s+text/);
+  assert.match(schema, /error_message\s+text/);
   assert.doesNotMatch(schema, /ssemble_status/);
   assert.doesNotMatch(schema, /ssemble_job_id/);
   assert.match(schema, /CHECK\s*\(\s*download_status IN \(\s*'PENDING', 'SUBMITTED', 'COMPLETED', 'ERROR', 'AWAITING_MANUAL_APPROVAL'\)\)/);

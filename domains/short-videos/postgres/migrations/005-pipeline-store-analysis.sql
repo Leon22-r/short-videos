@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS short_videos.clip_moments (
   final_recommendation      text,
   download_status           text NOT NULL DEFAULT 'PENDING',
   download_job_id           text,
+  error_message             text,
   strategy                  text,
   source_video_url          text,
   created_at                timestamptz NOT NULL DEFAULT now(),
