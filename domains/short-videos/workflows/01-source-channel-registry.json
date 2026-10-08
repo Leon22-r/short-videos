@@ -15,23 +15,19 @@
     },
     {
       "parameters": {
-        "operation": "read",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Source_Channels"
-        },
-        "options": {}
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT * FROM short_videos.source_channels;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "",
+          "replaceEmptyStrings": true
+        }
       },
       "id": "a1b2c3d4-0001-4000-8000-000000000002",
       "name": "Read Source_Channels",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         220,
         0
@@ -91,30 +87,19 @@
     },
     {
       "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Source_Channels"
-        },
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "source_id"
-          ]
-        },
-        "options": {}
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH rows AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'source_id'), '') IS NOT NULL\n), incoming AS (\n  SELECT jsonb_populate_record(NULL::short_videos.source_channels, row) AS record\n  FROM rows\n  WHERE row IS NOT NULL\n)\nUPDATE short_videos.source_channels AS target SET\n  youtube_channel_id = (incoming.record).youtube_channel_id,\n  uploads_playlist_id = (incoming.record).uploads_playlist_id,\n  last_checked_at = (incoming.record).last_checked_at,\n  notes = (incoming.record).notes\nFROM incoming\nWHERE target.source_id = (incoming.record).source_id\nRETURNING target.*;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
+        }
       },
       "id": "a1b2c3d4-0001-4000-8000-000000000006",
       "name": "Update Source Row",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         1100,
         0

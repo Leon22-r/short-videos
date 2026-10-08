@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { postgresNode, selectAll, upsertFromJsonb } = require('../workflow-code/table-node');
+const { postgresNode, selectAll, upsertFromJsonb, updateFromJsonb } = require('../workflow-code/table-node');
 
 test('postgresNode emits the same node shape the publishing workflows use', () => {
   const node = postgresNode('id-1', 'Read Candidates', [0, 0], 'SELECT 1;');
@@ -48,19 +48,39 @@ test('upsertFromJsonb strips empty strings before typing the row', () => {
   assert.match(sql, /NULLIF\(btrim\(field\.value #>> '\{\}'\), ''\) IS NOT NULL/);
 });
 
-// Sheets' appendOrUpdate wrote only the columns it was given. `SET col =
-// EXCLUDED.col` would blank every column absent from an incoming row.
-test('a partial row updates what it carries and leaves the rest', () => {
+// Sheets' appendOrUpdate wrote the columns it was given and left the rest, so
+// `columns` is the writer's column list and the conflict branch assigns exactly
+// those. Coalescing to the stored row instead would make clearing impossible.
+test('the conflict branch writes exactly the columns the caller names', () => {
   const sql = upsertFromJsonb({
-    table: 'candidate_videos',
-    key: 'video_id',
-    columns: ['video_id', 'niche'],
+    table: 'source_channels',
+    key: 'source_id',
+    columns: ['source_id', 'backfill_next_page_token', 'backfill_status'],
   });
-  assert.match(sql, /niche = COALESCE\(EXCLUDED\.niche, short_videos\.candidate_videos\.niche\)/);
+  assert.match(sql, /backfill_next_page_token = EXCLUDED\.backfill_next_page_token/);
+  assert.match(sql, /backfill_status = EXCLUDED\.backfill_status/);
+  // Nothing the caller did not name may appear in the statement.
+  assert.doesNotMatch(sql, /niche/);
   // The key must never be overwritten by the conflicting row.
-  assert.doesNotMatch(sql, /video_id = (COALESCE\()?EXCLUDED\.video_id/);
+  assert.doesNotMatch(sql, /source_id = EXCLUDED\.source_id/);
 });
 
 test('selectAll targets the short_videos schema explicitly', () => {
   assert.equal(selectAll('source_channels'), 'SELECT * FROM short_videos.source_channels;');
+});
+
+test('updateFromJsonb assigns only the named columns and keys on the id', () => {
+  const sql = updateFromJsonb({
+    table: 'candidate_videos',
+    key: 'video_id',
+    columns: ['video_id', 'validity_status', 'processing_status'],
+  });
+  assert.match(sql, /UPDATE short_videos\.candidate_videos AS target SET/);
+  assert.match(sql, /validity_status = \(incoming\.record\)\.validity_status/);
+  assert.match(sql, /WHERE target\.video_id = \(incoming\.record\)\.video_id/);
+  // The key is matched on, never assigned.
+  assert.doesNotMatch(sql, /^\s+video_id = /m);
+  // One statement, so transaction-mode pooling is sufficient.
+  assert.equal(sql.split(';').filter((part) => part.trim()).length, 1);
+  assert.doesNotMatch(sql, /\{\{/);
 });

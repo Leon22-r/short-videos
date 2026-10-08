@@ -47,15 +47,18 @@ const selectAll = (table) => `SELECT * FROM short_videos.${table};`;
 //   - An empty string is stripped to absent before typing. '' is a valid text
 //     value but not a valid integer or timestamp, and a blank cell was how
 //     Sheets spelled "no value".
-//   - The conflict branch coalesces to the stored row, so a partial write
-//     updates the fields it carries and leaves the rest. Sheets' appendOrUpdate
-//     only ever wrote the columns it was given; `SET col = EXCLUDED.col` would
-//     instead blank every column absent from the incoming row.
+//   - `columns` is the list of columns the calling node actually writes, not
+//     the table's full column list. Sheets' appendOrUpdate wrote the columns it
+//     was given and left the rest, and naming them here is what reproduces
+//     that: a wider list would blank every column the incoming row omits, and
+//     coalescing to the stored row instead would make clearing a column
+//     impossible — which WF2 needs when a backfill finishes and the page token
+//     has to go away.
 const upsertFromJsonb = ({ table, key, columns }) => {
   const qualified = `short_videos.${table}`;
   const assignments = columns
     .filter((column) => column !== key)
-    .map((column) => `  ${column} = COALESCE(EXCLUDED.${column}, ${qualified}.${column})`)
+    .map((column) => `  ${column} = EXCLUDED.${column}`)
     .join(',\n');
   return `WITH incoming AS (
   SELECT (
@@ -78,4 +81,41 @@ ${assignments}
 RETURNING *;`;
 };
 
-module.exports = { querySql, postgresNode, selectAll, upsertFromJsonb };
+// A state transition on rows that already exist: WF3 classifying candidates,
+// WF2 clearing a channel's backfill token. These cannot use the upsert above.
+// `INSERT ... ON CONFLICT` builds the insert row first, so a statement naming
+// only the columns it writes fails on every NOT NULL column it omits —
+// `null value in column "niche" of relation "source_channels" violates
+// not-null constraint` — even though the row exists and the intent is an
+// update. An UPDATE names only what it changes, and a blank cell still lands
+// as NULL, so clearing a column works.
+//
+// A key with no stored row is skipped rather than inserted. Every caller here
+// is a transition on a row an earlier workflow created.
+const updateFromJsonb = ({ table, key, columns }) => {
+  const qualified = `short_videos.${table}`;
+  const assignments = columns
+    .filter((column) => column !== key)
+    .map((column) => `  ${column} = (incoming.record).${column}`)
+    .join(',\n');
+  return `WITH rows AS (
+  SELECT (
+    SELECT jsonb_object_agg(field.key, field.value)
+    FROM jsonb_each(element) AS field
+    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL
+  ) AS row
+  FROM jsonb_array_elements($1::jsonb) AS element
+  WHERE NULLIF(btrim(element->>'${key}'), '') IS NOT NULL
+), incoming AS (
+  SELECT jsonb_populate_record(NULL::${qualified}, row) AS record
+  FROM rows
+  WHERE row IS NOT NULL
+)
+UPDATE ${qualified} AS target SET
+${assignments}
+FROM incoming
+WHERE target.${key} = (incoming.record).${key}
+RETURNING target.*;`;
+};
+
+module.exports = { querySql, postgresNode, selectAll, upsertFromJsonb, updateFromJsonb };

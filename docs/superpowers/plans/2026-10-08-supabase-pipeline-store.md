@@ -1955,10 +1955,10 @@ These three are the slice the spec verifies live before anything downstream is a
 **Files:**
 - Modify: `domains/short-videos/workflow-code/create-wf2-video-fetch.js`
 - Modify: `domains/short-videos/workflow-code/create-wf3-validity-check.js`
-- Modify: `domains/short-videos/workflow-code/create-remaining-workflows.js` (WF1 only)
+- Modify: `domains/short-videos/workflow-code/update-wf1-code.js` (WF1 — **not** `create-remaining-workflows.js`, which does not build WF1)
 - Modify: `domains/short-videos/workflow-code/validity-check.js`
 - Modify: `domains/short-videos/tests/validity-check.test.js`
-- Create: `domains/short-videos/postgres/queries/select-source-channels.sql`, `select-candidate-videos.sql`, `upsert-candidate-videos.sql`, `upsert-source-channels.sql`
+- Create: `domains/short-videos/postgres/queries/select-source-channels.sql`, `select-candidate-videos.sql`, `upsert-candidate-videos.sql`, `update-source-resolution.sql`, `update-source-backfill-state.sql`, `update-candidate-validity.sql`
 - Regenerate: `workflows/01-source-channel-registry.json`, `02-video-fetch.json`, `03-validity-check.json`
 
 **Interfaces:**
@@ -1967,7 +1967,18 @@ These three are the slice the spec verifies live before anything downstream is a
 
 - [ ] **Step 1: Write the failing NULL-percentage test (Review Focus 2)**
 
-Spec Section 1 item 2 drops the write-`0`-when-views-are-zero convention, so `like_percentage` can now arrive as NULL where WF3 used to see `0`. Append to `domains/short-videos/tests/validity-check.test.js`:
+Spec Section 1 item 2 drops the write-`0`-when-views-are-zero convention, so
+`like_percentage` can now arrive as NULL where WF3 used to see `0`.
+
+Two corrections to the sketch below. There is no `checkValidity` export —
+`validity-check.js` exports `applyValidityRules`, `classifyCandidate`,
+`computeEngagementMetrics` and `passesEngagementGate`. And the percentages are
+*computed* from the counts rather than read from the row, so the NULL does not
+arrive from the database at all: it has to start being produced.
+`computeEngagementMetrics` currently returns `0` for all three percentages when
+views are zero, which is the Sheets convention the spec deletes. So the change
+is two-sided — the metrics return NULL when views are zero, and the gate treats
+NULL as failing. Append to `domains/short-videos/tests/validity-check.test.js`:
 
 ```js
 // Review Focus 2. Section 1 replaced "WF3 writes 0 when views are zero" with
@@ -2043,7 +2054,27 @@ process.stdout.write(upsertFromJsonb({ table: 'candidate_videos', key: 'video_id
 " > domains/short-videos/postgres/queries/upsert-candidate-videos.sql
 ```
 
-`upsert-source-channels.sql`, the same way with the Tab 1 column list, keyed on `source_id`.
+There is no `upsert-source-channels.sql`. Nothing upserts a whole channel row:
+the operator creates it through the review UI, and WF1 and WF2 each update a
+few columns of an existing row. Those are three `updateFromJsonb` files instead
+— `update-source-resolution.sql` (WF1: the resolved ids, `last_checked_at`,
+`notes`), `update-source-backfill-state.sql` (WF2: the backfill counters and
+token) and `update-candidate-validity.sql` (WF3: the percentages and the
+classification).
+
+**Why an UPDATE rather than an upsert for those three.** `INSERT ... ON
+CONFLICT` builds its insert row before the conflict is detected, so a statement
+naming only the columns it writes fails on every `NOT NULL` column it omits,
+even when the row exists and the intent is an update:
+
+```
+ERROR:  null value in column "niche" of relation "source_channels" violates not-null constraint
+```
+
+`updateFromJsonb` in `table-node.js` names only what it changes. A blank cell
+still lands as NULL, which is what lets WF2 clear `backfill_next_page_token`
+when a backfill finishes — something a conflict branch coalescing to the stored
+row could never do.
 
 Then verify the generated SQL actually runs:
 
@@ -2069,7 +2100,12 @@ Then rewrite each call site. The three Sheets operations map as the spec's table
 
 Keep every node `id` and `position` unchanged so the regenerated JSON diffs cleanly. Rename nodes only where `Append` became `Upsert`, and update the matching `connections` keys when you do.
 
-Do the same for WF1 inside `create-remaining-workflows.js`, which reads and writes only `Source_Channels`.
+WF1 is different: it is patched in place by `update-wf1-code.js`, not emitted
+whole, and `create-remaining-workflows.js` does not build it at all. Replace its
+two Sheets nodes in that script with `Object.assign(node, postgresNode(...))`,
+keeping each node's existing id and position, and widen the
+`retryOnFail`/`maxTries` loop at the top of the file from `googleSheets` to
+`postgres`.
 
 - [ ] **Step 7: Regenerate and inspect the diff**
 

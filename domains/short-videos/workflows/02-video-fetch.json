@@ -23,60 +23,50 @@
       ]
     },
     {
-      "parameters": {
-        "operation": "read",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Source_Channels"
-        },
-        "options": {}
-      },
       "id": "a1b2c3d4-0002-4000-8000-000000000002",
       "name": "Read Source_Channels",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         220,
         0
       ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT * FROM short_videos.source_channels;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "",
+          "replaceEmptyStrings": true
+        }
+      },
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 5000,
-      "executeOnce": true
+      "waitBetweenTries": 5000
     },
     {
-      "parameters": {
-        "operation": "read",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Candidate_Videos"
-        },
-        "options": {}
-      },
       "id": "a1b2c3d4-0002-4000-8000-000000000003",
       "name": "Read Candidate_Videos",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         440,
         0
       ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT * FROM short_videos.candidate_videos;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "",
+          "replaceEmptyStrings": true
+        }
+      },
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000,
-      "executeOnce": true,
       "alwaysOutputData": true
     },
     {
@@ -219,33 +209,24 @@
       ]
     },
     {
-      "parameters": {
-        "operation": "append",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Candidate_Videos"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": []
-        }
-      },
       "id": "a1b2c3d4-0002-4000-8000-000000000013",
-      "name": "Append Candidates",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "name": "Upsert Candidates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         2640,
         20
       ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH incoming AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'video_id'), '') IS NOT NULL\n), typed AS (\n  SELECT jsonb_populate_record(NULL::short_videos.candidate_videos, row) AS record\n  FROM incoming\n  WHERE row IS NOT NULL\n)\nINSERT INTO short_videos.candidate_videos (video_id, niche, source_id, source_name, video_title, video_url, youtube_video_id, duration_seconds, published_at, view_count, like_count, comment_count, like_percentage, comment_percentage, engagement_percentage, transcript_available, language, validity_status, validity_score, rejection_reason, duplicate_status, processing_status)\nSELECT (record).video_id,\n       (record).niche,\n       (record).source_id,\n       (record).source_name,\n       (record).video_title,\n       (record).video_url,\n       (record).youtube_video_id,\n       (record).duration_seconds,\n       (record).published_at,\n       (record).view_count,\n       (record).like_count,\n       (record).comment_count,\n       (record).like_percentage,\n       (record).comment_percentage,\n       (record).engagement_percentage,\n       (record).transcript_available,\n       (record).language,\n       (record).validity_status,\n       (record).validity_score,\n       (record).rejection_reason,\n       (record).duplicate_status,\n       (record).processing_status\nFROM typed\nON CONFLICT (video_id) DO UPDATE SET\n  niche = COALESCE(EXCLUDED.niche, short_videos.candidate_videos.niche),\n  source_id = COALESCE(EXCLUDED.source_id, short_videos.candidate_videos.source_id),\n  source_name = COALESCE(EXCLUDED.source_name, short_videos.candidate_videos.source_name),\n  video_title = COALESCE(EXCLUDED.video_title, short_videos.candidate_videos.video_title),\n  video_url = COALESCE(EXCLUDED.video_url, short_videos.candidate_videos.video_url),\n  youtube_video_id = COALESCE(EXCLUDED.youtube_video_id, short_videos.candidate_videos.youtube_video_id),\n  duration_seconds = COALESCE(EXCLUDED.duration_seconds, short_videos.candidate_videos.duration_seconds),\n  published_at = COALESCE(EXCLUDED.published_at, short_videos.candidate_videos.published_at),\n  view_count = COALESCE(EXCLUDED.view_count, short_videos.candidate_videos.view_count),\n  like_count = COALESCE(EXCLUDED.like_count, short_videos.candidate_videos.like_count),\n  comment_count = COALESCE(EXCLUDED.comment_count, short_videos.candidate_videos.comment_count),\n  like_percentage = COALESCE(EXCLUDED.like_percentage, short_videos.candidate_videos.like_percentage),\n  comment_percentage = COALESCE(EXCLUDED.comment_percentage, short_videos.candidate_videos.comment_percentage),\n  engagement_percentage = COALESCE(EXCLUDED.engagement_percentage, short_videos.candidate_videos.engagement_percentage),\n  transcript_available = COALESCE(EXCLUDED.transcript_available, short_videos.candidate_videos.transcript_available),\n  language = COALESCE(EXCLUDED.language, short_videos.candidate_videos.language),\n  validity_status = COALESCE(EXCLUDED.validity_status, short_videos.candidate_videos.validity_status),\n  validity_score = COALESCE(EXCLUDED.validity_score, short_videos.candidate_videos.validity_score),\n  rejection_reason = COALESCE(EXCLUDED.rejection_reason, short_videos.candidate_videos.rejection_reason),\n  duplicate_status = COALESCE(EXCLUDED.duplicate_status, short_videos.candidate_videos.duplicate_status),\n  processing_status = COALESCE(EXCLUDED.processing_status, short_videos.candidate_videos.processing_status)\nRETURNING *;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
+        }
+      },
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000
@@ -265,35 +246,24 @@
       ]
     },
     {
-      "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Source_Channels"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "source_id"
-          ]
-        }
-      },
       "id": "a1b2c3d4-0002-4000-8000-000000000015",
       "name": "Update Source Backfill State",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         1320,
         -160
       ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH rows AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'source_id'), '') IS NOT NULL\n), incoming AS (\n  SELECT jsonb_populate_record(NULL::short_videos.source_channels, row) AS record\n  FROM rows\n  WHERE row IS NOT NULL\n)\nUPDATE short_videos.source_channels AS target SET\n  backfill_next_page_token = (incoming.record).backfill_next_page_token,\n  backfill_status = (incoming.record).backfill_status,\n  videos_known_count = (incoming.record).videos_known_count,\n  videos_fetched_count = (incoming.record).videos_fetched_count,\n  backfill_last_run_at = (incoming.record).backfill_last_run_at,\n  last_checked_at = (incoming.record).last_checked_at\nFROM incoming\nWHERE target.source_id = (incoming.record).source_id\nRETURNING target.*;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
+        }
+      },
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000
@@ -431,7 +401,7 @@
       "main": [
         [
           {
-            "node": "Append Candidates",
+            "node": "Upsert Candidates",
             "type": "main",
             "index": 0
           }
