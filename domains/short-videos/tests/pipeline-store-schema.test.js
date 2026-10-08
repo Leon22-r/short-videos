@@ -96,3 +96,27 @@ test('asset tables move the branding uniqueness check to write time', () => {
 
   assert.doesNotMatch(schema, /text NOT NULL DEFAULT ''/);
 });
+
+test('publishing tables fail closed on status and platform', () => {
+  const schema = read('postgres/migrations/008-pipeline-store-publishing.sql');
+
+  // The structure doc: only APPROVED or READY authorizes WF11; blank fails closed.
+  assert.match(schema, /CHECK\s*\(\s*status IN\s*\(\s*'PENDING', 'APPROVED', 'READY', 'REJECTED'\)\)/);
+  // The structure doc: "platform must contain at least one explicit supported
+  // value. Blank does not mean all platforms." A text[] with a length check
+  // makes that structural instead of conventional.
+  assert.match(schema, /platforms\s+text\[\]/);
+  assert.match(schema, /cardinality\(platforms\) > 0/);
+  assert.match(schema, /platforms <@ ARRAY\['YOUTUBE_SHORTS', 'TIKTOK', 'INSTAGRAM_REELS', 'FACEBOOK_REELS'\]/);
+  assert.match(schema, /scheduled_at\s+timestamptz/);
+
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS short_videos\.publishing_channels/);
+  assert.match(schema, /enabled_status\s+boolean/);
+  assert.match(schema, /tiktok_domain_verified\s+boolean/);
+  assert.match(schema, /token_expires_at\s+timestamptz/);
+  assert.match(schema, /CHECK\s*\(\s*credential_slot IS NULL OR credential_slot IN\s*\(\s*'YOUTUBE_PRIMARY', 'FACEBOOK_PRIMARY', 'INSTAGRAM_PRIMARY', 'TIKTOK_PRIMARY', 'POSTIZ_PRIMARY'\)\)/);
+  assert.match(schema, /CHECK\s*\(\s*audit_status IS NULL OR audit_status IN\s*\(\s*'DEV_PRIVATE_ONLY', 'APPROVED_PUBLIC', 'NEEDS_REVIEW'\)\)/);
+  assert.match(schema, /CHECK\s*\(\s*instagram_graph_host IS NULL OR instagram_graph_host IN\s*\(\s*'graph\.facebook\.com', 'graph\.instagram\.com'\)\)/);
+
+  assert.doesNotMatch(schema, /text NOT NULL DEFAULT ''/);
+});
