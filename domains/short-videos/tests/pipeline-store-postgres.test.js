@@ -28,7 +28,6 @@ async function withCluster(body) {
     command('initdb', ['-D', data, '-U', 'postgres', '-A', 'trust', '--no-locale']);
     command('pg_ctl', ['-D', data, '-l', path.join(temp, 'postgres.log'), '-o', `-h '' -k ${temp} -p 55441`, '-w', 'start']);
     started = true;
-    sql(fs.readFileSync(path.join(root, 'postgres/init/001-publishing-queue.sql'), 'utf8'));
     await body({ sql, file, temp });
   } finally {
     if (started) { try { command('pg_ctl', ['-D', data, '-w', 'stop']); } catch {} }
@@ -139,6 +138,64 @@ test('real Postgres: the 009 retyping round-trips through its down migration', {
     // And forward again, because a rollback is sometimes followed by a re-land.
     file(path.join(root, 'postgres/migrations/009-publishing-jobs-retypes.sql'));
     assert.equal(sql("SELECT approved_id IS NULL FROM short_videos.publishing_jobs WHERE publish_id='round-trip'"), 't');
+  });
+});
+
+// Review Focus 3 and 5. The UI has no session state and operators
+// double-click, so both the fail-closed cases and the repeat call matter.
+test('real Postgres: approve_clip is atomic and fails closed', { skip: !available }, async () => {
+  await withCluster(async ({ sql, file }) => {
+    for (const migration of migrationFiles()) file(migration);
+
+    sql(`INSERT INTO short_videos.source_channels(source_id, niche, source_name, youtube_channel_url)
+         VALUES ('src-1', 'FINANCE_BUSINESS', 'Example', 'https://youtube.com/@example')`);
+    sql(`INSERT INTO short_videos.candidate_videos(video_id, niche, source_id, youtube_video_id)
+         VALUES ('vid-1', 'FINANCE_BUSINESS', 'src-1', 'yt-1')`);
+    sql(`INSERT INTO short_videos.created_clips(created_clip_id, video_id, niche, review_status)
+         VALUES ('clip-1', 'vid-1', 'FINANCE_BUSINESS', 'NEEDS_REVIEW')`);
+
+    const approve = (args) => sql(`SELECT short_videos.approve_clip(${args})`);
+    const status = () => sql("SELECT review_status FROM short_videos.created_clips WHERE created_clip_id='clip-1'");
+    const approvals = () => sql("SELECT count(*) FROM short_videos.approved_for_posting WHERE created_clip_id='clip-1'");
+
+    // Review Focus 3: an empty platform list must fail, and must leave nothing behind.
+    assert.throws(() => approve("'clip-1','Title','Caption',ARRAY[]::text[]"), /at least one platform/i);
+    assert.equal(status(), 'NEEDS_REVIEW', 'a failed approval must not change review_status');
+    assert.equal(approvals(), '0', 'a failed approval must not insert a row');
+
+    // An unsupported platform is the same class of failure.
+    assert.throws(() => approve("'clip-1','Title','Caption',ARRAY['MYSPACE']"), /unsupported platform/i);
+    assert.equal(status(), 'NEEDS_REVIEW');
+    assert.equal(approvals(), '0');
+
+    // A blank title is not a usable post.
+    assert.throws(() => approve("'clip-1','   ','Caption',ARRAY['TIKTOK']"), /title/i);
+    assert.equal(approvals(), '0');
+
+    // A clip that is not awaiting review must not be approvable.
+    sql("UPDATE short_videos.created_clips SET review_status='AWAITING_DOWNLOAD' WHERE created_clip_id='clip-1'");
+    assert.throws(() => approve("'clip-1','Title','Caption',ARRAY['TIKTOK']"), /NEEDS_REVIEW/);
+    sql("UPDATE short_videos.created_clips SET review_status='NEEDS_REVIEW' WHERE created_clip_id='clip-1'");
+
+    // The happy path writes both halves.
+    const approvedId = approve("'clip-1','Final Title','Final Caption',ARRAY['TIKTOK','YOUTUBE_SHORTS']");
+    assert.match(approvedId, /^APPROVE-clip-1$/);
+    assert.equal(status(), 'APPROVED');
+    assert.equal(approvals(), '1');
+    assert.equal(sql("SELECT status FROM short_videos.approved_for_posting WHERE created_clip_id='clip-1'"), 'APPROVED');
+    assert.equal(sql("SELECT array_to_string(platforms, ',') FROM short_videos.approved_for_posting WHERE created_clip_id='clip-1'"), 'TIKTOK,YOUTUBE_SHORTS');
+
+    // Review Focus 5: the operator double-clicks.
+    const again = approve("'clip-1','Final Title','Final Caption',ARRAY['TIKTOK']");
+    assert.equal(again, approvedId, 'a repeat approval returns the same approved_id');
+    assert.equal(approvals(), '1', 'a repeat approval must not insert a duplicate');
+
+    // Test reject_clip
+    sql(`INSERT INTO short_videos.created_clips(created_clip_id, video_id, niche, review_status)
+         VALUES ('clip-2', 'vid-1', 'FINANCE_BUSINESS', 'NEEDS_REVIEW')`);
+    sql("SELECT short_videos.reject_clip('clip-2', 'Not suitable')");
+    assert.equal(sql("SELECT review_status FROM short_videos.created_clips WHERE created_clip_id='clip-2'"), 'REJECTED');
+    assert.equal(sql("SELECT reviewer_notes FROM short_videos.created_clips WHERE created_clip_id='clip-2'"), 'Not suitable');
   });
 });
 
