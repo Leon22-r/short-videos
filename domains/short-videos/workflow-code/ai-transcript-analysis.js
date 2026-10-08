@@ -316,7 +316,7 @@ function buildRetryableResult(row, response, error) {
       monetization_risk: '',
       originality_potential: '',
       kenya_relevance: '',
-      ai_json_output: String(output || message).slice(0, 40000),
+      ai_json_output: String(output || message),
     },
     candidateUpdate: {
       video_id: row.video_id,
@@ -360,8 +360,8 @@ function buildMomentFromClip(row, clip, options = {}) {
     clip_score: clamp(clip.clip_score, 0, 10),
     rights_risk: rightsRisk,
     final_recommendation: String(clip.final_recommendation),
-    ssemble_status: options.highRiskSource ? 'AWAITING_MANUAL_APPROVAL' : 'PENDING',
-    ssemble_job_id: '',
+    download_status: options.highRiskSource ? 'AWAITING_MANUAL_APPROVAL' : 'PENDING',
+    download_job_id: '',
     strategy: options.strategy || 'USE_EXACT_CLIPS_ONLY',
     source_video_url: row.video_url || '',
     created_at: options.now || new Date().toISOString(),
@@ -520,7 +520,13 @@ function parseAndGate(row, response, now = new Date().toISOString()) {
       .filter(Boolean)
       .join(' | ')
       .slice(0, 300),
-    ai_json_output: JSON.stringify(ai).slice(0, 40000),
+    // ai_json_output is jsonb now, so the object goes in as an object. The
+    // old 40k slice was a Sheets cell limit, and truncating JSON mid-document
+    // makes it unparseable. Stringifying it would also be wrong: a JSON string
+    // lands in a jsonb column as a string scalar, so ai_json_output->'clips'
+    // would come back NULL. The failure path below stores a bare error
+    // message, which is a valid jsonb string scalar.
+    ai_json_output: ai,
   };
 
   const candidateUpdate = {

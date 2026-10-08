@@ -6,27 +6,10 @@ const DOMAIN_ROOT = path.join(__dirname, '..');
 
 const workflowPath = process.argv[2] || path.join(DOMAIN_ROOT, 'workflows/03-validity-check.json');
 
-const sheet = (operation, sheetName, extra = {}) => ({
-  operation,
-  documentId: { __rl: true, mode: 'id', value: 'GOOGLE_SHEETS_DOCUMENT_ID' },
-  sheetName: { __rl: true, mode: 'name', value: sheetName },
-  options: {},
-  ...extra,
-});
+const { querySql, postgresNode } = require('./table-node');
 
-const sheetsNode = (id, name, position, parameters, extra = {}) => ({
-  parameters,
-  id,
-  name,
-  type: 'n8n-nodes-base.googleSheets',
-  typeVersion: 4.5,
-  position,
-  retryOnFail: true,
-  maxTries: 3,
-  waitBetweenTries: 5000,
-  ...(parameters.operation === 'read' ? { executeOnce: true } : {}),
-  ...extra,
-});
+// Every item the node received, as a jsonb array in $1.
+const ROWS = '={{ JSON.stringify($input.all().map(item => item.json)) }}';
 
 const codeNode = (id, name, position, jsCode) => ({
   parameters: { mode: 'runOnceForAllItems', jsCode },
@@ -175,16 +158,17 @@ const workflow = {
       typeVersion: 1.2,
       position: [0, 0],
     },
-    sheetsNode('a1b2c3d4-0003-4000-8000-000000000002', 'Read Source_Channels', [220, 0], sheet('read', 'Source_Channels')),
-    sheetsNode('a1b2c3d4-0003-4000-8000-000000000003', 'Read Candidate_Videos', [440, 0], sheet('read', 'Candidate_Videos')),
+    postgresNode('a1b2c3d4-0003-4000-8000-000000000002', 'Read Source_Channels', [220, 0], querySql('select-source-channels')),
+    postgresNode('a1b2c3d4-0003-4000-8000-000000000003', 'Read Candidate_Videos', [440, 0], querySql('select-candidate-videos')),
     codeNode('a1b2c3d4-0003-4000-8000-000000000004', 'Apply Rules', [660, 0], applyRulesCode),
-    sheetsNode(
+    // An UPDATE: WF2 created these rows, and WF3 owns only the classification
+    // columns. The percentages can be NULL now (spec Section 1 item 2).
+    postgresNode(
       'a1b2c3d4-0003-4000-8000-000000000005',
       'Update Candidate Rows',
       [880, 0],
-      sheet('appendOrUpdate', 'Candidate_Videos', {
-        columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['video_id'] },
-      }),
+      querySql('update-candidate-validity'),
+      ROWS,
     ),
   ],
   connections: {

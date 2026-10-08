@@ -70,15 +70,18 @@ test('builds timestamped transcript analysis rows', () => {
   assert.equal(row.source_id, 'SRC-1');
   assert.equal(row.transcript_status, 'FETCHED');
   assert.equal(row.transcript_text, '[00:00] hello world\n[01:05] second line');
-  assert.equal(row.transcript_full, '[00:00] hello world\n[01:05] second line');
-  assert.equal(row.transcript_full_url, '');
-  assert.equal(row.transcript_full_file_id, '');
+  // Spec Section 1 item 1: transcript_full and the two Drive columns are gone.
+  assert.equal(row.transcript_full, undefined);
+  assert.equal(row.transcript_full_url, undefined);
+  assert.equal(row.transcript_full_file_id, undefined);
   assert.equal(row.transcript_length_words, 4);
   assert.equal(row.created_at, '2026-06-15T00:00:00.000Z');
 });
 
-test('keeps full transcript while truncating the sheet preview near the cell limit', () => {
-  const longText = 'a'.repeat(46000);
+// Spec Section 1 item 1: Postgres text is unbounded, so the ~45k truncation
+// and the Drive stash that recovered the real transcript both go away.
+test('the full transcript is stored without truncation or a Drive round trip', () => {
+  const longText = 'a'.repeat(120000);
   const row = buildAnalysisRow(
     {
       video_id: 'VID-abc12345678',
@@ -95,11 +98,12 @@ test('keeps full transcript while truncating the sheet preview near the cell lim
   );
 
   assert.equal(row.transcript_status, 'FETCHED');
-  assert(row.transcript_text.endsWith('\n...[TRUNCATED]'));
-  assert(row.transcript_text.length > 45000);
-  assert.equal(row.transcript_full, `[00:00] ${longText}`);
-  assert.equal(row.transcript_full_url, '');
-  assert.equal(row.transcript_full_file_id, '');
+  assert.equal(row.transcript_text, `[00:00] ${longText}`);
+  assert.equal(row.transcript_text.length, 120008);
+  assert.doesNotMatch(row.transcript_text, /\[TRUNCATED\]/);
+  assert.equal(row.transcript_full, undefined);
+  assert.equal(row.transcript_full_url, undefined);
+  assert.equal(row.transcript_full_file_id, undefined);
 });
 
 test('marks transcript success on candidate rows', () => {
@@ -147,30 +151,22 @@ test('leaves infrastructure transcript failures retryable', () => {
   });
 });
 
-test('WF4 uploads full transcripts to Drive before appending sheet rows', () => {
-  const nodeTypes = Object.fromEntries(workflow.nodes.map((node) => [node.name, node.type]));
-  const convert = workflow.nodes.find((node) => node.name === 'Convert Transcript To File');
-  const upload = workflow.nodes.find((node) => node.name === 'Upload Transcript To Drive');
-  const attach = workflow.nodes.find((node) => node.name === 'Attach Transcript URL');
-  const append = workflow.nodes.find((node) => node.name === 'Append Transcript_Analysis');
+// The inverse of the test this replaces. Spec Section 1 item 1 deletes the
+// Drive round trip that existed only to recover the untruncated transcript.
+// D8 keeps Drive for media, so WF4 must have no Drive node left at all while
+// WF6 and WF8 still do.
+test('WF4 has no Drive round trip and writes the analysis row straight to Postgres', () => {
+  const nodeNames = workflow.nodes.map((node) => node.name);
+  assert.equal(workflow.nodes.filter((node) => node.type === 'n8n-nodes-base.googleDrive').length, 0);
+  assert.equal(workflow.nodes.filter((node) => node.type === 'n8n-nodes-base.convertToFile').length, 0);
+  assert.ok(!nodeNames.includes('Attach Transcript URL'));
+  assert.ok(!nodeNames.includes('Upload Transcript To Drive'));
 
-  assert.equal(nodeTypes['Convert Transcript To File'], 'n8n-nodes-base.convertToFile');
-  assert.equal(nodeTypes['Upload Transcript To Drive'], 'n8n-nodes-base.googleDrive');
-  assert.equal(nodeTypes['Attach Transcript URL'], 'n8n-nodes-base.code');
-  assert.equal(convert.parameters.operation, 'toText');
-  assert.equal(convert.parameters.sourceProperty, 'transcript_full');
-  assert.equal(upload.parameters.resource, 'file');
-  assert.equal(upload.parameters.operation, 'upload');
-  assert.equal(upload.parameters.inputDataFieldName, 'data');
-  assert.equal(upload.onError, 'continueRegularOutput');
-  assert.match(attach.parameters.jsCode, /\$\('Build Analysis Row'\)\.first\(\)\.json/);
-  assert.match(attach.parameters.jsCode, /transcript_full_url/);
-  assert.match(attach.parameters.jsCode, /transcript_full_file_id/);
-  assert.match(attach.parameters.jsCode, /delete row\.transcript_full/);
-  assert.deepEqual(append.parameters.columns.matchingColumns, ['analysis_id']);
+  const upsert = workflow.nodes.find((node) => node.name === 'Upsert Transcript_Analysis');
+  assert.equal(upsert.type, 'n8n-nodes-base.postgres');
+  assert.match(upsert.parameters.query, /INSERT INTO short_videos\.transcript_analysis/);
+  assert.doesNotMatch(upsert.parameters.query, /transcript_full/);
 
-  assert.equal(workflow.connections['Build Analysis Row'].main[0][0].node, 'Convert Transcript To File');
-  assert.equal(workflow.connections['Convert Transcript To File'].main[0][0].node, 'Upload Transcript To Drive');
-  assert.equal(workflow.connections['Upload Transcript To Drive'].main[0][0].node, 'Attach Transcript URL');
-  assert.equal(workflow.connections['Attach Transcript URL'].main[0][0].node, 'Append Transcript_Analysis');
+  assert.equal(workflow.connections['Build Analysis Row'].main[0][0].node, 'Upsert Transcript_Analysis');
+  assert.equal(workflow.connections['Upsert Transcript_Analysis'].main[0][0].node, 'Mark Transcript OK');
 });

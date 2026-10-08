@@ -5,6 +5,7 @@ include:
   - path: ./shared/traefik/compose.yaml
   - path: ./heavy/compose.yaml
   - path: ./public/compose.yaml
+  - path: ./review/compose.yaml
 
 networks:
   heavy-net:

@@ -5,6 +5,11 @@ const path = require('node:path');
 const DOMAIN_ROOT = path.join(__dirname, '..');
 const { readFileSync } = require('node:fs');
 
+const { querySql, postgresNode } = require('./table-node');
+
+// Every item the node received, as a jsonb array in $1.
+const ROWS = '={{ JSON.stringify($input.all().map(item => item.json)) }}';
+
 const workflowPath = process.argv[2] || path.join(DOMAIN_ROOT, 'workflows/05-ai-transcript-analysis.json');
 const helperSource = readFileSync(path.join(DOMAIN_ROOT, 'workflow-code/ai-transcript-analysis.js'), 'utf8');
 const fairShareSource = readFileSync(path.join(DOMAIN_ROOT, 'workflow-code/fair-share.js'), 'utf8');
@@ -15,14 +20,6 @@ const embeddedHelper = `${embeddedFairShare}\n${helperSource
 const healthHelperSource = readFileSync(path.join(DOMAIN_ROOT, 'workflow-code/channel-health-check.js'), 'utf8');
 const embeddedHealthHelper = healthHelperSource.replace(/module\.exports = \{[\s\S]*?\};\n?/, '');
 
-const sheet = (operation, sheetName, extra = {}) => ({
-  operation,
-  documentId: { __rl: true, mode: 'id', value: 'GOOGLE_SHEETS_DOCUMENT_ID' },
-  sheetName: { __rl: true, mode: 'name', value: sheetName },
-  options: {},
-  ...extra,
-});
-
 const codeNode = (id, name, position, jsCode) => ({
   parameters: { mode: 'runOnceForAllItems', jsCode },
   id,
@@ -30,20 +27,6 @@ const codeNode = (id, name, position, jsCode) => ({
   type: 'n8n-nodes-base.code',
   typeVersion: 2,
   position,
-});
-
-const sheetsNode = (id, name, position, parameters, extra = {}) => ({
-  parameters,
-  id,
-  name,
-  type: 'n8n-nodes-base.googleSheets',
-  typeVersion: 4.5,
-  position,
-  retryOnFail: true,
-  maxTries: 3,
-  waitBetweenTries: 5000,
-  ...(parameters.operation === 'read' ? { executeOnce: true } : {}),
-  ...extra,
 });
 
 const openAiNode = (id, name, position) => ({
@@ -90,14 +73,15 @@ const workflow = {
       typeVersion: 1.2,
       position: [0, 0],
     },
-    sheetsNode('a1b2c3d4-0005-4000-8000-000000000002', 'Read Transcript_Analysis', [220, 0], sheet('read', 'Transcript_Analysis')),
-    sheetsNode('a1b2c3d4-0005-4000-8000-000000000003', 'Read Source_Channels', [440, 0], sheet('read', 'Source_Channels')),
-    sheetsNode('a1b2c3d4-0005-4000-8000-000000000004', 'Read Candidate_Videos', [660, 0], sheet('read', 'Candidate_Videos')),
-    sheetsNode(
+    postgresNode('a1b2c3d4-0005-4000-8000-000000000002', 'Read Transcript_Analysis', [220, 0], querySql('select-transcript-analysis')),
+    postgresNode('a1b2c3d4-0005-4000-8000-000000000003', 'Read Source_Channels', [440, 0], querySql('select-source-channels')),
+    postgresNode('a1b2c3d4-0005-4000-8000-000000000004', 'Read Candidate_Videos', [660, 0], querySql('select-candidate-videos')),
+    postgresNode(
       'a1b2c3d4-0005-4000-8000-000000000016',
       'Read Clip_Moments',
       [880, -120],
-      sheet('read', 'Clip_Moments'),
+      querySql('select-clip-moments'),
+      '',
       { alwaysOutputData: true },
     ),
     codeNode('a1b2c3d4-0005-4000-8000-000000000005', 'Pick Unanalyzed', [880, 120], `${embeddedHelper}
@@ -117,13 +101,12 @@ const rows = buildMissingWindowMoments(
   new Date().toISOString(),
 );
 return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
-    sheetsNode(
+    postgresNode(
       'a1b2c3d4-0005-4000-8000-000000000018',
       'Backfill Clip_Moments',
       [1320, -160],
-      sheet('appendOrUpdate', 'Clip_Moments', {
-        columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] },
-      }),
+      querySql('upsert-clip-moments'),
+      ROWS,
     ),
     {
       parameters: { batchSize: 1, options: {} },
@@ -204,33 +187,30 @@ return [{ json: result, pairedItem: { item: 0 } }];`),
 const sourceId = $('Build OpenAI Request').first().json.source_id || '';
 const videoId = $('Build OpenAI Request').first().json.video_id || '';
 return [{ json: { ...parseResult.analysisUpdate, source_id: sourceId, video_id: videoId }, pairedItem: { item: 0 } }];`),
-    sheetsNode(
+    postgresNode(
       'a1b2c3d4-0005-4000-8000-000000000011',
       'Update Analysis Row',
       [2860, 120],
-      sheet('appendOrUpdate', 'Transcript_Analysis', {
-        columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['analysis_id'] },
-      }),
+      querySql('update-transcript-analysis-ai'),
+      ROWS,
     ),
     codeNode('a1b2c3d4-0005-4000-8000-000000000012', 'Shape Candidate Update', [3080, 120], `const parseResult = $input.first().json;
 return [{ json: parseResult.candidateUpdate, pairedItem: { item: 0 } }];`),
-    sheetsNode(
+    postgresNode(
       'a1b2c3d4-0005-4000-8000-000000000013',
       'Update Candidate Status',
       [3300, 120],
-      sheet('appendOrUpdate', 'Candidate_Videos', {
-        columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['video_id'] },
-      }),
+      querySql('update-candidate-analyzed'),
+      ROWS,
     ),
     codeNode('a1b2c3d4-0005-4000-8000-000000000014', 'Explode Clip Moments', [3520, 20], `const rows = $input.first().json.momentRows || [];
 return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
-    sheetsNode(
+    postgresNode(
       'a1b2c3d4-0005-4000-8000-000000000015',
       'Append Clip_Moments',
       [3740, 20],
-      sheet('appendOrUpdate', 'Clip_Moments', {
-        columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] },
-      }),
+      querySql('upsert-clip-moments'),
+      ROWS,
     ),
     codeNode('a1b2c3d4-0005-4000-8000-000000000019', 'Channel Health Check', [2860, 320], `${embeddedHealthHelper}
 
@@ -288,13 +268,12 @@ if (health.shouldPause) {
 }
 
 return [{ json: { ...update, shouldPause: health.shouldPause } }];`),
-    sheetsNode(
+    postgresNode(
       'a1b2c3d4-0005-4000-8000-000000000020',
       'Update Channel Health',
       [3080, 320],
-      sheet('appendOrUpdate', 'Source_Channels', {
-        columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['source_id'] },
-      }),
+      querySql('update-source-health'),
+      ROWS,
     ),
     {
       parameters: {
@@ -345,13 +324,12 @@ return toSkip.map((c, i) => ({
   },
   pairedItem: { item: i },
 }));`),
-    sheetsNode(
+    postgresNode(
       'a1b2c3d4-0005-4000-8000-000000000023',
       'Bulk Skip Candidates',
       [3740, 220],
-      sheet('appendOrUpdate', 'Candidate_Videos', {
-        columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['video_id'] },
-      }),
+      querySql('update-candidate-skipped'),
+      ROWS,
     ),
   ],
   connections: {

@@ -47,11 +47,14 @@ function computeEngagementMetrics(candidate) {
   const likes = numberValue(candidate.like_count);
   const comments = numberValue(candidate.comment_count);
 
+  // Zero views makes a percentage undefined, not zero. Writing 0 was a Sheets
+  // formatting convention; the columns are nullable numeric now (spec Section 1
+  // item 2), and the gate below treats NULL as failing.
   if (views <= 0) {
     return {
-      like_percentage: 0,
-      comment_percentage: 0,
-      engagement_percentage: 0,
+      like_percentage: null,
+      comment_percentage: null,
+      engagement_percentage: null,
     };
   }
 
@@ -62,12 +65,23 @@ function computeEngagementMetrics(candidate) {
   };
 }
 
+// A NULL percentage means "undefined", which fails a minimum threshold. The
+// check is explicit rather than leaning on `null >= 0.02` being false, because
+// Number(null) and Number('') are both 0 and an implicit coercion elsewhere
+// would read a missing value as a real zero. Postgres returns numeric as a
+// string, so a numeric-looking string must still compare as a number.
+function meetsThreshold(value, minimum) {
+  if (value === null || value === undefined || value === '') return false;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= minimum;
+}
+
 function passesEngagementGate(candidate, metrics = computeEngagementMetrics(candidate)) {
   return (
-    numberValue(candidate.view_count) >= ENGAGEMENT_GATE.minViews &&
-    metrics.like_percentage >= ENGAGEMENT_GATE.minLikePercentage &&
-    metrics.engagement_percentage >= ENGAGEMENT_GATE.minEngagementPercentage &&
-    metrics.comment_percentage >= ENGAGEMENT_GATE.minCommentPercentage
+    meetsThreshold(candidate.view_count, ENGAGEMENT_GATE.minViews) &&
+    meetsThreshold(metrics.like_percentage, ENGAGEMENT_GATE.minLikePercentage) &&
+    meetsThreshold(metrics.engagement_percentage, ENGAGEMENT_GATE.minEngagementPercentage) &&
+    meetsThreshold(metrics.comment_percentage, ENGAGEMENT_GATE.minCommentPercentage)
   );
 }
 
@@ -167,6 +181,7 @@ function applyValidityRules(candidateRows, riskBySource) {
 
 module.exports = {
   ENGAGEMENT_GATE,
+  meetsThreshold,
   applyValidityRules,
   buildRiskBySource,
   classifyCandidate,

@@ -23,32 +23,27 @@
       ]
     },
     {
-      "parameters": {
-        "operation": "read",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Candidate_Videos"
-        },
-        "options": {}
-      },
       "id": "a1b2c3d4-0004-4000-8000-000000000002",
       "name": "Read Candidate_Videos",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         220,
         0
       ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT * FROM short_videos.candidate_videos;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "",
+          "replaceEmptyStrings": true
+        }
+      },
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 5000,
-      "executeOnce": true
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -136,7 +131,7 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const video = $('Video Loop').first().json;\nconst resp = $input.first().json;\nconst snippets = resp.transcript || [];\n\nconst lines = snippets.map(s => {\n  const t = Math.floor(Number(s.start) || 0);\n  const mm = String(Math.floor(t / 60)).padStart(2, '0');\n  const ss = String(t % 60).padStart(2, '0');\n  return `[${mm}:${ss}] ${s.text}`;\n});\nconst transcriptFull = lines.join('\\n');\nlet transcriptText = transcriptFull;\nconst LIMIT = 45000;\nif (transcriptFull.length > LIMIT) {\n  transcriptText = transcriptFull.slice(0, LIMIT) + '\\n...[TRUNCATED]';\n}\nconst words = (resp.plain_text || '').split(/\\s+/).filter(Boolean).length;\n\nreturn [{\n  json: {\n    analysis_id: `AN-${video.youtube_video_id}`,\n    video_id: video.video_id,\n    niche: video.niche,\n    video_title: video.video_title,\n    video_url: video.video_url,\n    transcript_status: 'FETCHED',\n    transcript_text: transcriptText,\n    transcript_full: transcriptFull,\n    transcript_full_url: '',\n    transcript_full_file_id: '',\n    transcript_length_words: words,\n    ai_episode_score: '',\n    recommended_strategy: '',\n    recommended_start_sec: '',\n    recommended_end_sec: '',\n    reason_for_strategy: '',\n    rights_risk: '',\n    permission_risk: '',\n    monetization_risk: '',\n    originality_potential: '',\n    kenya_relevance: '',\n    ai_json_output: '',\n    created_at: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
+        "jsCode": "const video = $('Video Loop').first().json;\nconst resp = $input.first().json;\nconst snippets = resp.transcript || [];\n\nconst lines = snippets.map(s => {\n  const t = Math.floor(Number(s.start) || 0);\n  const mm = String(Math.floor(t / 60)).padStart(2, '0');\n  const ss = String(t % 60).padStart(2, '0');\n  return `[${mm}:${ss}] ${s.text}`;\n});\nconst transcriptText = lines.join('\\n');\nconst words = (resp.plain_text || '').split(/\\s+/).filter(Boolean).length;\n\nreturn [{\n  json: {\n    analysis_id: `AN-${video.youtube_video_id}`,\n    video_id: video.video_id,\n    niche: video.niche,\n    video_title: video.video_title,\n    video_url: video.video_url,\n    transcript_status: 'FETCHED',\n    transcript_text: transcriptText,\n    transcript_length_words: words,\n    ai_episode_score: '',\n    recommended_strategy: '',\n    recommended_start_sec: '',\n    recommended_end_sec: '',\n    reason_for_strategy: '',\n    rights_risk: '',\n    permission_risk: '',\n    monetization_risk: '',\n    originality_potential: '',\n    kenya_relevance: '',\n    ai_json_output: '',\n    created_at: new Date().toISOString(),\n  },\n  pairedItem: { item: 0 },\n}];"
       },
       "id": "a1b2c3d4-0004-4000-8000-000000000007",
       "name": "Build Analysis Row",
@@ -148,95 +143,24 @@
       ]
     },
     {
-      "parameters": {
-        "operation": "toText",
-        "sourceProperty": "transcript_full",
-        "binaryPropertyName": "data",
-        "options": {
-          "fileName": "={{ $json.analysis_id }}.txt"
-        }
-      },
-      "id": "a1b2c3d4-0004-4000-8000-000000000015",
-      "name": "Convert Transcript To File",
-      "type": "n8n-nodes-base.convertToFile",
-      "typeVersion": 1.1,
+      "id": "a1b2c3d4-0004-4000-8000-000000000008",
+      "name": "Upsert Transcript_Analysis",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         1540,
         20
-      ]
-    },
-    {
-      "parameters": {
-        "resource": "file",
-        "operation": "upload",
-        "name": "={{ $(\"Build Analysis Row\").first().json.analysis_id }}.txt",
-        "driveId": {
-          "__rl": true,
-          "mode": "list",
-          "value": "My Drive"
-        },
-        "folderId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "TRANSCRIPTS_DRIVE_FOLDER_ID"
-        },
-        "inputDataFieldName": "data",
-        "options": {}
-      },
-      "id": "a1b2c3d4-0004-4000-8000-000000000016",
-      "name": "Upload Transcript To Drive",
-      "type": "n8n-nodes-base.googleDrive",
-      "typeVersion": 3,
-      "position": [
-        1760,
-        20
       ],
-      "onError": "continueRegularOutput"
-    },
-    {
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "const row = { ...$('Build Analysis Row').first().json };\nconst drive = $input.first().json || {};\nrow.transcript_full_file_id = drive.id || '';\nrow.transcript_full_url = drive.webViewLink || (drive.id ? `https://drive.google.com/file/d/${drive.id}/view` : '');\ndelete row.transcript_full;\nreturn [{ json: row, pairedItem: { item: 0 } }];"
-      },
-      "id": "a1b2c3d4-0004-4000-8000-000000000017",
-      "name": "Attach Transcript URL",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1980,
-        20
-      ]
-    },
-    {
-      "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Transcript_Analysis"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "analysis_id"
-          ]
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH incoming AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'analysis_id'), '') IS NOT NULL\n), typed AS (\n  SELECT jsonb_populate_record(NULL::short_videos.transcript_analysis, row) AS record\n  FROM incoming\n  WHERE row IS NOT NULL\n)\nINSERT INTO short_videos.transcript_analysis (analysis_id, video_id, niche, source_id, video_title, video_url, transcript_status, transcript_text, transcript_length_words, created_at)\nSELECT (record).analysis_id,\n       (record).video_id,\n       (record).niche,\n       (record).source_id,\n       (record).video_title,\n       (record).video_url,\n       (record).transcript_status,\n       (record).transcript_text,\n       (record).transcript_length_words,\n       (record).created_at\nFROM typed\nON CONFLICT (analysis_id) DO UPDATE SET\n  video_id = EXCLUDED.video_id,\n  niche = EXCLUDED.niche,\n  source_id = EXCLUDED.source_id,\n  video_title = EXCLUDED.video_title,\n  video_url = EXCLUDED.video_url,\n  transcript_status = EXCLUDED.transcript_status,\n  transcript_text = EXCLUDED.transcript_text,\n  transcript_length_words = EXCLUDED.transcript_length_words,\n  created_at = EXCLUDED.created_at\nRETURNING *;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
         }
       },
-      "id": "a1b2c3d4-0004-4000-8000-000000000008",
-      "name": "Append Transcript_Analysis",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
-      "position": [
-        2200,
-        20
-      ],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000
@@ -251,40 +175,29 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2420,
+        1760,
         20
       ]
     },
     {
-      "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Candidate_Videos"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "video_id"
-          ]
-        }
-      },
       "id": "a1b2c3d4-0004-4000-8000-000000000010",
       "name": "Update Candidate OK",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
-        2640,
+        1980,
         20
       ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH rows AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'video_id'), '') IS NOT NULL\n), incoming AS (\n  SELECT jsonb_populate_record(NULL::short_videos.candidate_videos, row) AS record\n  FROM rows\n  WHERE row IS NOT NULL\n)\nUPDATE short_videos.candidate_videos AS target SET\n  transcript_available = (incoming.record).transcript_available,\n  language = (incoming.record).language\nFROM incoming\nWHERE target.video_id = (incoming.record).video_id\nRETURNING target.*;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
+        }
+      },
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000
@@ -298,7 +211,7 @@
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        2860,
+        2200,
         20
       ]
     },
@@ -317,35 +230,24 @@
       ]
     },
     {
-      "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Candidate_Videos"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "video_id"
-          ]
-        }
-      },
       "id": "a1b2c3d4-0004-4000-8000-000000000013",
       "name": "Update Candidate Failed",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         1540,
         220
       ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH rows AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'video_id'), '') IS NOT NULL\n), incoming AS (\n  SELECT jsonb_populate_record(NULL::short_videos.candidate_videos, row) AS record\n  FROM rows\n  WHERE row IS NOT NULL\n)\nUPDATE short_videos.candidate_videos AS target SET\n  transcript_available = (incoming.record).transcript_available,\n  validity_status = (incoming.record).validity_status,\n  rejection_reason = (incoming.record).rejection_reason,\n  processing_status = (incoming.record).processing_status\nFROM incoming\nWHERE target.video_id = (incoming.record).video_id\nRETURNING target.*;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
+        }
+      },
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000
@@ -443,47 +345,14 @@
       "main": [
         [
           {
-            "node": "Convert Transcript To File",
+            "node": "Upsert Transcript_Analysis",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Convert Transcript To File": {
-      "main": [
-        [
-          {
-            "node": "Upload Transcript To Drive",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Upload Transcript To Drive": {
-      "main": [
-        [
-          {
-            "node": "Attach Transcript URL",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Attach Transcript URL": {
-      "main": [
-        [
-          {
-            "node": "Append Transcript_Analysis",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Append Transcript_Analysis": {
+    "Upsert Transcript_Analysis": {
       "main": [
         [
           {

@@ -4,6 +4,7 @@ const {
   applyValidityRules,
   buildRiskBySource,
   computeEngagementMetrics,
+  passesEngagementGate,
   scoreCandidate,
 } = require('../workflow-code/validity-check');
 
@@ -65,14 +66,17 @@ test('computes engagement metrics as percentage-formatted decimals', () => {
     engagement_percentage: 0.0205,
   });
 
+  // Spec Section 1 item 2: the percentage columns are nullable now, and zero
+  // views means the percentage is undefined rather than zero. Writing 0 was a
+  // Sheets formatting convention.
   assert.deepEqual(computeEngagementMetrics({
     view_count: 0,
     like_count: 200,
     comment_count: 5,
   }), {
-    like_percentage: 0,
-    comment_percentage: 0,
-    engagement_percentage: 0,
+    like_percentage: null,
+    comment_percentage: null,
+    engagement_percentage: null,
   });
 });
 
@@ -247,4 +251,63 @@ test('skips already processed or already classified rows', () => {
   ], {});
 
   assert.deepEqual(rows, []);
+});
+
+// Review Focus 2. Section 1 replaced "WF3 writes 0 when views are zero" with a
+// nullable numeric, so the thresholds now meet NULL. A NULL must reject the
+// video, never pass the threshold and never throw.
+test('a NULL percentage fails the engagement gate without throwing', () => {
+  assert.equal(passesEngagementGate({ view_count: 50000 }, {
+    like_percentage: null, comment_percentage: null, engagement_percentage: null,
+  }), false);
+  assert.equal(passesEngagementGate({ view_count: 50000 }, {
+    like_percentage: undefined, comment_percentage: undefined, engagement_percentage: undefined,
+  }), false);
+  // An empty string is what a Sheets-era row carried for a blank cell, and it
+  // must not pass either, because Number('') is 0.
+  assert.equal(passesEngagementGate({ view_count: 50000 }, {
+    like_percentage: '', comment_percentage: '', engagement_percentage: '',
+  }), false);
+});
+
+test('a candidate with no engagement counts is rejected, not scored as zero', () => {
+  const [row] = applyValidityRules([{
+    video_id: 'vid-null',
+    processing_status: 'NEW',
+    video_title: 'A long podcast interview',
+    duration_seconds: 1800,
+    view_count: 50000,
+    like_count: null,
+    comment_count: null,
+  }], {});
+  assert.equal(row.validity_status, 'REJECTED');
+  assert.equal(row.rejection_reason, 'LOW_ENGAGEMENT');
+});
+
+test('a zero-view candidate carries NULL percentages into the store', () => {
+  const [row] = applyValidityRules([{
+    video_id: 'vid-zero',
+    processing_status: 'NEW',
+    video_title: 'A long podcast interview',
+    duration_seconds: 1800,
+    view_count: 0,
+    like_count: 200,
+    comment_count: 5,
+  }], {});
+  assert.equal(row.like_percentage, null);
+  assert.equal(row.engagement_percentage, null);
+  assert.equal(row.validity_status, 'REJECTED');
+});
+
+// A numeric threshold comparison must behave exactly as it did before, or the
+// nullability change quietly re-decides which videos pass.
+test('numeric percentages decide the gate exactly as they did before', () => {
+  const atThreshold = { like_percentage: 0.02, comment_percentage: 0.0005, engagement_percentage: 0.0205 };
+  assert.equal(passesEngagementGate({ view_count: 10000 }, atThreshold), true);
+  assert.equal(passesEngagementGate({ view_count: 9999 }, atThreshold), false);
+  assert.equal(passesEngagementGate({ view_count: 10000 }, { ...atThreshold, comment_percentage: 0.0004 }), false);
+  // Postgres numeric comes back from the Postgres node as a string.
+  assert.equal(passesEngagementGate({ view_count: '10000' }, {
+    like_percentage: '0.02', comment_percentage: '0.0005', engagement_percentage: '0.0205',
+  }), true);
 });

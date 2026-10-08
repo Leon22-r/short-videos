@@ -1643,6 +1643,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Create: `domains/short-videos/workflow-code/table-node.js`
 - Create: `domains/short-videos/tests/no-google-sheets-nodes.test.js`
 - Create: `domains/short-videos/tests/table-node.test.js`
+- Create: `domains/short-videos/tests/table-node-postgres.test.js`
 - Delete: `domains/short-videos/tests/workflow-sheets-execute-once.test.js`
 
 **Interfaces:**
@@ -1666,6 +1667,8 @@ module.exports = {
 
 This is the assertion that defines "the migration is done". `workflow-sheets-execute-once.test.js` cannot serve this purpose: it collects `googleSheets` read nodes missing `executeOnce` and asserts the collection is empty, so once the nodes are gone it passes while asserting nothing.
 
+It is written as a **ratchet**, not a flat assertion. A flat assertion would be red from this task until Task 15, leaving `npm test` failing at five consecutive commits and breaking both the plan's own commit-after-every-task rule and bisectability. Instead a committed ceiling starts at the measured baseline and each task that removes nodes lowers it in the same commit. Two assertions per counter: one fails if the count rises above the ceiling (a reintroduced node), one fails if it drops below (a stale ceiling that must be lowered). The completion criterion is unchanged — the ceiling reaching 0 at Task 15.
+
 ```js
 const assert = require('node:assert/strict');
 const { readdirSync, readFileSync } = require('node:fs');
@@ -1675,10 +1678,23 @@ const test = require('node:test');
 const workflowsDir = path.join(__dirname, '..', 'workflows');
 const workflowFiles = () => readdirSync(workflowsDir).filter((file) => file.endsWith('.json')).sort();
 
-// The completion criterion for the Supabase migration. Unlike the test this
-// replaces, it cannot pass vacuously: it fails while any Sheets node remains
-// and keeps failing if one is reintroduced.
-test('no Google Sheets node survives anywhere in the generated workflows', () => {
+// The completion criterion for the Supabase migration is SHEETS_NODE_CEILING
+// reaching 0. It is a ratchet rather than a flat assertion so the suite stays
+// green at every commit: each task that removes Sheets nodes lowers the
+// ceiling in the same commit, and the suite is bisectable throughout.
+//
+//   Task 11 (here)                          65
+//   Task 12  WF1, WF2, WF3        -9        56
+//   Task 13  WF4, WF5, WF6       -20        36
+//   Task 14  WF8..WF8d, WF9, WF10 -22       14
+//   Task 15  WF11..WF14          -14         0
+//
+// Unlike the test this replaces, it cannot pass vacuously: the ceiling must be
+// lowered as nodes go, and a reintroduced node breaks it immediately.
+const SHEETS_NODE_CEILING = 65;
+const SHEETS_PLACEHOLDER_CEILING = 16;
+
+const sheetsNodes = () => {
   const found = [];
   for (const file of workflowFiles()) {
     const workflow = JSON.parse(readFileSync(path.join(workflowsDir, file), 'utf8'));
@@ -1686,30 +1702,93 @@ test('no Google Sheets node survives anywhere in the generated workflows', () =>
       if (node.type === 'n8n-nodes-base.googleSheets') found.push(`${file}: ${node.name}`);
     }
   }
-  assert.deepEqual(found, [], `${found.length} Google Sheets nodes remain`);
+  return found;
+};
+
+const placeholderFiles = () => workflowFiles().filter(
+  (file) => readFileSync(path.join(workflowsDir, file), 'utf8').includes('GOOGLE_SHEETS_DOCUMENT_ID'),
+);
+
+test('no Google Sheets node is reintroduced', () => {
+  const found = sheetsNodes();
+  assert.ok(
+    found.length <= SHEETS_NODE_CEILING,
+    `${found.length} Google Sheets nodes, above the ceiling of ${SHEETS_NODE_CEILING}:\n${found.join('\n')}`,
+  );
+});
+
+test('the Google Sheets node ceiling is not stale', () => {
+  const found = sheetsNodes();
+  assert.equal(
+    found.length,
+    SHEETS_NODE_CEILING,
+    `${found.length} Google Sheets nodes remain but the ceiling is ${SHEETS_NODE_CEILING}. `
+    + 'Lower SHEETS_NODE_CEILING to the new count in this same commit.',
+  );
 });
 
 // A guard on the guard: if the workflows directory is empty or unreadable the
-// test above would pass for the wrong reason.
+// tests above would pass for the wrong reason.
 test('the workflow set is the expected size', () => {
   assert.equal(workflowFiles().length, 16);
 });
 
-// GOOGLE_SHEETS_DOCUMENT_ID was the placeholder every Sheets node carried.
-test('the Sheets document placeholder is gone from the workflows', () => {
-  for (const file of workflowFiles()) {
-    const raw = readFileSync(path.join(workflowsDir, file), 'utf8');
-    assert.doesNotMatch(raw, /GOOGLE_SHEETS_DOCUMENT_ID/, `${file} still references the Sheets document`);
-  }
+// GOOGLE_SHEETS_DOCUMENT_ID was the placeholder every Sheets node carried, so
+// it ratchets on the same schedule: 16 -> 13 -> 10 -> 4 -> 0.
+test('the Sheets document placeholder is not reintroduced', () => {
+  const found = placeholderFiles();
+  assert.ok(
+    found.length <= SHEETS_PLACEHOLDER_CEILING,
+    `${found.length} workflows reference the Sheets document, above the ceiling of `
+    + `${SHEETS_PLACEHOLDER_CEILING}:\n${found.join('\n')}`,
+  );
+});
+
+test('the Sheets document placeholder ceiling is not stale', () => {
+  assert.equal(
+    placeholderFiles().length,
+    SHEETS_PLACEHOLDER_CEILING,
+    'Lower SHEETS_PLACEHOLDER_CEILING to the new count in this same commit.',
+  );
 });
 ```
 
-- [ ] **Step 2: Run it to verify it fails loudly**
+- [ ] **Step 2: Run it and prove the ratchet bites**
 
 Run: `node --test domains/short-videos/tests/no-google-sheets-nodes.test.js`
-Expected: FAIL listing 65 nodes. That count is the spec's measured baseline; if it is not 65, stop and report the discrepancy before continuing.
+Expected: PASS, with `SHEETS_NODE_CEILING` at 65 and `SHEETS_PLACEHOLDER_CEILING` at 16. Those counts are the spec's measured baseline; if either differs, stop and report the discrepancy before continuing.
+
+Then prove the ratchet bites rather than trusting a green: lower `SHEETS_NODE_CEILING` to 56 temporarily, re-run, and confirm both node assertions FAIL. Restore it to 65 before continuing.
 
 - [ ] **Step 3: Write the helper**
+
+`upsertFromJsonb` below differs from the sketch this plan originally carried.
+That sketch projected each column as `row->>'column'`, copying
+`upsert-publishing-jobs.sql`. That file works only because `publishing_jobs` is
+entirely `text`. Migration 004 gives `candidate_videos` `integer`, `bigint`,
+`numeric`, `boolean` and `timestamptz` columns, and Postgres refuses the
+projection outright:
+
+```
+ERROR:  column "duration_seconds" is of type integer but expression is of type text
+HINT:  You will need to rewrite or cast the expression.
+```
+
+So the row is typed through `jsonb_populate_record(NULL::short_videos.<table>,
+row)`, which casts via the table's own row type and therefore needs no
+column-type list and cannot drift from the schema. Two consequences follow, and
+both match what Sheets did:
+
+- An empty string is stripped to absent before typing. `''` is a valid `text`
+  value but not a valid integer or timestamp, and a blank cell was how Sheets
+  spelled "no value".
+- The conflict branch coalesces to the stored row. Sheets' `appendOrUpdate`
+  wrote only the columns it was given, so `SET col = EXCLUDED.col` would blank
+  every column absent from an incoming row.
+
+`domains/short-videos/tests/table-node-postgres.test.js` proves all four
+behaviours against a throwaway cluster.
+
 
 ```js
 const fs = require('node:fs');
@@ -1748,20 +1827,45 @@ const postgresNode = (id, name, position, query, queryReplacement = '', extra = 
 const selectAll = (table) => `SELECT * FROM short_videos.${table};`;
 
 // One atomic statement replacing Sheets' read-then-write appendOrUpdate.
-// Follows upsert-publishing-jobs.sql: the rows arrive as a jsonb array in $1.
+// Follows upsert-publishing-jobs.sql in taking the rows as a jsonb array in
+// $1, but it cannot reuse that file's `row->>'column'` projection: that works
+// only because publishing_jobs is entirely text. The pipeline-store tables
+// have integer, bigint, numeric, boolean and timestamptz columns, and Postgres
+// will not implicitly cast text to those in an INSERT — it fails with
+// `column "duration_seconds" is of type integer but expression is of type
+// text`. jsonb_populate_record casts through the table's own row type instead,
+// so the statement needs no column-type list and cannot drift from the schema.
+//
+// Two further differences from a naive projection, both about what Sheets did:
+//   - An empty string is stripped to absent before typing. '' is a valid text
+//     value but not a valid integer or timestamp, and a blank cell was how
+//     Sheets spelled "no value".
+//   - The conflict branch coalesces to the stored row, so a partial write
+//     updates the fields it carries and leaves the rest. Sheets' appendOrUpdate
+//     only ever wrote the columns it was given; `SET col = EXCLUDED.col` would
+//     instead blank every column absent from the incoming row.
 const upsertFromJsonb = ({ table, key, columns }) => {
+  const qualified = `short_videos.${table}`;
   const assignments = columns
     .filter((column) => column !== key)
-    .map((column) => `  ${column} = EXCLUDED.${column}`)
+    .map((column) => `  ${column} = COALESCE(EXCLUDED.${column}, ${qualified}.${column})`)
     .join(',\n');
   return `WITH incoming AS (
-  SELECT value AS row
-  FROM jsonb_array_elements($1::jsonb)
-  WHERE NULLIF(btrim(value->>'${key}'), '') IS NOT NULL
+  SELECT (
+    SELECT jsonb_object_agg(field.key, field.value)
+    FROM jsonb_each(element) AS field
+    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL
+  ) AS row
+  FROM jsonb_array_elements($1::jsonb) AS element
+  WHERE NULLIF(btrim(element->>'${key}'), '') IS NOT NULL
+), typed AS (
+  SELECT jsonb_populate_record(NULL::${qualified}, row) AS record
+  FROM incoming
+  WHERE row IS NOT NULL
 )
-INSERT INTO short_videos.${table} (${columns.join(', ')})
-SELECT ${columns.map((column) => `  row->>'${column}'`).join(',\n       ')}
-FROM incoming
+INSERT INTO ${qualified} (${columns.join(', ')})
+SELECT ${columns.map((column) => `(record).${column}`).join(',\n       ')}
+FROM typed
 ON CONFLICT (${key}) DO UPDATE SET
 ${assignments}
 RETURNING *;`;
@@ -1819,7 +1923,7 @@ git rm domains/short-videos/tests/workflow-sheets-execute-once.test.js
 - [ ] **Step 6: Run the suite**
 
 Run: `npm test`
-Expected: `table-node.test.js` PASSes; `no-google-sheets-nodes.test.js` still FAILs with 65 nodes. That is correct — Tasks 12–15 drive it to zero. Every other test passes.
+Expected: everything PASSes, including `no-google-sheets-nodes.test.js` at a ceiling of 65. Tasks 12–15 drive the ceiling to zero, lowering it in the same commit that removes the nodes, so the suite is green at every commit in between.
 
 - [ ] **Step 7: Commit**
 
@@ -1833,7 +1937,11 @@ the Sheets nodes are gone it would pass while asserting nothing. The
 replacement asserts no googleSheets node exists at all, which is the
 migration's completion criterion and cannot pass vacuously.
 
-no-google-sheets-nodes.test.js is red until the workflows are regenerated.
+The replacement is a ratchet: a committed ceiling, starting at the measured
+65 nodes and 16 placeholder references, lowered by each of Tasks 12-15 in the
+same commit that removes the nodes. A flat assertion would be red at five
+consecutive commits. Separate assertions catch a count above the ceiling (a
+reintroduced node) and below it (a ceiling left stale).
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -1847,10 +1955,10 @@ These three are the slice the spec verifies live before anything downstream is a
 **Files:**
 - Modify: `domains/short-videos/workflow-code/create-wf2-video-fetch.js`
 - Modify: `domains/short-videos/workflow-code/create-wf3-validity-check.js`
-- Modify: `domains/short-videos/workflow-code/create-remaining-workflows.js` (WF1 only)
+- Modify: `domains/short-videos/workflow-code/update-wf1-code.js` (WF1 — **not** `create-remaining-workflows.js`, which does not build WF1)
 - Modify: `domains/short-videos/workflow-code/validity-check.js`
 - Modify: `domains/short-videos/tests/validity-check.test.js`
-- Create: `domains/short-videos/postgres/queries/select-source-channels.sql`, `select-candidate-videos.sql`, `upsert-candidate-videos.sql`, `upsert-source-channels.sql`
+- Create: `domains/short-videos/postgres/queries/select-source-channels.sql`, `select-candidate-videos.sql`, `upsert-candidate-videos.sql`, `update-source-resolution.sql`, `update-source-backfill-state.sql`, `update-candidate-validity.sql`
 - Regenerate: `workflows/01-source-channel-registry.json`, `02-video-fetch.json`, `03-validity-check.json`
 
 **Interfaces:**
@@ -1859,7 +1967,18 @@ These three are the slice the spec verifies live before anything downstream is a
 
 - [ ] **Step 1: Write the failing NULL-percentage test (Review Focus 2)**
 
-Spec Section 1 item 2 drops the write-`0`-when-views-are-zero convention, so `like_percentage` can now arrive as NULL where WF3 used to see `0`. Append to `domains/short-videos/tests/validity-check.test.js`:
+Spec Section 1 item 2 drops the write-`0`-when-views-are-zero convention, so
+`like_percentage` can now arrive as NULL where WF3 used to see `0`.
+
+Two corrections to the sketch below. There is no `checkValidity` export —
+`validity-check.js` exports `applyValidityRules`, `classifyCandidate`,
+`computeEngagementMetrics` and `passesEngagementGate`. And the percentages are
+*computed* from the counts rather than read from the row, so the NULL does not
+arrive from the database at all: it has to start being produced.
+`computeEngagementMetrics` currently returns `0` for all three percentages when
+views are zero, which is the Sheets convention the spec deletes. So the change
+is two-sided — the metrics return NULL when views are zero, and the gate treats
+NULL as failing. Append to `domains/short-videos/tests/validity-check.test.js`:
 
 ```js
 // Review Focus 2. Section 1 replaced "WF3 writes 0 when views are zero" with
@@ -1935,7 +2054,27 @@ process.stdout.write(upsertFromJsonb({ table: 'candidate_videos', key: 'video_id
 " > domains/short-videos/postgres/queries/upsert-candidate-videos.sql
 ```
 
-`upsert-source-channels.sql`, the same way with the Tab 1 column list, keyed on `source_id`.
+There is no `upsert-source-channels.sql`. Nothing upserts a whole channel row:
+the operator creates it through the review UI, and WF1 and WF2 each update a
+few columns of an existing row. Those are three `updateFromJsonb` files instead
+— `update-source-resolution.sql` (WF1: the resolved ids, `last_checked_at`,
+`notes`), `update-source-backfill-state.sql` (WF2: the backfill counters and
+token) and `update-candidate-validity.sql` (WF3: the percentages and the
+classification).
+
+**Why an UPDATE rather than an upsert for those three.** `INSERT ... ON
+CONFLICT` builds its insert row before the conflict is detected, so a statement
+naming only the columns it writes fails on every `NOT NULL` column it omits,
+even when the row exists and the intent is an update:
+
+```
+ERROR:  null value in column "niche" of relation "source_channels" violates not-null constraint
+```
+
+`updateFromJsonb` in `table-node.js` names only what it changes. A blank cell
+still lands as NULL, which is what lets WF2 clear `backfill_next_page_token`
+when a backfill finishes — something a conflict branch coalescing to the stored
+row could never do.
 
 Then verify the generated SQL actually runs:
 
@@ -1961,7 +2100,12 @@ Then rewrite each call site. The three Sheets operations map as the spec's table
 
 Keep every node `id` and `position` unchanged so the regenerated JSON diffs cleanly. Rename nodes only where `Append` became `Upsert`, and update the matching `connections` keys when you do.
 
-Do the same for WF1 inside `create-remaining-workflows.js`, which reads and writes only `Source_Channels`.
+WF1 is different: it is patched in place by `update-wf1-code.js`, not emitted
+whole, and `create-remaining-workflows.js` does not build it at all. Replace its
+two Sheets nodes in that script with `Object.assign(node, postgresNode(...))`,
+keeping each node's existing id and position, and widen the
+`retryOnFail`/`maxTries` loop at the top of the file from `googleSheets` to
+`postgres`.
 
 - [ ] **Step 7: Regenerate and inspect the diff**
 
@@ -1977,7 +2121,7 @@ Expected: `01`, `02`, `03` change; the other 13 are untouched because their gene
 - [ ] **Step 8: Run the suite**
 
 Run: `npm test`
-Expected: `no-google-sheets-nodes.test.js` still FAILs, now listing 56 nodes instead of 65 (the 9 across WF1/2/3 are gone). Everything else PASSes, including `video-fetch.test.js` and `validity-check.test.js`.
+Expected: everything PASSes. Lower `SHEETS_NODE_CEILING` to 56 and `SHEETS_PLACEHOLDER_CEILING` to 13 in this same commit — the 9 nodes across WF1/2/3 are gone. `video-fetch.test.js` and `validity-check.test.js` pass too.
 
 - [ ] **Step 9: Commit**
 
@@ -2072,7 +2216,7 @@ node domains/short-videos/workflow-code/create-remaining-workflows.js
 npm test
 ```
 
-Expected: `no-google-sheets-nodes.test.js` FAILs with 36 remaining (56 − 20 across WF4/5/6). Everything else PASSes.
+Expected: everything PASSes. Lower `SHEETS_NODE_CEILING` to 36 (56 − 20 across WF4/5/6) and `SHEETS_PLACEHOLDER_CEILING` to 10 in this same commit.
 
 - [ ] **Step 7: Commit**
 
@@ -2191,7 +2335,7 @@ node domains/short-videos/workflow-code/create-remaining-workflows.js
 npm test
 ```
 
-Expected: `no-google-sheets-nodes.test.js` FAILs with 14 remaining (36 − 22 across WF8/8b/8c/8d/9/10). Everything else PASSes.
+Expected: everything PASSes. Lower `SHEETS_NODE_CEILING` to 14 (36 − 22 across WF8/8b/8c/8d/9/10) and `SHEETS_PLACEHOLDER_CEILING` to 4 in this same commit.
 
 - [ ] **Step 6: Commit**
 
@@ -2285,7 +2429,7 @@ node domains/short-videos/workflow-code/create-remaining-workflows.js
 npm test
 ```
 
-Expected: **everything PASSes, including `no-google-sheets-nodes.test.js`.** That green is the migration's completion criterion. Verify the count directly as well:
+Expected: **everything PASSes with `SHEETS_NODE_CEILING` and `SHEETS_PLACEHOLDER_CEILING` both lowered to 0.** That zero ceiling is the migration's completion criterion. Verify the count directly as well:
 
 ```bash
 grep -rc 'googleSheets' domains/short-videos/workflows/ | grep -v ':0' || echo "zero Google Sheets nodes remain"
@@ -2648,6 +2792,23 @@ module.exports = { select, insert, patch, rpc };
 
 - [ ] **Step 6: Write `server.js`**
 
+Three changes to the sketch below, applied when this task was executed:
+
+1. `new URL(request.url, ...)` sits **inside** a `try`, and falls back to
+   `127.0.0.1` when `Host` is absent. As written outside the try, a malformed
+   or missing `Host` header throws out of the request handler rather than
+   answering 400.
+2. A `sameOrigin(request, host)` guard rejects any non-GET whose
+   `Sec-Fetch-Site` is `cross-site`/`same-site`, or whose `Origin` does not
+   match the host, with 403. D5 makes the network the authentication, so there
+   is no session to bind a CSRF token to — without this guard any page the
+   operator has open can POST an approval or a rejection. A client sending
+   neither header is treated as a plain form post.
+3. `server.listen` is guarded by `require.main === module` and the module
+   exports `{ server, sameOrigin }`, so the guard is unit-testable without
+   binding a port or reaching Supabase.
+
+
 ```js
 const http = require('node:http');
 const render = require('./render');
@@ -2812,6 +2973,15 @@ Run: `npm test`
 Expected: all PASS.
 
 - [ ] **Step 10: Smoke-test it against the real Supabase project**
+
+This step needs Tasks 3–7 and 10 merged (the tables and the `approve_clip` /
+`reject_clip` functions) plus `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`, which
+are the PostgREST API credentials from Project Settings → API and are *not* the
+database connection string from Task 1. Until both are available, run the same
+checks against a stub PostgREST on localhost: it proves the routes, the
+PostgREST query strings, the HTML escaping, the 403 on a cross-site POST and
+the absence of any credential in the page, and leaves only the real schema and
+the two functions unproven.
 
 ```bash
 docker compose -f hosts/compose.local.yaml up -d --build review-ui

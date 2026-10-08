@@ -35,7 +35,7 @@ function hasCreatedClip(moment, clips) {
   const jobId = ytdlpJobIdForMoment(moment);
   return (clips || []).some((clip) => (
     String(clip.created_clip_id || '') === createdId ||
-    String(clip.ssemble_job_id || '') === jobId
+    String(clip.download_job_id || '') === jobId
   ));
 }
 
@@ -45,7 +45,7 @@ function planYtDlpDownloads(moments, createdClips, folders = {}, options = {}) {
   const pending = [];
 
   for (const moment of moments || []) {
-    if (String(moment.ssemble_status || '') !== 'PENDING') continue;
+    if (String(moment.download_status || '') !== 'PENDING') continue;
     if (!moment.clip_moment_id || !moment.source_video_url) continue;
 
     let range;
@@ -64,7 +64,7 @@ function planYtDlpDownloads(moments, createdClips, folders = {}, options = {}) {
     pending.push({
       clip_moment_id: moment.clip_moment_id,
       created_clip_id: createdClipId,
-      ssemble_job_id: ytdlpJobId,
+      download_job_id: ytdlpJobId,
       video_id: moment.video_id,
       niche: moment.niche,
       source_id: moment.source_id || '',
@@ -145,8 +145,8 @@ function buildYtDlpCommand(request) {
 function buildMomentStatus(request, status, extra = {}) {
   return {
     clip_moment_id: request.clip_moment_id,
-    ssemble_status: status,
-    ssemble_job_id: request.ssemble_job_id || '',
+    download_status: status,
+    download_job_id: request.download_job_id || '',
     ...extra,
   };
 }
@@ -154,7 +154,7 @@ function buildMomentStatus(request, status, extra = {}) {
 function buildCreatedClipRow(request, drive, now = new Date().toISOString()) {
   return {
     created_clip_id: request.created_clip_id,
-    ssemble_job_id: request.ssemble_job_id,
+    download_job_id: request.download_job_id,
     video_id: request.video_id,
     niche: request.niche,
     clip_title: String(request.clip_title || ''),
