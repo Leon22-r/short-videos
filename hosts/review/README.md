@@ -38,7 +38,7 @@ Set `REVIEW_BIND_ADDRESS`, `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` in
 
 ```bash
 docker compose -f hosts/compose.local.yaml up -d --build review-ui
-curl -sS "http://${REVIEW_BIND_ADDRESS}:${REVIEW_PORT:-8080}/"
+curl -sS "http://${REVIEW_BIND_ADDRESS}:${REVIEW_PORT:-5680}/"
 ```
 
 Locally, without Docker:
