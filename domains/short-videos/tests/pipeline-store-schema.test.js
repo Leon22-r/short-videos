@@ -77,3 +77,22 @@ test('clip and render tables use arrays, jsonb and real timestamps', () => {
 
   assert.doesNotMatch(schema, /text NOT NULL DEFAULT ''/);
 });
+
+test('asset tables move the branding uniqueness check to write time', () => {
+  const schema = read('postgres/migrations/007-pipeline-store-assets.sql');
+
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS short_videos\.music_library/);
+  assert.match(schema, /loop_allowed\s+boolean/);
+  assert.match(schema, /times_used\s+integer/);
+  assert.match(schema, /last_used_at\s+timestamptz/);
+
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS short_videos\.channel_branding/);
+  // Spec Section 1: a unique partial index turns a mid-render failure into a write-time one.
+  assert.match(schema, /CREATE UNIQUE INDEX IF NOT EXISTS channel_branding_one_active_per_niche_idx/);
+  assert.match(schema, /WHERE active_status/);
+
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS short_videos\.error_log/);
+  assert.match(schema, /raw_payload\s+jsonb/);
+
+  assert.doesNotMatch(schema, /text NOT NULL DEFAULT ''/);
+});

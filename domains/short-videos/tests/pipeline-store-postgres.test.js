@@ -82,4 +82,24 @@ test('real Postgres: empty newline lists become NULL or {}, never {""}', { skip:
   });
 });
 
+// Spec Section 1: WF8c used to discover a duplicate branding row mid-render.
+test('real Postgres: a second active branding row for a niche is rejected at write time', { skip: !available }, async () => {
+  await withCluster(async ({ sql, file }) => {
+    for (const migration of migrationFiles()) file(migration);
+
+    const insert = (niche, active) => sql(
+      `INSERT INTO short_videos.channel_branding(niche, watermark_drive_file_id, active_status)
+       VALUES ('${niche}', 'wm-1', ${active})`);
+
+    insert('FINANCE_BUSINESS', 'true');
+    assert.throws(
+      () => insert('FINANCE_BUSINESS', 'true'),
+      /channel_branding_one_active_per_niche_idx|duplicate key/,
+      'a second active row for the same niche must be rejected',
+    );
+    // An inactive duplicate is how an operator keeps an old branding row around.
+    insert('FINANCE_BUSINESS', 'false');
+  });
+});
+
 module.exports = { withCluster, migrationFiles, available, pgBin };
