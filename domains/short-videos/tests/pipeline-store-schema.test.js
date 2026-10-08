@@ -143,3 +143,17 @@ test('publishing_jobs retyping removes the empty-string convention and safe_sche
   assert.match(down, /ALTER COLUMN approved_id SET NOT NULL/);
   assert.match(down, /CREATE OR REPLACE FUNCTION short_videos\.safe_schedule_at/);
 });
+
+// Supabase's anon key is public by design and is what mints an 'authenticated'
+// token. These tables have no row level security, so any table grant to either
+// role is a full read of the pipeline, including publishing_jobs. The review UI
+// connects as service_role from a server-side container and nothing else talks
+// to this schema.
+test('the grants migration gives anon and authenticated nothing', () => {
+  const grants = read('postgres/migrations/011-postgrest-grants.sql');
+  assert.match(grants, /GRANT USAGE ON SCHEMA short_videos TO service_role/);
+  for (const role of ['authenticated', 'anon']) {
+    assert.doesNotMatch(grants, new RegExp(`GRANT[^;]*TO ${role}`, 's'), `${role} must receive no grant`);
+    assert.doesNotMatch(grants, new RegExp(`ALTER DEFAULT PRIVILEGES[^;]*TO ${role}`, 's'), `${role} must receive no default privilege`);
+  }
+});
