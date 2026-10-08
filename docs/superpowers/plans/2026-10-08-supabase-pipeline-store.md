@@ -1666,6 +1666,8 @@ module.exports = {
 
 This is the assertion that defines "the migration is done". `workflow-sheets-execute-once.test.js` cannot serve this purpose: it collects `googleSheets` read nodes missing `executeOnce` and asserts the collection is empty, so once the nodes are gone it passes while asserting nothing.
 
+It is written as a **ratchet**, not a flat assertion. A flat assertion would be red from this task until Task 15, leaving `npm test` failing at five consecutive commits and breaking both the plan's own commit-after-every-task rule and bisectability. Instead a committed ceiling starts at the measured baseline and each task that removes nodes lowers it in the same commit. Two assertions per counter: one fails if the count rises above the ceiling (a reintroduced node), one fails if it drops below (a stale ceiling that must be lowered). The completion criterion is unchanged — the ceiling reaching 0 at Task 15.
+
 ```js
 const assert = require('node:assert/strict');
 const { readdirSync, readFileSync } = require('node:fs');
@@ -1675,10 +1677,23 @@ const test = require('node:test');
 const workflowsDir = path.join(__dirname, '..', 'workflows');
 const workflowFiles = () => readdirSync(workflowsDir).filter((file) => file.endsWith('.json')).sort();
 
-// The completion criterion for the Supabase migration. Unlike the test this
-// replaces, it cannot pass vacuously: it fails while any Sheets node remains
-// and keeps failing if one is reintroduced.
-test('no Google Sheets node survives anywhere in the generated workflows', () => {
+// The completion criterion for the Supabase migration is SHEETS_NODE_CEILING
+// reaching 0. It is a ratchet rather than a flat assertion so the suite stays
+// green at every commit: each task that removes Sheets nodes lowers the
+// ceiling in the same commit, and the suite is bisectable throughout.
+//
+//   Task 11 (here)                          65
+//   Task 12  WF1, WF2, WF3        -9        56
+//   Task 13  WF4, WF5, WF6       -20        36
+//   Task 14  WF8..WF8d, WF9, WF10 -22       14
+//   Task 15  WF11..WF14          -14         0
+//
+// Unlike the test this replaces, it cannot pass vacuously: the ceiling must be
+// lowered as nodes go, and a reintroduced node breaks it immediately.
+const SHEETS_NODE_CEILING = 65;
+const SHEETS_PLACEHOLDER_CEILING = 16;
+
+const sheetsNodes = () => {
   const found = [];
   for (const file of workflowFiles()) {
     const workflow = JSON.parse(readFileSync(path.join(workflowsDir, file), 'utf8'));
@@ -1686,28 +1701,63 @@ test('no Google Sheets node survives anywhere in the generated workflows', () =>
       if (node.type === 'n8n-nodes-base.googleSheets') found.push(`${file}: ${node.name}`);
     }
   }
-  assert.deepEqual(found, [], `${found.length} Google Sheets nodes remain`);
+  return found;
+};
+
+const placeholderFiles = () => workflowFiles().filter(
+  (file) => readFileSync(path.join(workflowsDir, file), 'utf8').includes('GOOGLE_SHEETS_DOCUMENT_ID'),
+);
+
+test('no Google Sheets node is reintroduced', () => {
+  const found = sheetsNodes();
+  assert.ok(
+    found.length <= SHEETS_NODE_CEILING,
+    `${found.length} Google Sheets nodes, above the ceiling of ${SHEETS_NODE_CEILING}:\n${found.join('\n')}`,
+  );
+});
+
+test('the Google Sheets node ceiling is not stale', () => {
+  const found = sheetsNodes();
+  assert.equal(
+    found.length,
+    SHEETS_NODE_CEILING,
+    `${found.length} Google Sheets nodes remain but the ceiling is ${SHEETS_NODE_CEILING}. `
+    + 'Lower SHEETS_NODE_CEILING to the new count in this same commit.',
+  );
 });
 
 // A guard on the guard: if the workflows directory is empty or unreadable the
-// test above would pass for the wrong reason.
+// tests above would pass for the wrong reason.
 test('the workflow set is the expected size', () => {
   assert.equal(workflowFiles().length, 16);
 });
 
-// GOOGLE_SHEETS_DOCUMENT_ID was the placeholder every Sheets node carried.
-test('the Sheets document placeholder is gone from the workflows', () => {
-  for (const file of workflowFiles()) {
-    const raw = readFileSync(path.join(workflowsDir, file), 'utf8');
-    assert.doesNotMatch(raw, /GOOGLE_SHEETS_DOCUMENT_ID/, `${file} still references the Sheets document`);
-  }
+// GOOGLE_SHEETS_DOCUMENT_ID was the placeholder every Sheets node carried, so
+// it ratchets on the same schedule: 16 -> 13 -> 10 -> 4 -> 0.
+test('the Sheets document placeholder is not reintroduced', () => {
+  const found = placeholderFiles();
+  assert.ok(
+    found.length <= SHEETS_PLACEHOLDER_CEILING,
+    `${found.length} workflows reference the Sheets document, above the ceiling of `
+    + `${SHEETS_PLACEHOLDER_CEILING}:\n${found.join('\n')}`,
+  );
+});
+
+test('the Sheets document placeholder ceiling is not stale', () => {
+  assert.equal(
+    placeholderFiles().length,
+    SHEETS_PLACEHOLDER_CEILING,
+    'Lower SHEETS_PLACEHOLDER_CEILING to the new count in this same commit.',
+  );
 });
 ```
 
-- [ ] **Step 2: Run it to verify it fails loudly**
+- [ ] **Step 2: Run it and prove the ratchet bites**
 
 Run: `node --test domains/short-videos/tests/no-google-sheets-nodes.test.js`
-Expected: FAIL listing 65 nodes. That count is the spec's measured baseline; if it is not 65, stop and report the discrepancy before continuing.
+Expected: PASS, with `SHEETS_NODE_CEILING` at 65 and `SHEETS_PLACEHOLDER_CEILING` at 16. Those counts are the spec's measured baseline; if either differs, stop and report the discrepancy before continuing.
+
+Then prove the ratchet bites rather than trusting a green: lower `SHEETS_NODE_CEILING` to 56 temporarily, re-run, and confirm both node assertions FAIL. Restore it to 65 before continuing.
 
 - [ ] **Step 3: Write the helper**
 
@@ -1819,7 +1869,7 @@ git rm domains/short-videos/tests/workflow-sheets-execute-once.test.js
 - [ ] **Step 6: Run the suite**
 
 Run: `npm test`
-Expected: `table-node.test.js` PASSes; `no-google-sheets-nodes.test.js` still FAILs with 65 nodes. That is correct — Tasks 12–15 drive it to zero. Every other test passes.
+Expected: everything PASSes, including `no-google-sheets-nodes.test.js` at a ceiling of 65. Tasks 12–15 drive the ceiling to zero, lowering it in the same commit that removes the nodes, so the suite is green at every commit in between.
 
 - [ ] **Step 7: Commit**
 
@@ -1833,7 +1883,11 @@ the Sheets nodes are gone it would pass while asserting nothing. The
 replacement asserts no googleSheets node exists at all, which is the
 migration's completion criterion and cannot pass vacuously.
 
-no-google-sheets-nodes.test.js is red until the workflows are regenerated.
+The replacement is a ratchet: a committed ceiling, starting at the measured
+65 nodes and 16 placeholder references, lowered by each of Tasks 12-15 in the
+same commit that removes the nodes. A flat assertion would be red at five
+consecutive commits. Separate assertions catch a count above the ceiling (a
+reintroduced node) and below it (a ceiling left stale).
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -1977,7 +2031,7 @@ Expected: `01`, `02`, `03` change; the other 13 are untouched because their gene
 - [ ] **Step 8: Run the suite**
 
 Run: `npm test`
-Expected: `no-google-sheets-nodes.test.js` still FAILs, now listing 56 nodes instead of 65 (the 9 across WF1/2/3 are gone). Everything else PASSes, including `video-fetch.test.js` and `validity-check.test.js`.
+Expected: everything PASSes. Lower `SHEETS_NODE_CEILING` to 56 and `SHEETS_PLACEHOLDER_CEILING` to 13 in this same commit — the 9 nodes across WF1/2/3 are gone. `video-fetch.test.js` and `validity-check.test.js` pass too.
 
 - [ ] **Step 9: Commit**
 
@@ -2072,7 +2126,7 @@ node domains/short-videos/workflow-code/create-remaining-workflows.js
 npm test
 ```
 
-Expected: `no-google-sheets-nodes.test.js` FAILs with 36 remaining (56 − 20 across WF4/5/6). Everything else PASSes.
+Expected: everything PASSes. Lower `SHEETS_NODE_CEILING` to 36 (56 − 20 across WF4/5/6) and `SHEETS_PLACEHOLDER_CEILING` to 10 in this same commit.
 
 - [ ] **Step 7: Commit**
 
@@ -2191,7 +2245,7 @@ node domains/short-videos/workflow-code/create-remaining-workflows.js
 npm test
 ```
 
-Expected: `no-google-sheets-nodes.test.js` FAILs with 14 remaining (36 − 22 across WF8/8b/8c/8d/9/10). Everything else PASSes.
+Expected: everything PASSes. Lower `SHEETS_NODE_CEILING` to 14 (36 − 22 across WF8/8b/8c/8d/9/10) and `SHEETS_PLACEHOLDER_CEILING` to 4 in this same commit.
 
 - [ ] **Step 6: Commit**
 
@@ -2285,7 +2339,7 @@ node domains/short-videos/workflow-code/create-remaining-workflows.js
 npm test
 ```
 
-Expected: **everything PASSes, including `no-google-sheets-nodes.test.js`.** That green is the migration's completion criterion. Verify the count directly as well:
+Expected: **everything PASSes with `SHEETS_NODE_CEILING` and `SHEETS_PLACEHOLDER_CEILING` both lowered to 0.** That zero ceiling is the migration's completion criterion. Verify the count directly as well:
 
 ```bash
 grep -rc 'googleSheets' domains/short-videos/workflows/ | grep -v ':0' || echo "zero Google Sheets nodes remain"
