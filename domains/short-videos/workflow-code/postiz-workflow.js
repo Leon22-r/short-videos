@@ -123,8 +123,9 @@ return [{ json: { publish_id: ${job}.publish_id, claimed_by: ${job}.claimed_by, 
   workflow.connections['Route Postiz Outcome'] = { main: [edge('Build Postiz Poll State'), edge('Complete Postiz Publish'), edge('Build Provider Failure State'), edge('Build Provider Failure State')] };
   connect('Build Postiz Read Retry', 'Build Postiz Poll State');
   connect('Build Postiz Poll State', 'Schedule Postiz Poll');
-  connect('Schedule Postiz Poll', 'Redact Provider Processing For Sheet');
-  connect('Complete Postiz Publish', 'Redact Provider Completion For Sheet');
+  // The Sheets mirror these two fed is gone (D1): Postgres was always the
+  // publishing queue's source of truth, and the mirror only existed for the
+  // operator to read. Both writes are terminal now.
   workflow.description += ' Opt-in POSTIZ jobs use a durable single-attempt handoff and identity-checked status reconciliation; existing DIRECT jobs keep their provider route.';
   workflow.settings.errorWorkflow = 'WF10_ERROR_HANDLER_WORKFLOW_ID';
   workflow.active = false;

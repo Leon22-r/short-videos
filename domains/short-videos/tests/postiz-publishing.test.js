@@ -162,15 +162,22 @@ test('graph guards create behind a single-winner SQL intent and keeps polls sepa
   for (const n of wf.nodes.filter((n) => n.type === 'n8n-nodes-base.switch')) assert.equal(wf.connections[n.name].main.length, n.parameters.rules.values.length + 1, n.name);
 });
 
-test('every queue mirror redacts Postiz snapshots and media paths', () => {
-  const secretRow = { publish_id: 'p', postiz_post_id: 'postiz-1', postiz_media_path: 'https://private.example/a', postiz_submit_payload: { caption: 'sensitive' }, provider_response: { token: 'secret' }, payload: { secret: true } };
-  for (const name of ['Redact Atomic Claim For Sheet', 'Redact Provider Processing For Sheet', 'Redact Provider Completion For Sheet', 'Redact Provider Failure For Sheet']) {
-    const result = runCode(name, secretRow, {})[0].json;
-    assert.equal(result.postiz_post_id, 'postiz-1');
-    for (const key of ['postiz_media_path', 'postiz_submit_payload', 'provider_response', 'payload']) assert.equal(result[key], undefined);
-  }
+// The redaction nodes existed to strip Postiz snapshots, media paths and
+// provider responses out of a row before it was mirrored to a sheet. D1 deletes
+// the mirror, so the right assertion is that no secret-bearing column leaves
+// Postgres at all: nothing in WF12 or WF14 writes anywhere a sheet used to be.
+test('no queue state leaves Postgres, so there is nothing left to redact', () => {
+  const wf12 = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'workflows', '12-publish-to-platforms.json'), 'utf8'));
   const retry = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'workflows', '14-publishing-retry-scheduler.json'), 'utf8'));
-  assert.equal(retry.connections['Release Due Retries Atomically'].main[0][0].node, 'Redact Retry State For Sheet');
+
+  for (const workflow of [wf12, retry]) {
+    assert.deepEqual(workflow.nodes.filter((node) => node.type === 'n8n-nodes-base.googleSheets'), []);
+    assert.equal(workflow.nodes.some((node) => /^Redact |^Mirror /.test(node.name)), false);
+  }
+
+  // The retry release is terminal now: it used to hand its row to a redactor.
+  assert.equal(retry.connections['Release Due Retries Atomically'], undefined);
+  assert.equal(retry.nodes.at(-1).name, 'Release Due Retries Atomically');
 });
 
 test('postizReleaseUrl accepts only per-platform public release URL shapes', () => {

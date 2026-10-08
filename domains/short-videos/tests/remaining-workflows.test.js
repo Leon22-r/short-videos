@@ -1131,11 +1131,9 @@ test('WF11-WF14 use an atomic Postgres queue and complete every provider through
   assert.equal(wf11.nodes.find((node) => node.name === 'Sync Atomic Publishing Queue').type, 'n8n-nodes-base.postgres');
   assert.equal(wf12.nodes[0].name, 'Schedule 15m');
   assert(wf12Names.includes('Claim Next Job Atomically'));
-  assert(wf12Names.includes('Mirror Atomic Claim'));
   assert(wf12Names.includes('Mark Uploading Atomically'));
   assert(wf12Names.includes('Build Safe Skip Reason'));
   assert(wf12Names.includes('Save Safe Skip Atomically'));
-  assert(wf12Names.includes('Mirror Safe Skip'));
   const httpNames = wf12.nodes.filter((node) => node.type === 'n8n-nodes-base.httpRequest').map((node) => node.name);
   assert(httpNames.includes('Start YouTube Resumable Upload'));
   assert(httpNames.includes('Check YouTube Processing'));
@@ -1155,10 +1153,9 @@ test('WF11-WF14 use an atomic Postgres queue and complete every provider through
   assert.match(safeSkipCode, /UNSUPPORTED_PROVIDER_STATE/);
   assert.match(wf12.nodes.find((node) => node.name === 'Build Provider Route').parameters.jsCode, /TIKTOK_DIRECT_REQUIRES_CREATOR_UI_AND_CONSENT/);
   assert(wf12.nodes.filter((node) => node.type === 'n8n-nodes-base.httpRequest').every((node) => node.credentials && !/Bearer\s+\S+|access_token|client_secret/i.test(JSON.stringify(node.parameters))));
-  assert.equal(wf12.connections['Claim Next Job Atomically'].main[0][0].node, 'Redact Atomic Claim For Sheet');
-  assert.equal(wf12.connections['Redact Atomic Claim For Sheet'].main[0][0].node, 'Mirror Atomic Claim');
-  assert.equal(wf12.connections['Mirror Atomic Claim'].main[0][0].node, 'Mark Uploading Atomically');
-  assert.equal(wf12.connections['Save Safe Skip Atomically'].main[0][0].node, 'Redact Safe Skip For Sheet');
+  // D1 removed the Sheets mirror and its redaction step from every branch.
+  assert.equal(wf12.connections['Claim Next Job Atomically'].main[0][0].node, 'Mark Uploading Atomically');
+  assert.equal(wf12.connections['Save Safe Skip Atomically'], undefined);
   assert.equal(wf13.nodes[0].name, 'Schedule Daily');
   assert.match(healthCode, /last_expiry_audit_at/);
   assert.doesNotMatch(healthCode, /last_token_test_at/);
@@ -1174,4 +1171,48 @@ test('WF6, WF8, WF9, and publishing workflow files exist with expected entry nod
   assert.equal(requireWorkflow('12', 'publish-to-platforms').nodes[0].name, 'Schedule 15m');
   assert.equal(requireWorkflow('13', 'publishing-credential-health').nodes[0].name, 'Schedule Daily');
   assert.equal(requireWorkflow('14', 'publishing-retry-scheduler').nodes[0].name, 'Schedule Hourly');
+});
+
+// Task 7 made approved_for_posting.platforms a text[] with a cardinality check,
+// so WF11 reads a list instead of splitting a comma-separated string.
+const wf11Fixtures = (approvedRow) => [
+  [approvedRow],
+  [{
+    render_id: 'RENDER_CC-9', created_clip_id: 'CC-9', niche: 'FINANCE_BUSINESS',
+    render_status: 'COMPLETED', final_drive_file_id: 'DRIVE-FINAL',
+    final_drive_url: 'https://drive/final', final_local_path: '/data/jobs/RENDER_CC-9/output.mp4',
+  }],
+  [{ created_clip_id: 'CC-9', suggested_title: 'Title', suggested_caption: 'Caption' }],
+  [
+    { channel_id: 'finance_youtube', youtube_channel_id: 'UC-FINANCE', niche: 'FINANCE_BUSINESS', platform: 'YOUTUBE_SHORTS', enabled_status: 'TRUE', audit_status: 'APPROVED_PUBLIC', default_privacy: 'public' },
+    { channel_id: 'finance_tiktok', tiktok_open_id: 'TT-FINANCE', niche: 'FINANCE_BUSINESS', platform: 'TIKTOK', enabled_status: 'TRUE', audit_status: 'DEV_PRIVATE_ONLY', requires_manual_publish: 'TRUE' },
+  ],
+  [],
+  '2026-07-25T08:00:00.000Z',
+];
+
+test('WF11 reads a platform array and no longer splits a comma string', () => {
+  const rows = buildPublishingJobs(...wf11Fixtures({
+    approved_id: 'APR-9', created_clip_id: 'CC-9', niche: 'FINANCE_BUSINESS',
+    platforms: ['YOUTUBE_SHORTS', 'TIKTOK'], final_title: 'Title', status: 'APPROVED',
+  }));
+  assert.deepEqual(rows.map((row) => row.platform), ['YOUTUBE_SHORTS', 'TIKTOK']);
+});
+
+test('WF11 creates no job for an empty platform array', () => {
+  const rows = buildPublishingJobs(...wf11Fixtures({
+    approved_id: 'APR-9', created_clip_id: 'CC-9', niche: 'FINANCE_BUSINESS',
+    platforms: [], final_title: 'Title', status: 'APPROVED',
+  }));
+  assert.deepEqual(rows, [], 'blank does not mean all platforms');
+});
+
+// A row written before the migration carried a comma-separated string. It must
+// not silently resolve to no platforms.
+test('WF11 still understands a legacy comma-separated platform string', () => {
+  const rows = buildPublishingJobs(...wf11Fixtures({
+    approved_id: 'APR-9', created_clip_id: 'CC-9', niche: 'FINANCE_BUSINESS',
+    platform: 'YOUTUBE_SHORTS,TIKTOK', final_title: 'Title', status: 'APPROVED',
+  }));
+  assert.deepEqual(rows.map((row) => row.platform), ['YOUTUBE_SHORTS', 'TIKTOK']);
 });

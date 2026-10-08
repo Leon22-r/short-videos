@@ -361,3 +361,26 @@ test('real Postgres: every committed WF8-WF10 query runs against the schema', { 
     }
   }, ['004-pipeline-store-sources.sql', '005-pipeline-store-analysis.sql', '006-pipeline-store-clips.sql', '007-pipeline-store-assets.sql']);
 });
+
+// WF11 to WF14. The publishing queue already spoke Postgres; what moved is the
+// approved/channels side and the mirror's disappearance (D1).
+test('real Postgres: every committed WF11-WF14 query runs against the schema', { skip: !available }, async () => {
+  const q = (name) => fs.readFileSync(path.join(root, 'postgres/queries', `${name}.sql`), 'utf8');
+  await withCluster(async ({ sql, run }) => {
+    sql(`INSERT INTO short_videos.publishing_channels (channel_id, niche, platform, credential_slot, enabled_status)
+         VALUES ('finance_youtube', 'FINANCE_BUSINESS', 'YOUTUBE_SHORTS', 'YOUTUBE_PRIMARY', true);`);
+
+    run(q('update-channel-expiry-audit'), [{
+      channel_id: 'finance_youtube', platform: 'YOUTUBE_SHORTS',
+      last_health_status: 'EXPIRING', last_expiry_audit_at: '2026-10-08T07:00:00Z',
+      updated_at: '2026-10-08T07:00:00Z',
+    }]);
+    assert.equal(sql("SELECT last_health_status, last_expiry_audit_at IS NOT NULL FROM short_videos.publishing_channels WHERE channel_id = 'finance_youtube';"), 'EXPIRING|t');
+
+    for (const name of ['select-approved-for-posting', 'select-publishing-channels', 'select-publishing-jobs']) {
+      sql(q(name).replace(/;\s*$/, ''));
+    }
+  }, ['001-publishing-queue.sql', '002-provider-publishing-state.sql', '003-postiz-publishing.sql',
+      '004-pipeline-store-sources.sql', '005-pipeline-store-analysis.sql', '006-pipeline-store-clips.sql',
+      '007-pipeline-store-assets.sql', '008-pipeline-store-publishing.sql', '009-publishing-jobs-retypes.sql']);
+});
