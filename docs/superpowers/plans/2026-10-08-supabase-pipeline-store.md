@@ -1643,6 +1643,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Create: `domains/short-videos/workflow-code/table-node.js`
 - Create: `domains/short-videos/tests/no-google-sheets-nodes.test.js`
 - Create: `domains/short-videos/tests/table-node.test.js`
+- Create: `domains/short-videos/tests/table-node-postgres.test.js`
 - Delete: `domains/short-videos/tests/workflow-sheets-execute-once.test.js`
 
 **Interfaces:**
@@ -1761,6 +1762,34 @@ Then prove the ratchet bites rather than trusting a green: lower `SHEETS_NODE_CE
 
 - [ ] **Step 3: Write the helper**
 
+`upsertFromJsonb` below differs from the sketch this plan originally carried.
+That sketch projected each column as `row->>'column'`, copying
+`upsert-publishing-jobs.sql`. That file works only because `publishing_jobs` is
+entirely `text`. Migration 004 gives `candidate_videos` `integer`, `bigint`,
+`numeric`, `boolean` and `timestamptz` columns, and Postgres refuses the
+projection outright:
+
+```
+ERROR:  column "duration_seconds" is of type integer but expression is of type text
+HINT:  You will need to rewrite or cast the expression.
+```
+
+So the row is typed through `jsonb_populate_record(NULL::short_videos.<table>,
+row)`, which casts via the table's own row type and therefore needs no
+column-type list and cannot drift from the schema. Two consequences follow, and
+both match what Sheets did:
+
+- An empty string is stripped to absent before typing. `''` is a valid `text`
+  value but not a valid integer or timestamp, and a blank cell was how Sheets
+  spelled "no value".
+- The conflict branch coalesces to the stored row. Sheets' `appendOrUpdate`
+  wrote only the columns it was given, so `SET col = EXCLUDED.col` would blank
+  every column absent from an incoming row.
+
+`domains/short-videos/tests/table-node-postgres.test.js` proves all four
+behaviours against a throwaway cluster.
+
+
 ```js
 const fs = require('node:fs');
 const path = require('node:path');
@@ -1798,20 +1827,45 @@ const postgresNode = (id, name, position, query, queryReplacement = '', extra = 
 const selectAll = (table) => `SELECT * FROM short_videos.${table};`;
 
 // One atomic statement replacing Sheets' read-then-write appendOrUpdate.
-// Follows upsert-publishing-jobs.sql: the rows arrive as a jsonb array in $1.
+// Follows upsert-publishing-jobs.sql in taking the rows as a jsonb array in
+// $1, but it cannot reuse that file's `row->>'column'` projection: that works
+// only because publishing_jobs is entirely text. The pipeline-store tables
+// have integer, bigint, numeric, boolean and timestamptz columns, and Postgres
+// will not implicitly cast text to those in an INSERT — it fails with
+// `column "duration_seconds" is of type integer but expression is of type
+// text`. jsonb_populate_record casts through the table's own row type instead,
+// so the statement needs no column-type list and cannot drift from the schema.
+//
+// Two further differences from a naive projection, both about what Sheets did:
+//   - An empty string is stripped to absent before typing. '' is a valid text
+//     value but not a valid integer or timestamp, and a blank cell was how
+//     Sheets spelled "no value".
+//   - The conflict branch coalesces to the stored row, so a partial write
+//     updates the fields it carries and leaves the rest. Sheets' appendOrUpdate
+//     only ever wrote the columns it was given; `SET col = EXCLUDED.col` would
+//     instead blank every column absent from the incoming row.
 const upsertFromJsonb = ({ table, key, columns }) => {
+  const qualified = `short_videos.${table}`;
   const assignments = columns
     .filter((column) => column !== key)
-    .map((column) => `  ${column} = EXCLUDED.${column}`)
+    .map((column) => `  ${column} = COALESCE(EXCLUDED.${column}, ${qualified}.${column})`)
     .join(',\n');
   return `WITH incoming AS (
-  SELECT value AS row
-  FROM jsonb_array_elements($1::jsonb)
-  WHERE NULLIF(btrim(value->>'${key}'), '') IS NOT NULL
+  SELECT (
+    SELECT jsonb_object_agg(field.key, field.value)
+    FROM jsonb_each(element) AS field
+    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL
+  ) AS row
+  FROM jsonb_array_elements($1::jsonb) AS element
+  WHERE NULLIF(btrim(element->>'${key}'), '') IS NOT NULL
+), typed AS (
+  SELECT jsonb_populate_record(NULL::${qualified}, row) AS record
+  FROM incoming
+  WHERE row IS NOT NULL
 )
-INSERT INTO short_videos.${table} (${columns.join(', ')})
-SELECT ${columns.map((column) => `  row->>'${column}'`).join(',\n       ')}
-FROM incoming
+INSERT INTO ${qualified} (${columns.join(', ')})
+SELECT ${columns.map((column) => `(record).${column}`).join(',\n       ')}
+FROM typed
 ON CONFLICT (${key}) DO UPDATE SET
 ${assignments}
 RETURNING *;`;
