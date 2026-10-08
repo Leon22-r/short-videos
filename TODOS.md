@@ -184,6 +184,18 @@ These are named so they are not mistaken for oversights:
 - **`Ssemble_Jobs`** (spec Section 1). Dead tab from the Sheets era, never created
   in Postgres.
 
+- **The task runner exits 0 on a broker handshake failure, and nothing restarts
+  it.** Observed 2026-10-09 while running Task 18: `n8n-task-runners-1` had been
+  down for 26 hours and every Code node in the heavy instance failed with "Your
+  Code node task was not matched to a runner within the timeout period". The
+  launcher logs the cause —
+  `handshake failed: failed to read ws message: write tcp ...:5679: i/o timeout`
+  — and then the process exits **0**. `restart: unless-stopped` does not restart
+  a clean exit, so a transient websocket timeout disables all Code node
+  execution permanently and silently. A healthcheck on the launcher's health
+  server (port 5680 inside the container) plus `restart: always` would catch it.
+  Independent of the Supabase migration.
+
 ## Completed
 
 ### Split the repo into hosts/ and domains/
