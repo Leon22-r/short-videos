@@ -240,3 +240,17 @@ Verified against a live stack:
   `REVOKE` is there for the day that role is demoted; it has no effect today.
   This is the lesser direction — the trusted host reaching the untrusted
   database — but it is not a boundary, and should not be described as one.
+
+## Supabase and PostgREST Configuration
+
+When deploying the Review UI or connecting workflows to managed Supabase:
+
+1. **Exposed Schemas in PostgREST:** PostgREST only exposes schemas configured in its search path.
+   In the Supabase dashboard, go to **Project Settings** → **API** → **Data API Settings** and add `short_videos`
+   to **Exposed schemas** (or run in SQL Editor:
+   `ALTER ROLE authenticator SET pgrst.db_schemas = 'public, storage, graphql_public, short_videos'; NOTIFY pgrst, 'reload config';`).
+   Without this setting, queries to `/rest/v1/...` for pipeline tables return 404.
+2. **Schema and Table Grants:** Migration `011-postgrest-grants.sql` automatically grants `USAGE` on schema
+   `short_videos` and table/routine access to `service_role` (used by the Review UI via `SUPABASE_SERVICE_KEY`)
+   and configures default privileges for newly created objects.
+
