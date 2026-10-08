@@ -199,4 +199,53 @@ test('real Postgres: approve_clip is atomic and fails closed', { skip: !availabl
   });
 });
 
+// Migration 012: verifies that revoking unintended grants strips privileges and default ACLs from authenticated and anon
+test('real Postgres: 012 strips all privileges and default ACLs from anon and authenticated', { skip: !available }, async () => {
+  await withCluster(async ({ sql, file }) => {
+    // Set up roles as they exist on Supabase
+    sql('CREATE ROLE service_role; CREATE ROLE authenticated; CREATE ROLE anon;');
+
+    // Run migrations up to 010
+    for (const migration of migrationFiles().filter(f => !f.endsWith('011-postgrest-grants.sql') && !f.endsWith('012-revoke-unintended-roles.sql'))) {
+      file(migration);
+    }
+
+    // Simulate what the old 011 did (granting permissions to anon and authenticated)
+    sql(`
+      GRANT USAGE ON SCHEMA short_videos TO service_role, authenticated, anon;
+      GRANT ALL ON ALL TABLES IN SCHEMA short_videos TO service_role;
+      GRANT SELECT ON ALL TABLES IN SCHEMA short_videos TO authenticated;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA short_videos GRANT ALL ON TABLES TO service_role;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA short_videos GRANT SELECT ON TABLES TO authenticated;
+    `);
+
+    // Verify authenticated had select privilege before revoke
+    assert.equal(sql("SELECT has_table_privilege('authenticated', 'short_videos.publishing_jobs', 'SELECT')"), 't');
+    assert.equal(sql("SELECT has_schema_privilege('anon', 'short_videos', 'USAGE')"), 't');
+
+    // Apply 011 and 012
+    file(path.join(migrationsDir, '011-postgrest-grants.sql'));
+    file(path.join(migrationsDir, '012-revoke-unintended-roles.sql'));
+
+    // Assert that anon and authenticated have zero privileges
+    assert.equal(sql("SELECT has_table_privilege('authenticated', 'short_videos.publishing_jobs', 'SELECT')"), 'f');
+    assert.equal(sql("SELECT has_schema_privilege('authenticated', 'short_videos', 'USAGE')"), 'f');
+    assert.equal(sql("SELECT has_schema_privilege('anon', 'short_videos', 'USAGE')"), 'f');
+
+    // Assert default privileges for authenticated are cleared
+    const defAcl = sql(`
+      SELECT count(*) FROM pg_default_acl d
+      JOIN pg_namespace n ON n.oid = d.defaclnamespace
+      WHERE n.nspname = 'short_videos'
+        AND array_to_string(d.defaclacl, ',') LIKE '%authenticated%'
+    `);
+    assert.equal(defAcl, '0');
+
+    // Assert service_role keeps full privileges
+    assert.equal(sql("SELECT has_table_privilege('service_role', 'short_videos.publishing_jobs', 'SELECT')"), 't');
+    assert.equal(sql("SELECT has_schema_privilege('service_role', 'short_videos', 'USAGE')"), 't');
+  });
+});
+
 module.exports = { withCluster, migrationFiles, available, pgBin };
+
