@@ -35,16 +35,8 @@ Create these n8n credentials:
 
 Create a YouTube Data API key and restrict it to YouTube Data API v3. In n8n, create a Query Auth credential with query parameter name `key` and the API key as its value, then bind it to every YouTube HTTP node in WF1/WF2 (`Resolve Channel` in WF1, `Fetch Uploads` and `Fetch Video Details` in WF2). The key must not appear in a URL or committed workflow JSON.
 
-Common error symptoms when setting up this credential:
-- `NodeOperationError: Credentials not found`: No credential is bound to the HTTP Request node.
-- `403 PERMISSION_DENIED: Method doesn't allow unregistered callers`: The credential is bound, but Google received no key in the query string — usually because the Query Auth parameter name was not set to `key`.
-- `400 API_KEY_INVALID: API key not valid`: The parameter name is `key`, but the value is invalid (e.g. copied from an OAuth client ID instead of the API key string).
-
-
-The three nodes that need it are WF1 `Resolve Channel` and WF2 `Fetch Uploads`
-and `Fetch Video Details`. One credential, bound three times — n8n does not
-attach a credential to a node automatically, and each workflow is saved
-separately.
+One credential, bound three times — n8n does not attach a credential to a node
+automatically, and each workflow is saved separately.
 
 Each way of getting this wrong produces a different error, so the message
 identifies the cause:
