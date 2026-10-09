@@ -23,7 +23,7 @@
 - **No `text NOT NULL DEFAULT ''`.** Nullable columns are nullable (spec D6).
 - **Real-Postgres tests** follow `domains/short-videos/tests/postiz-postgres-integration.test.js`: spin a throwaway cluster with `initdb`/`pg_ctl` from `process.env.POSTIZ_TEST_PG_BIN || '/usr/lib/postgresql/16/bin'`, and `{ skip: !available }` when those binaries are absent. Never require a running Docker stack in a unit test.
 - **No secret values in committed files.** `hosts/.env.example` must not ship a usable value for any secret variable — there is an existing regression test enforcing this.
-- **Commit after every task.** Commit messages end with the line `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` and must not contain a `Co-Authored-By` line for anyone else.
+- **Commit after every task.** Commit messages carry **no** `Co-Authored-By` trailer, for anyone. This is a standing instruction for this repository and it overrides any default attribution the harness suggests. (Earlier revisions of this plan said the opposite and half the branch's commits had to be rewritten to strip it.)
 
 ### Deviation from the spec, deliberate
 
@@ -181,9 +181,7 @@ Expected: PASS. It asserts `hosts/.env.example` ships no usable secret values; t
 
 ```bash
 git add scripts/check-supabase-connection.sh hosts/.env.example docs/superpowers/specs/2026-10-08-supabase-pipeline-store-design.md
-git commit -m "chore(supabase): record the verified connection port and pooling mode
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+git commit -m "chore(supabase): record the verified connection port and pooling mode"
 ```
 
 ---
@@ -286,9 +284,7 @@ git add domains/short-videos/tests/pipeline-store-postgres.test.js
 git commit -m "test(postgres): assert the migration set is idempotent under replay
 
 run-migrations.sh replays every file on every container start, so a
-non-idempotent migration breaks all future boots rather than one deploy.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+non-idempotent migration breaks all future boots rather than one deploy."
 ```
 
 ---
@@ -437,9 +433,7 @@ Expected: both PASS. The replay test from Task 2 now exercises this file twice; 
 
 ```bash
 git add domains/short-videos/postgres/migrations/004-pipeline-store-sources.sql domains/short-videos/tests/pipeline-store-schema.test.js
-git commit -m "feat(postgres): add source_channels and candidate_videos
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+git commit -m "feat(postgres): add source_channels and candidate_videos"
 ```
 
 ---
@@ -580,9 +574,7 @@ git commit -m "feat(postgres): add transcript_analysis and clip_moments
 
 Drops transcript_full_url and transcript_full_file_id; unbounded text
 removes the 45k truncation and the Drive round trip that recovered it.
-Applies the D7 rename: ssemble_status -> download_status.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+Applies the D7 rename: ssemble_status -> download_status."
 ```
 
 ---
@@ -777,9 +769,7 @@ git commit -m "feat(postgres): add created_clips and render_jobs
 
 Newline-joined Sheets lists become text[] via split_lines(), which drops
 blank lines so an empty cell is NULL rather than a one-element array
-holding the empty string.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+holding the empty string."
 ```
 
 ---
@@ -936,9 +926,7 @@ git add domains/short-videos/postgres/migrations/007-pipeline-store-assets.sql d
 git commit -m "feat(postgres): add music_library, channel_branding and error_log
 
 A unique partial index on (niche) WHERE active_status moves WF8c's
-duplicate-branding failure from mid-render to write time.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+duplicate-branding failure from mid-render to write time."
 ```
 
 ---
@@ -1082,9 +1070,7 @@ git add domains/short-videos/postgres/migrations/008-pipeline-store-publishing.s
 git commit -m "feat(postgres): add approved_for_posting and publishing_channels
 
 platform becomes platforms text[] with a cardinality check, so 'blank does
-not mean all platforms' is a constraint rather than a WF11 convention.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+not mean all platforms' is a constraint rather than a WF11 convention."
 ```
 
 ---
@@ -1309,9 +1295,7 @@ The down migration lives in postgres/rollback/ rather than
 postgres/migrations/ because run-migrations.sh globs migrations/*.sql and
 would otherwise replay the rollback on every container start.
 
-postiz-postgres-integration.test.js is red until the queries are rewritten.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+postiz-postgres-integration.test.js is red until the queries are rewritten."
 ```
 
 ---
@@ -1414,9 +1398,7 @@ git commit -m "refactor(postgres)!: rewrite the queue queries for nullable colum
 The metadata freeze guard changes from provider_stage <> '' to
 provider_stage IS NOT NULL. Left as-is it would evaluate to NULL on a
 nullable column, stop contributing to the OR chain, and let a dispatched
-Postiz job accept metadata overwrites again.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+Postiz job accept metadata overwrites again."
 ```
 
 ---
@@ -1630,9 +1612,7 @@ git commit -m "feat(postgres): add approve_clip and reject_clip
 
 approve_clip does both halves of an approval in one transaction. A clip
 marked APPROVED with no approved_for_posting row would vanish from both
-queues and never publish, which is the failure this prevents.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+queues and never publish, which is the failure this prevents."
 ```
 
 ---
@@ -1941,9 +1921,7 @@ The replacement is a ratchet: a committed ceiling, starting at the measured
 65 nodes and 16 placeholder references, lowered by each of Tasks 12-15 in the
 same commit that removes the nodes. A flat assertion would be red at five
 consecutive commits. Separate assertions catch a count above the ceiling (a
-reintroduced node) and below it (a ceiling left stale).
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+reintroduced node) and below it (a ceiling left stale)."
 ```
 
 ---
@@ -2135,9 +2113,7 @@ now one INSERT ... ON CONFLICT against a unique constraint.
 
 WF3's thresholds now treat a NULL percentage as failing. Section 1 made
 the percentage columns nullable, replacing the convention where the sheet
-wrote a literal 0 when views were zero.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+wrote a literal 0 when views were zero."
 ```
 
 ---
@@ -2229,9 +2205,7 @@ trip that recovered the real value; Postgres text is unbounded. The other
 Drive nodes stay, per D8.
 
 Renames ssemble_status to download_status and ssemble_job_id to
-download_job_id (D7).
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+download_job_id (D7)."
 ```
 
 ---
@@ -2345,9 +2319,7 @@ git commit -m "feat(wf8-10)!: move clips, renders, assets and the error log to P
 
 active_status is a real boolean now, so the Sheets-era
 String(x).toUpperCase() === 'TRUE' checks in the digest and health modules
-would have read every channel as inactive.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+would have read every channel as inactive."
 ```
 
 ---
@@ -2449,9 +2421,7 @@ side was an operator-facing mirror, and the review UI replaces it.
 Approved_For_Posting.platform becomes platforms text[], so WF11 reads an
 array instead of splitting a comma-separated string.
 
-No Google Sheets node remains in any of the 16 workflows.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+No Google Sheets node remains in any of the 16 workflows."
 ```
 
 ---
@@ -3013,9 +2983,7 @@ transaction and a clip marked APPROVED without an approved_for_posting row
 would never publish.
 
 Clip previews are fetched by the operator's own browser from the Drive URL,
-so the server holds exactly one secret and no Google credential.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+so the server holds exactly one secret and no Google credential."
 ```
 
 ---
@@ -3132,9 +3100,7 @@ git commit -m "docs: replace the Sheets structure doc with the Postgres schema
 
 Deletes google-sheets-structure.md rather than leaving two contradicting
 schema documents, and records in credentials-setup.md that a consent screen
-in Testing status is what expires the refresh tokens.
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+in Testing status is what expires the refresh tokens."
 ```
 
 ---
@@ -3212,9 +3178,7 @@ Append a short "Live verification" section to `postgres-schema.md`: the date, wh
 
 ```bash
 git add domains/short-videos/docs/postgres-schema.md
-git commit -m "docs(schema): record the live vertical-slice verification
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+git commit -m "docs(schema): record the live vertical-slice verification"
 ```
 
 ---
