@@ -35,6 +35,27 @@ Create these n8n credentials:
 
 Create a YouTube Data API key and restrict it to YouTube Data API v3. In n8n, create a Query Auth credential with query parameter name `key` and the API key as its value, then bind it to every YouTube HTTP node in WF1/WF2. The key must not appear in a URL or committed workflow JSON.
 
+The three nodes that need it are WF1 `Resolve Channel` and WF2 `Fetch Uploads`
+and `Fetch Video Details`. One credential, bound three times — n8n does not
+attach a credential to a node automatically, and each workflow is saved
+separately.
+
+Each way of getting this wrong produces a different error, so the message
+identifies the cause:
+
+| Error | Cause |
+| --- | --- |
+| `Credentials not found` (n8n, before any request) | No credential bound to the node. The node declares `genericAuthType: httpQueryAuth` and the dropdown is empty. |
+| `403 PERMISSION_DENIED` — "Method doesn't allow unregistered callers (callers without established identity)" | A credential is bound, but the **Parameter Name** is not `key`, so the value rides along under a name Google ignores and the call arrives anonymous. |
+| `400 API_KEY_INVALID` — "API key not valid. Please pass a valid API key." | The parameter name is right and the **value** is wrong. Usually the OAuth client ID (`...apps.googleusercontent.com`) or a client secret pasted instead of the API key, or a key with surrounding whitespace or quotes. An API key is a single `AIzaSy...` string. |
+| `403 SERVICE_DISABLED` — "YouTube Data API v3 has not been used in project..." | The key is valid but the API is not enabled. Enable it under APIs & Services → Library. |
+
+To check a key without n8n in the way:
+
+```bash
+curl -s "https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=<handle>&key=<key>"
+```
+
 ## OpenAI
 
 Create an API key in the OpenAI dashboard.
