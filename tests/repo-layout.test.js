@@ -20,6 +20,11 @@ test('runtime lives under hosts/ and is split by trust level', () => {
     'hosts/shared/postgres/compose.yaml',
     'hosts/shared/postgres/run-migrations.sh',
     'hosts/shared/traefik/compose.yaml',
+    'hosts/review/compose.yaml',
+    'hosts/review/Dockerfile',
+    'hosts/review/server.js',
+    'hosts/review/render.js',
+    'hosts/review/postgrest.js',
     'hosts/.env.example',
     'hosts/AWS-DEPLOY.md',
   ]) {
@@ -172,4 +177,44 @@ test('only first-party files in the transcript service are tracked', () => {
   assert.deepEqual(tracked, [
     'README.md', 'build.sh', 'handler.py', 'local-server.py', 'requirements.txt', 'test_handler.py',
   ]);
+});
+
+test('the schema documentation describes Postgres, not Google Sheets', () => {
+  assert.equal(exists('domains/short-videos/docs/google-sheets-structure.md'), false,
+    'the Sheets structure doc must be deleted, not left to contradict the schema');
+  const schemaDoc = fs.readFileSync(path.join(repoRoot, 'domains/short-videos/docs/postgres-schema.md'), 'utf8');
+  for (const table of ['source_channels', 'candidate_videos', 'transcript_analysis',
+    'clip_moments', 'created_clips', 'render_jobs', 'music_library',
+    'channel_branding', 'error_log', 'approved_for_posting',
+    'publishing_channels', 'publishing_jobs']) {
+    assert.match(schemaDoc, new RegExp(`\\b${table}\\b`), `${table} is undocumented`);
+  }
+  assert.equal(schemaDoc.match(/^## /gm).length, 12, 'one section per table');
+});
+
+test('no document still points at the deleted Sheets structure doc', () => {
+  const docFiles = () => {
+    const files = [];
+    const walk = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== 'node_modules' && entry.name !== '.git') walk(full);
+        } else if (entry.name.endsWith('.md')) {
+          const rel = path.relative(repoRoot, full);
+          if (!rel.startsWith('docs/superpowers/')) {
+            files.push(full);
+          }
+        }
+      }
+    };
+    walk(repoRoot);
+    return files;
+  };
+  const offenders = [];
+  for (const file of docFiles()) {
+    if (fs.readFileSync(file, 'utf8').includes('google-sheets-structure')) offenders.push(path.relative(repoRoot, file));
+  }
+  assert.deepEqual(offenders, []);
 });

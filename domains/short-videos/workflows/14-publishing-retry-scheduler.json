@@ -38,59 +38,11 @@
       "parameters": {
         "resource": "database",
         "operation": "executeQuery",
-        "query": "UPDATE short_videos.publishing_jobs\nSET publish_status = CASE WHEN retry_count >= 4 OR (publishing_backend = 'POSTIZ' AND (postiz_submitted_at IS NOT NULL OR postiz_post_id <> '')) THEN 'FAILED' ELSE 'PENDING' END,\n    next_retry_at = NULL,\n    last_error = CASE WHEN publishing_backend = 'POSTIZ' AND (postiz_submitted_at IS NOT NULL OR postiz_post_id <> '') THEN 'POSTIZ_RECONCILIATION_REQUIRED: automatic resubmission blocked' ELSE last_error END,\n    claimed_at = NULL,\n    claimed_by = '',\n    lease_expires_at = NULL,\n    updated_at = now()\nWHERE publish_status = 'RETRY_PENDING'\n  AND (retry_count >= 4 OR next_retry_at IS NULL OR next_retry_at <= now())\nRETURNING *;",
+        "query": "UPDATE short_videos.publishing_jobs\nSET publish_status = CASE WHEN retry_count >= 4 OR (publishing_backend = 'POSTIZ' AND (postiz_submitted_at IS NOT NULL OR postiz_post_id IS NOT NULL)) THEN 'FAILED' ELSE 'PENDING' END,\n    next_retry_at = NULL,\n    last_error = CASE WHEN publishing_backend = 'POSTIZ' AND (postiz_submitted_at IS NOT NULL OR postiz_post_id IS NOT NULL) THEN 'POSTIZ_RECONCILIATION_REQUIRED: automatic resubmission blocked' ELSE last_error END,\n    claimed_at = NULL,\n    claimed_by = NULL,\n    lease_expires_at = NULL,\n    updated_at = now()\nWHERE publish_status = 'RETRY_PENDING'\n  AND (retry_count >= 4 OR next_retry_at IS NULL OR next_retry_at <= now())\nRETURNING *;",
         "options": {
           "queryBatching": "single",
           "queryReplacement": "",
           "replaceEmptyStrings": true
-        }
-      },
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 5000
-    },
-    {
-      "id": "wf14-002b",
-      "name": "Redact Retry State For Sheet",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        330,
-        0
-      ],
-      "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "return $input.all().map((item, index) => {\n  const json = { ...item.json };\n  delete json.provider_upload_url;\n  delete json.provider_response;\n  delete json.payload;\n  delete json.public_video_url;\n  delete json.local_file_path;\n  delete json.postiz_media_path;\n  delete json.postiz_submit_payload;\n  return { json, pairedItem: { item: index } };\n});"
-      }
-    },
-    {
-      "id": "wf14-003",
-      "name": "Mirror Retry State",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
-      "position": [
-        440,
-        0
-      ],
-      "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Publishing_Jobs"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "publish_id"
-          ]
         }
       },
       "retryOnFail": true,
@@ -104,28 +56,6 @@
         [
           {
             "node": "Release Due Retries Atomically",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Release Due Retries Atomically": {
-      "main": [
-        [
-          {
-            "node": "Redact Retry State For Sheet",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Redact Retry State For Sheet": {
-      "main": [
-        [
-          {
-            "node": "Mirror Retry State",
             "type": "main",
             "index": 0
           }

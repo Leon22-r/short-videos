@@ -104,9 +104,9 @@ The heavy n8n instance holds **zero** workflows and zero credentials. The 16
 workflow JSON files exist only in this repo and have never been imported, so the
 render path has never run end to end against any layout, let alone this one.
 
-Needs: import the workflows, bind credentials and the runtime-only Google Sheet
-and Drive folder IDs, then push one video through the yt-dlp download (WF6) and
-the FFmpeg render (WF8c).
+Needs: import the workflows, bind credentials, Supabase connection details,
+and runtime-only Drive folder IDs, then push one video through the yt-dlp download
+(WF6) and the FFmpeg render (WF8c).
 
 This was the one verification gate in the multi-domain plan that could not be
 run. Pre-existing work, not caused by the restructure — but it is the only thing
@@ -166,6 +166,35 @@ uploader at workflow run time.
 `function.zip`, but nothing tests that the assertion fires when they are not.
 Needs network access to run `pip`, so it is an integration test rather than a
 unit test.
+
+## Deferred items (Supabase pipeline store migration)
+
+These are named so they are not mistaken for oversights:
+
+- **Moving media off Google Drive** (spec D8, out of scope). The 7 or 8 remaining
+  `googleDrive` nodes — 8 today, 7 if Task 13 removed the transcript-stash node
+  — and the unresolved `public_video_url` fetchability question for TikTok,
+  Instagram and Facebook.
+- **Publishing the OAuth consent screen** (spec D8, out of scope). A console
+  setting, not a code change, and the thing that actually addresses the stated
+  motivation. Do it immediately in Google Cloud Console.
+- **Fair-share as SQL window functions** (spec Section 2). The `pickFairBySource` /
+  `pickFairByGroup` Code nodes stay, with their existing tests.
+- **Authentication for the review UI** (spec D5). The tailnet is the authentication.
+- **`Ssemble_Jobs`** (spec Section 1). Dead tab from the Sheets era, never created
+  in Postgres.
+
+- **The task runner exits 0 on a broker handshake failure, and nothing restarts
+  it.** Observed 2026-10-09 while running Task 18: `n8n-task-runners-1` had been
+  down for 26 hours and every Code node in the heavy instance failed with "Your
+  Code node task was not matched to a runner within the timeout period". The
+  launcher logs the cause —
+  `handshake failed: failed to read ws message: write tcp ...:5679: i/o timeout`
+  — and then the process exits **0**. `restart: unless-stopped` does not restart
+  a clean exit, so a transient websocket timeout disables all Code node
+  execution permanently and silently. A healthcheck on the launcher's health
+  server (port 5680 inside the container) plus `restart: always` would catch it.
+  Independent of the Supabase migration.
 
 ## Completed
 

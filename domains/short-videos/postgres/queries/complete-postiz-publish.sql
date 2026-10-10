@@ -9,9 +9,9 @@ SET publish_status = $3,
     poll_after = NULL,
     provider_poll_count = 0,
     provider_poll_deadline = NULL,
-    last_error = '',
+    last_error = NULL,
     claimed_at = NULL,
-    claimed_by = '',
+    claimed_by = NULL,
     lease_expires_at = NULL,
     updated_at = now()
 WHERE publish_id = $1
@@ -20,7 +20,7 @@ WHERE publish_id = $1
   AND lease_expires_at > now()
   AND publishing_backend = 'POSTIZ'
   AND provider_stage = 'POSTIZ_SUBMITTED'
-  AND postiz_post_id <> ''
+  AND postiz_post_id IS NOT NULL
   AND (
     ($3 = 'PUBLISHED' AND platform <> 'TIKTOK' AND $5 ~ '^https://[^[:space:]]+$')
     OR ($3 = 'DRAFT_UPLOADED' AND platform = 'TIKTOK')

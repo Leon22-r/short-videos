@@ -6,6 +6,9 @@ const path = require('node:path');
 const DOMAIN_ROOT = path.join(__dirname, '..');
 
 const WORKFLOW_OUTPUT_DIR = process.env.N8N_WORKFLOW_OUTPUT_DIR || path.join(DOMAIN_ROOT, 'workflows');
+// Every item the node received, as a jsonb array in $1.
+const ROWS = '={{ JSON.stringify($input.all().map(item => item.json)) }}';
+
 const postgresSql = (name) => fs.readFileSync(path.join(DOMAIN_ROOT, 'postgres/queries', `${name}.sql`), 'utf8').trim();
 
 const helper = (name) => {
@@ -19,14 +22,6 @@ const helper = (name) => {
     .replace(/module\.exports = \{[\s\S]*?\};\n?/, '');
   return `${fairShare}\n${stripped}`;
 };
-
-const sheet = (operation, sheetName, extra = {}) => ({
-  operation,
-  documentId: { __rl: true, mode: 'id', value: 'GOOGLE_SHEETS_DOCUMENT_ID' },
-  sheetName: { __rl: true, mode: 'name', value: sheetName },
-  options: {},
-  ...extra,
-});
 
 const node = (id, name, type, typeVersion, position, parameters = {}, extra = {}) => ({
   id,
@@ -47,34 +42,6 @@ const fallibleCodeNode = (id, name, position, jsCode) => node(
   position,
   { mode: 'runOnceForAllItems', jsCode },
   { onError: 'continueErrorOutput' },
-);
-
-const redactProviderStateCode = `return $input.all().map((item, index) => {
-  const json = { ...item.json };
-  delete json.provider_upload_url;
-  delete json.provider_response;
-  delete json.payload;
-  delete json.public_video_url;
-  delete json.local_file_path;
-  delete json.postiz_media_path;
-  delete json.postiz_submit_payload;
-  return { json, pairedItem: { item: index } };
-});`;
-
-const sheetsNode = (id, name, position, parameters, extra = {}) => node(
-  id,
-  name,
-  'n8n-nodes-base.googleSheets',
-  4.5,
-  position,
-  parameters,
-  {
-    ...(parameters.operation === 'read' ? { executeOnce: true } : {}),
-    retryOnFail: true,
-    maxTries: 3,
-    waitBetweenTries: 5000,
-    ...extra,
-  },
 );
 
 const httpNode = (id, name, position, parameters, extra = {}) => node(id, name, 'n8n-nodes-base.httpRequest', 4.2, position, parameters, extra);
@@ -220,8 +187,8 @@ function wf6() {
     name: 'WF6 yt-dlp Clip Download',
     nodes: [
       node('wf6-001', 'Schedule 15m', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'minutes', minutesInterval: 15 }] } }),
-      sheetsNode('wf6-002', 'Read Clip_Moments', [220, 0], sheet('read', 'Clip_Moments')),
-      sheetsNode('wf6-003', 'Read Created_Clips', [440, 0], sheet('read', 'Created_Clips'), { alwaysOutputData: true }),
+      postgresNode('wf6-002', 'Read Clip_Moments', [220, 0], postgresSql('select-clip-moments')),
+      postgresNode('wf6-003', 'Read Created_Clips', [440, 0], postgresSql('select-created-clips'), '', { alwaysOutputData: true }),
       codeNode('wf6-004', 'Plan yt-dlp Downloads', [660, 0], `${h}
 const requests = planYtDlpDownloads(
   $('Read Clip_Moments').all().map(i => i.json),
@@ -238,7 +205,7 @@ return [{ json: { ...req, command }, pairedItem: { item: 0 } }];`),
       codeNode('wf6-007', 'Mark Moment Downloading', [1320, 120], `${h}
 const req = $('Download Loop').first().json;
 return [{ json: buildMomentStatus(req, 'SUBMITTED'), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf6-008', 'Update Moment Downloading', [1540, 120], sheet('appendOrUpdate', 'Clip_Moments', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] } })),
+      postgresNode('wf6-008', 'Update Moment Downloading', [1540, 120], postgresSql('update-moment-download-status'), ROWS),
       node('wf6-009', 'Run yt-dlp', 'n8n-nodes-base.executeCommand', 1, [1760, 120], { command: '={{ $("Build yt-dlp Command").first().json.command }}' }, { onError: 'continueRegularOutput' }),
       ifNode('wf6-010', 'Download Succeeded?', [1980, 120], '={{ $json.exitCode }}', 0, 'number', 'equals'),
       codeNode('wf6-011', 'Build Portrait Command', [2200, 40], `${h}
@@ -253,16 +220,19 @@ return [{ json: { ...req, command }, pairedItem: { item: 0 } }];`),
 const req = $('Download Loop').first().json;
 const drive = $input.first().json;
 return [{ json: buildCreatedClipRow(req, drive), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf6-017', 'Save Created Clip', [3520, -40], sheet('appendOrUpdate', 'Created_Clips', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['created_clip_id'] } })),
+      postgresNode('wf6-017', 'Save Created Clip', [3520, -40], postgresSql('upsert-created-clips'), ROWS),
       codeNode('wf6-018', 'Mark Moment Completed', [3740, -40], `${h}
 const req = $('Download Loop').first().json;
 return [{ json: buildMomentStatus(req, 'COMPLETED'), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf6-019', 'Update Moment Completed', [3960, -40], sheet('appendOrUpdate', 'Clip_Moments', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] } })),
+      postgresNode('wf6-019', 'Update Moment Completed', [3960, -40], postgresSql('update-moment-download-status'), ROWS),
       codeNode('wf6-020', 'Mark Moment Error', [2200, 240], `${h}
 const req = $('Download Loop').first().json;
 const out = $input.first().json;
-return [{ json: buildMomentStatus(req, 'ERROR', { error_message: String(out.stderr || out.error || out.message || 'yt-dlp download failed').slice(0, 1000) }), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf6-021', 'Update Moment Error', [2420, 240], sheet('appendOrUpdate', 'Clip_Moments', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['clip_moment_id'] } })),
+return [{ json: buildMomentStatus(req, 'ERROR', { error_message: String(out.stderr || out.error || out.message || 'yt-dlp download failed') }), pairedItem: { item: 0 } }];`),
+      // The error branch carries yt-dlp's stderr in error_message, so it writes one
+      // column more than the success path. clip_moments.error_message exists for
+      // exactly this (finding 16).
+      postgresNode('wf6-021', 'Update Moment Error', [2420, 240], postgresSql('update-moment-download-error'), ROWS),
       node('wf6-022', 'Wait 2s Completed', 'n8n-nodes-base.wait', 1.1, [4180, -40], { amount: 2 }),
       node('wf6-023', 'Wait 2s Failed', 'n8n-nodes-base.wait', 1.1, [2640, 240], { amount: 2 }),
     ],
@@ -307,13 +277,15 @@ function wf8() {
     name: 'WF8 Drive Storage Transform',
     nodes: [
       node('wf8-001', 'Schedule 30m', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'minutes', minutesInterval: 30 }] } }),
-      sheetsNode('wf8-002', 'Read Created_Clips', [220, 0], sheet('read', 'Created_Clips')),
-      sheetsNode('wf8-003', 'Read Ssemble_Jobs', [440, 0], sheet('read', 'Ssemble_Jobs'), { alwaysOutputData: true }),
-      sheetsNode('wf8-004', 'Read Clip_Moments', [660, 0], sheet('read', 'Clip_Moments'), { alwaysOutputData: true }),
+      postgresNode('wf8-002', 'Read Created_Clips', [220, 0], postgresSql('select-created-clips')),
+      postgresNode('wf8-004', 'Read Clip_Moments', [440, 0], postgresSql('select-clip-moments'), '', { alwaysOutputData: true }),
       codeNode('wf8-005', 'Pick Awaiting Download', [880, 0], `${h}
 const rows = pickAwaitingDownloads(
   $('Read Created_Clips').all().map(i => i.json),
-  $('Read Ssemble_Jobs').all().map(i => i.json),
+  // Ssemble_Jobs was a legacy tab with no Postgres equivalent: the structure
+  // doc records that the active yt-dlp path never wrote it, so there is nothing
+  // to port. The lineage it supplied comes from created_clips.download_job_id.
+  [],
   $('Read Clip_Moments').all().map(i => i.json),
   ${folders},
   { limit: 5, perSourceLimit: 1 },
@@ -327,7 +299,7 @@ return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`)
 const clip = $('Clip Loop').first().json;
 const drive = $input.first().json;
 return [{ json: buildDriveIdUpdate(clip, drive), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf8-011', 'Save Drive Ids', [2200, 220], sheet('appendOrUpdate', 'Created_Clips', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['created_clip_id'] } })),
+      postgresNode('wf8-011', 'Save Drive Ids', [2200, 220], postgresSql('update-clip-drive-ids'), ROWS),
       codeNode('wf8-012', 'Build Planner Request', [2420, 120], `${h}
 const clip = { ...$('Clip Loop').first().json };
 try {
@@ -341,16 +313,15 @@ return [{ json: buildPlannerRequest(clip), pairedItem: { item: 0 } }];`),
 const meta = $('Build Planner Request').first().json;
 const resp = $input.first().json;
 return [{ json: parseTransformationPlan(meta, resp), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf8-015', 'Update Created Clip', [3080, 120], sheet('appendOrUpdate', 'Created_Clips', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['created_clip_id'] } })),
+      postgresNode('wf8-015', 'Update Created Clip', [3080, 120], postgresSql('update-clip-transformation'), ROWS),
       codeNode('wf8-016', 'Build Render Job', [3300, 120], `${h}
 const parsed = $('Parse Plan').first().json;
 return [{ json: buildRenderJobRow(parsed), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf8-017', 'Create Render Job', [3520, 120], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+      postgresNode('wf8-017', 'Create Render Job', [3520, 120], postgresSql('upsert-render-jobs'), ROWS),
     ],
     connections: {
       'Schedule 30m': { main: [[{ node: 'Read Created_Clips', type: 'main', index: 0 }]] },
-      'Read Created_Clips': { main: [[{ node: 'Read Ssemble_Jobs', type: 'main', index: 0 }]] },
-      'Read Ssemble_Jobs': { main: [[{ node: 'Read Clip_Moments', type: 'main', index: 0 }]] },
+      'Read Created_Clips': { main: [[{ node: 'Read Clip_Moments', type: 'main', index: 0 }]] },
       'Read Clip_Moments': { main: [[{ node: 'Pick Awaiting Download', type: 'main', index: 0 }]] },
       'Pick Awaiting Download': { main: [[{ node: 'Clip Loop', type: 'main', index: 0 }]] },
       'Clip Loop': { main: [[], [{ node: 'Already Uploaded?', type: 'main', index: 0 }]] },
@@ -376,8 +347,8 @@ function wf9() {
     settings: { timezone: 'Africa/Nairobi' },
     nodes: [
       node('wf9-001', 'Schedule Daily', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'cronExpression', expression: '0 8 * * *' }] } }),
-      sheetsNode('wf9-005', 'Read Source_Channels', [220, 0], sheet('read', 'Source_Channels')),
-      sheetsNode('wf9-002', 'Read Created_Clips', [440, 0], sheet('read', 'Created_Clips')),
+      postgresNode('wf9-005', 'Read Source_Channels', [220, 0], postgresSql('select-source-channels')),
+      postgresNode('wf9-002', 'Read Created_Clips', [440, 0], postgresSql('select-created-clips')),
       codeNode('wf9-003', 'Build Digest', [660, 0], `${h}
 const channels = $('Read Source_Channels').all().map(i => i.json);
 const digest = buildReviewDigest($input.all().map(i => i.json), channels);
@@ -402,11 +373,11 @@ function wf11() {
     settings: { timezone: 'Africa/Nairobi' },
     nodes: [
       node('wf11-001', 'Schedule 30m', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'minutes', minutesInterval: 30 }] } }),
-      sheetsNode('wf11-002', 'Read Approved_For_Posting', [220, 0], sheet('read', 'Approved_For_Posting')),
-      sheetsNode('wf11-003', 'Read Render_Jobs', [440, 0], sheet('read', 'Render_Jobs'), { alwaysOutputData: true }),
-      sheetsNode('wf11-004', 'Read Created_Clips', [660, 0], sheet('read', 'Created_Clips'), { alwaysOutputData: true }),
-      sheetsNode('wf11-005', 'Read Publishing_Channels', [880, 0], sheet('read', 'Publishing_Channels'), { alwaysOutputData: true }),
-      sheetsNode('wf11-006', 'Read Publishing_Jobs', [1100, 0], sheet('read', 'Publishing_Jobs'), { alwaysOutputData: true }),
+      postgresNode('wf11-002', 'Read Approved_For_Posting', [220, 0], postgresSql('select-approved-for-posting')),
+      postgresNode('wf11-003', 'Read Render_Jobs', [440, 0], postgresSql('select-render-jobs'), '', { alwaysOutputData: true }),
+      postgresNode('wf11-004', 'Read Created_Clips', [660, 0], postgresSql('select-created-clips'), '', { alwaysOutputData: true }),
+      postgresNode('wf11-005', 'Read Publishing_Channels', [880, 0], postgresSql('select-publishing-channels'), '', { alwaysOutputData: true }),
+      postgresNode('wf11-006', 'Read Publishing_Jobs', [1100, 0], postgresSql('select-publishing-jobs'), '', { alwaysOutputData: true }),
       {
         ...codeNode('wf11-007', 'Build Missing Publish Jobs', [1320, 0], `${h}
 const rows = buildPublishingJobs(
@@ -433,7 +404,6 @@ return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`)
       codeNode('wf11-009', 'Return New Publish Jobs', [1760, 0], `return $('Build Missing Publish Jobs').all()
   .filter(item => item.json.publish_id)
   .map((item, index) => ({ json: item.json, pairedItem: { item: index } }));`),
-      sheetsNode('wf11-010', 'Append Publishing Jobs', [1980, 0], sheet('appendOrUpdate', 'Publishing_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['publish_id'] } })),
     ],
     connections: {
       'Schedule 30m': { main: [[{ node: 'Read Approved_For_Posting', type: 'main', index: 0 }]] },
@@ -444,7 +414,6 @@ return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`)
       'Read Publishing_Jobs': { main: [[{ node: 'Build Missing Publish Jobs', type: 'main', index: 0 }]] },
       'Build Missing Publish Jobs': { main: [[{ node: 'Sync Atomic Publishing Queue', type: 'main', index: 0 }]] },
       'Sync Atomic Publishing Queue': { main: [[{ node: 'Return New Publish Jobs', type: 'main', index: 0 }]] },
-      'Return New Publish Jobs': { main: [[{ node: 'Append Publishing Jobs', type: 'main', index: 0 }]] },
     },
   });
 }
@@ -470,8 +439,6 @@ function wf12() {
         postgresSql('claim-next-publishing-job'),
         `={{ 'WF12:' + String($execution.id || 'unknown') }},180`,
       ),
-      codeNode('wf12-002b', 'Redact Atomic Claim For Sheet', [330, -120], redactProviderStateCode),
-      sheetsNode('wf12-003', 'Mirror Atomic Claim', [440, 0], sheet('appendOrUpdate', 'Publishing_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['publish_id'] } })),
       postgresNode(
         'wf12-004',
         'Mark Uploading Atomically',
@@ -691,8 +658,6 @@ const job = $('Build Provider Route').first().json;
 const input = $input.first().json;
 return [{ json: providerPollUpdate(job, input.provider_stage, input.provider_ref, input.provider_response, new Date(), input.poll_minutes), pairedItem: { item: 0 } }];`),
       postgresNode('wf12-common-003', 'Schedule Provider Poll Atomically', [3960, -80], postgresSql('schedule-provider-poll'), `={{ $json.publish_id }},={{ $json.claimed_by }},={{ $json.provider_stage }},={{ $json.provider_ref }},={{ $json.provider_response }},={{ String(Math.max(1, Math.ceil((Date.parse($json.poll_after) - Date.now()) / 60000))) }}`),
-      codeNode('wf12-common-003b', 'Redact Provider Processing For Sheet', [4070, -180], redactProviderStateCode),
-      sheetsNode('wf12-common-004', 'Mirror Provider Processing', [4180, -80], sheet('appendOrUpdate', 'Publishing_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['publish_id'] } })),
       fallibleCodeNode('wf12-common-005', 'Build Provider Completion State', [3740, 40], `const job = $('Build Provider Route').first().json;
 const input = $input.first().json;
 const status = input.outcome === 'DRAFT_UPLOADED' ? 'DRAFT_UPLOADED' : 'PUBLISHED';
@@ -701,8 +666,6 @@ const isTikTokTrackingOnly = job.platform === 'TIKTOK' && !String(input.post_id 
 if (!postId && !isTikTokTrackingOnly) throw new Error('Provider completion is missing a confirmed provider ID');
 return [{ json: { publish_id: job.publish_id, claimed_by: job.claimed_by, publish_status: status, post_id: isTikTokTrackingOnly ? '' : postId, post_url: String(input.post_url || ''), provider_stage: input.provider_stage || (job.platform + '_COMPLETE'), provider_response: JSON.stringify(input.provider_response || {}) }, pairedItem: { item: 0 } }];`),
       postgresNode('wf12-common-006', 'Complete Provider Publish Atomically', [3960, 40], postgresSql('complete-provider-publish'), `={{ $json.publish_id }},={{ $json.claimed_by }},={{ $json.publish_status }},={{ $json.post_id }},={{ $json.post_url }},={{ $json.provider_stage }},={{ $json.provider_response }}`),
-      codeNode('wf12-common-006b', 'Redact Provider Completion For Sheet', [4070, 10], redactProviderStateCode),
-      sheetsNode('wf12-common-007', 'Mirror Provider Completion', [4180, 40], sheet('appendOrUpdate', 'Publishing_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['publish_id'] } })),
       codeNode('wf12-common-008', 'Build Provider Failure State', [3740, 160], `${h}
 const job = $('Build Provider Route').first().json;
 const input = $input.first().json;
@@ -712,8 +675,6 @@ return [{ json: { ...update, claimed_by: job.claimed_by, provider_response: JSON
       codeNode('wf12-common-008b', 'Build Ambiguous Side Effect Failure', [3520, 260], `const input = $input.first().json;
 return [{ json: { outcome: 'FAILED', error: 'AMBIGUOUS_PROVIDER_SIDE_EFFECT: manual reconciliation required before retry; ' + String(input.error?.message || input.message || input.error || 'provider response could not be durably confirmed'), provider_response: input }, pairedItem: { item: 0 } }];`),
       postgresNode('wf12-common-009', 'Save Provider Failure Atomically', [3960, 160], postgresSql('fail-provider-publish'), `={{ $json.publish_id }},={{ $json.claimed_by }},={{ $json.publish_status }},={{ $json.retry_count }},={{ $json.next_retry_at }},={{ $json.last_error }},={{ $json.provider_response }}`),
-      codeNode('wf12-common-009b', 'Redact Provider Failure For Sheet', [4070, 210], redactProviderStateCode),
-      sheetsNode('wf12-common-010', 'Mirror Provider Failure', [4180, 160], sheet('appendOrUpdate', 'Publishing_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['publish_id'] } })),
 
       codeNode('wf12-skip-001', 'Build Safe Skip Reason', [1320, 1200], `const job = $('Build Provider Route').first().json;
 return [{ json: { publish_id: job.publish_id, platform: job.platform, destination_id: job.destination_id || '', claimed_by: job.claimed_by, last_error: job.last_error || 'UNSUPPORTED_PROVIDER_STATE:' + String(job.provider_stage || 'UNKNOWN') }, pairedItem: { item: 0 } }];`),
@@ -724,14 +685,10 @@ return [{ json: { publish_id: job.publish_id, platform: job.platform, destinatio
         postgresSql('mark-publishing-skipped'),
         `={{ $('Build Safe Skip Reason').first().json.publish_id }},={{ $('Build Safe Skip Reason').first().json.claimed_by }},={{ $('Build Safe Skip Reason').first().json.destination_id }},={{ $('Build Safe Skip Reason').first().json.last_error }}`,
       ),
-      codeNode('wf12-skip-002b', 'Redact Safe Skip For Sheet', [1650, 1100], redactProviderStateCode),
-      sheetsNode('wf12-skip-003', 'Mirror Safe Skip', [1760, 1200], sheet('appendOrUpdate', 'Publishing_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['publish_id'] } })),
     ],
     connections: {
       'Schedule 15m': { main: [[{ node: 'Claim Next Job Atomically', type: 'main', index: 0 }]] },
-      'Claim Next Job Atomically': { main: [[{ node: 'Redact Atomic Claim For Sheet', type: 'main', index: 0 }]] },
-      'Redact Atomic Claim For Sheet': { main: [[{ node: 'Mirror Atomic Claim', type: 'main', index: 0 }]] },
-      'Mirror Atomic Claim': { main: [[{ node: 'Mark Uploading Atomically', type: 'main', index: 0 }]] },
+      'Claim Next Job Atomically': { main: [[{ node: 'Mark Uploading Atomically', type: 'main', index: 0 }]] },
       'Mark Uploading Atomically': { main: [[{ node: 'Build Provider Route', type: 'main', index: 0 }]] },
       'Build Provider Route': { main: [[{ node: 'Route Provider Stage', type: 'main', index: 0 }]] },
       'Route Provider Stage': { main: [
@@ -802,18 +759,10 @@ return [{ json: { publish_id: job.publish_id, platform: job.platform, destinatio
       'Interpret TikTok Draft Status': { main: [[{ node: 'Route Provider Outcome', type: 'main', index: 0 }], [{ node: 'Build Provider Failure State', type: 'main', index: 0 }]] },
       'Route Provider Outcome': { main: [[{ node: 'Build Provider Poll State', type: 'main', index: 0 }], [{ node: 'Build Provider Completion State', type: 'main', index: 0 }], [{ node: 'Build Provider Failure State', type: 'main', index: 0 }], [{ node: 'Build Provider Failure State', type: 'main', index: 0 }]] },
       'Build Provider Poll State': { main: [[{ node: 'Schedule Provider Poll Atomically', type: 'main', index: 0 }], [{ node: 'Build Provider Failure State', type: 'main', index: 0 }]] },
-      'Schedule Provider Poll Atomically': { main: [[{ node: 'Redact Provider Processing For Sheet', type: 'main', index: 0 }]] },
-      'Redact Provider Processing For Sheet': { main: [[{ node: 'Mirror Provider Processing', type: 'main', index: 0 }]] },
       'Build Provider Completion State': { main: [[{ node: 'Complete Provider Publish Atomically', type: 'main', index: 0 }], [{ node: 'Build Provider Failure State', type: 'main', index: 0 }]] },
-      'Complete Provider Publish Atomically': { main: [[{ node: 'Redact Provider Completion For Sheet', type: 'main', index: 0 }]] },
-      'Redact Provider Completion For Sheet': { main: [[{ node: 'Mirror Provider Completion', type: 'main', index: 0 }]] },
       'Build Provider Failure State': { main: [[{ node: 'Save Provider Failure Atomically', type: 'main', index: 0 }]] },
       'Build Ambiguous Side Effect Failure': { main: [[{ node: 'Build Provider Failure State', type: 'main', index: 0 }]] },
-      'Save Provider Failure Atomically': { main: [[{ node: 'Redact Provider Failure For Sheet', type: 'main', index: 0 }]] },
-      'Redact Provider Failure For Sheet': { main: [[{ node: 'Mirror Provider Failure', type: 'main', index: 0 }]] },
       'Build Safe Skip Reason': { main: [[{ node: 'Save Safe Skip Atomically', type: 'main', index: 0 }]] },
-      'Save Safe Skip Atomically': { main: [[{ node: 'Redact Safe Skip For Sheet', type: 'main', index: 0 }]] },
-      'Redact Safe Skip For Sheet': { main: [[{ node: 'Mirror Safe Skip', type: 'main', index: 0 }]] },
     },
   });
 }
@@ -826,11 +775,11 @@ function wf13() {
     settings: { timezone: 'Africa/Nairobi' },
     nodes: [
       node('wf13-001', 'Schedule Daily', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'cronExpression', expression: '0 7 * * *' }] } }),
-      sheetsNode('wf13-002', 'Read Publishing_Channels', [220, 0], sheet('read', 'Publishing_Channels')),
+      postgresNode('wf13-002', 'Read Publishing_Channels', [220, 0], postgresSql('select-publishing-channels')),
       codeNode('wf13-003', 'Build Expiry Audit Updates', [440, 0], `${h}
 const rows = buildCredentialHealthRows($input.all().map(i => i.json));
 return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
-      sheetsNode('wf13-004', 'Update Channel Expiry Audit', [660, 0], sheet('appendOrUpdate', 'Publishing_Channels', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['channel_id'] } })),
+      postgresNode('wf13-004', 'Update Channel Expiry Audit', [660, 0], postgresSql('update-channel-expiry-audit'), ROWS),
     ],
     connections: {
       'Schedule Daily': { main: [[{ node: 'Read Publishing_Channels', type: 'main', index: 0 }]] },
@@ -848,13 +797,9 @@ function wf14() {
     nodes: [
       node('wf14-001', 'Schedule Hourly', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'hours', hoursInterval: 1 }] } }),
       postgresNode('wf14-002', 'Release Due Retries Atomically', [220, 0], postgresSql('release-due-publishing-retries')),
-      codeNode('wf14-002b', 'Redact Retry State For Sheet', [330, 0], redactProviderStateCode),
-      sheetsNode('wf14-003', 'Mirror Retry State', [440, 0], sheet('appendOrUpdate', 'Publishing_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['publish_id'] } })),
     ],
     connections: {
       'Schedule Hourly': { main: [[{ node: 'Release Due Retries Atomically', type: 'main', index: 0 }]] },
-      'Release Due Retries Atomically': { main: [[{ node: 'Redact Retry State For Sheet', type: 'main', index: 0 }]] },
-      'Redact Retry State For Sheet': { main: [[{ node: 'Mirror Retry State', type: 'main', index: 0 }]] },
     },
   });
 }
@@ -865,11 +810,11 @@ function wf8b() {
     name: 'WF8b Created Clips Transform Backfill',
     nodes: [
       node('wf8b-001', 'Manual Trigger', 'n8n-nodes-base.manualTrigger', 1, [0, 0], {}),
-      sheetsNode('wf8b-002', 'Read Created_Clips', [220, 0], sheet('read', 'Created_Clips')),
+      postgresNode('wf8b-002', 'Read Created_Clips', [220, 0], postgresSql('select-created-clips')),
       codeNode('wf8b-003', 'Backfill Transform Columns', [440, 0], `${h}
 const rows = backfillTransformationPlanRows($input.all().map(i => i.json));
 return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
-      sheetsNode('wf8b-004', 'Update Created_Clips', [660, 0], sheet('appendOrUpdate', 'Created_Clips', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['created_clip_id'] } })),
+      postgresNode('wf8b-004', 'Update Created_Clips', [660, 0], postgresSql('update-clip-transformation'), ROWS),
     ],
     connections: {
       'Manual Trigger': { main: [[{ node: 'Read Created_Clips', type: 'main', index: 0 }]] },
@@ -885,14 +830,14 @@ function wf8d() {
     name: 'WF8d Render Jobs Backfill',
     nodes: [
       node('wf8d-001', 'Manual Trigger', 'n8n-nodes-base.manualTrigger', 1, [0, 0], {}),
-      sheetsNode('wf8d-002', 'Read Created_Clips', [220, 0], sheet('read', 'Created_Clips')),
-      sheetsNode('wf8d-003', 'Read Render_Jobs', [440, 0], sheet('read', 'Render_Jobs'), { alwaysOutputData: true }),
+      postgresNode('wf8d-002', 'Read Created_Clips', [220, 0], postgresSql('select-created-clips')),
+      postgresNode('wf8d-003', 'Read Render_Jobs', [440, 0], postgresSql('select-render-jobs'), '', { alwaysOutputData: true }),
       codeNode('wf8d-004', 'Build Render Jobs', [660, 0], `${h}
 const created = $('Read Created_Clips').all().map(i => i.json);
 const existing = $('Read Render_Jobs').all().map(i => i.json);
 const rows = buildRenderJobBackfillRows(created, existing);
 return rows.map((row, index) => ({ json: row, pairedItem: { item: index } }));`),
-      sheetsNode('wf8d-005', 'Append Render Jobs', [880, 0], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+      postgresNode('wf8d-005', 'Append Render Jobs', [880, 0], postgresSql('upsert-render-jobs'), ROWS),
     ],
     connections: {
       'Manual Trigger': { main: [[{ node: 'Read Created_Clips', type: 'main', index: 0 }]] },
@@ -916,12 +861,12 @@ function wf8c() {
     name: 'WF8c FFmpeg Render Final Clip',
     nodes: [
       node('wf8c-001', 'Schedule 15m', 'n8n-nodes-base.scheduleTrigger', 1.2, [0, 0], { rule: { interval: [{ field: 'minutes', minutesInterval: 15 }] } }),
-      sheetsNode('wf8c-002', 'Read Render_Jobs', [220, 0], sheet('read', 'Render_Jobs')),
+      postgresNode('wf8c-002', 'Read Render_Jobs', [220, 0], postgresSql('select-render-jobs')),
       codeNode('wf8c-003', 'Pick Pending Render', [440, 0], `${h}
 const job = pickPendingRenderJob($input.all().map(i => i.json));
 return job ? [{ json: job, pairedItem: { item: 0 } }] : [];`),
-      sheetsNode('wf8c-004', 'Read Channel_Branding', [660, 0], sheet('read', 'Channel_Branding'), { alwaysOutputData: true }),
-      sheetsNode('wf8c-005', 'Read Music_Library', [880, 0], sheet('read', 'Music_Library'), { alwaysOutputData: true }),
+      postgresNode('wf8c-004', 'Read Channel_Branding', [660, 0], postgresSql('select-channel-branding'), '', { alwaysOutputData: true }),
+      postgresNode('wf8c-005', 'Read Music_Library', [880, 0], postgresSql('select-music-library'), '', { alwaysOutputData: true }),
       codeNode('wf8c-006', 'Build Asset Plan', [1100, 0], `${h}
 const job = $('Pick Pending Render').first().json;
 const plan = buildAssetDownloadPlan(
@@ -931,7 +876,7 @@ const plan = buildAssetDownloadPlan(
   ${finalFolders},
 );
 return [{ json: { ...job, ...plan }, pairedItem: { item: 0 } }];`),
-      sheetsNode('wf8c-007', 'Save Asset Plan', [1320, 0], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+      postgresNode('wf8c-007', 'Save Asset Plan', [1320, 0], postgresSql('update-render-asset-plan'), ROWS),
       ifNode('wf8c-008', 'Assets Ready?', [1540, 0], '={{ $json.render_status }}', 'DOWNLOADING_ASSETS', 'string', 'equals'),
       node('wf8c-009', 'Create Render Workspace', 'n8n-nodes-base.executeCommand', 1, [1760, -120], { command: '={{ "mkdir -p /data/jobs/" + $("Build Asset Plan").first().json.render_id }}' }),
       node('wf8c-010', 'Download Source Clip', 'n8n-nodes-base.googleDrive', 3, [1980, -120], { resource: 'file', operation: 'download', fileId: { __rl: true, mode: 'id', value: '={{ $("Build Asset Plan").first().json.source_drive_file_id }}' }, options: { binaryPropertyName: 'source' } }),
@@ -963,23 +908,23 @@ return [{
   },
   pairedItem: { item: 0 },
 }];`),
-      sheetsNode('wf8c-017', 'Mark Rendering', [3520, -120], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+      postgresNode('wf8c-017', 'Mark Rendering', [3520, -120], postgresSql('update-render-status'), ROWS),
       node('wf8c-018', 'Run FFmpeg', 'n8n-nodes-base.executeCommand', 1, [3740, -120], { command: '={{ $json.command }}' }, { onError: 'continueRegularOutput' }),
       codeNode('wf8c-019', 'Mark Uploading', [3960, -120], `${h}
 const job = $('Build Asset Plan').first().json;
 return [{ json: buildRenderStatusUpdate(job, 'UPLOADING'), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf8c-020', 'Save Uploading', [4180, -120], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+      postgresNode('wf8c-020', 'Save Uploading', [4180, -120], postgresSql('update-render-status'), ROWS),
       node('wf8c-021', 'Read Final Output', 'n8n-nodes-base.readWriteFile', 1, [4400, -120], { operation: 'read', fileSelector: '={{ "/data/jobs/" + $("Build Asset Plan").first().json.render_id + "/output.mp4" }}', options: { dataPropertyName: 'data' } }),
       node('wf8c-022', 'Upload Final To Drive', 'n8n-nodes-base.googleDrive', 3, [4620, -120], { resource: 'file', operation: 'upload', name: '={{ $("Build Asset Plan").first().json.render_id }}_final.mp4', driveId: { __rl: true, mode: 'list', value: 'My Drive' }, folderId: { __rl: true, mode: 'id', value: '={{ $("Build Asset Plan").first().json.final_drive_folder_id }}' }, inputDataFieldName: 'data', options: {} }),
       codeNode('wf8c-023', 'Build Completed Update', [4840, -120], `${h}
 const job = $('Build Asset Plan').first().json;
 const drive = $input.first().json;
 return [{ json: buildCompletedRenderUpdate(job, drive), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf8c-024', 'Mark Render Completed', [5060, -120], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+      postgresNode('wf8c-024', 'Mark Render Completed', [5060, -120], postgresSql('update-render-completed'), ROWS),
       codeNode('wf8c-025', 'Build Asset Failure', [1760, 160], `${h}
 const job = $('Build Asset Plan').first().json;
 return [{ json: buildRenderFailureUpdate(job, job.error_message || 'Render asset setup failed'), pairedItem: { item: 0 } }];`),
-      sheetsNode('wf8c-026', 'Mark Asset Failure', [1980, 160], sheet('appendOrUpdate', 'Render_Jobs', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['render_id'] } })),
+      postgresNode('wf8c-026', 'Mark Asset Failure', [1980, 160], postgresSql('update-render-failed'), ROWS),
     ],
     connections: {
       'Schedule 15m': { main: [[{ node: 'Read Render_Jobs', type: 'main', index: 0 }]] },

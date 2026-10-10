@@ -1,5 +1,3 @@
-BEGIN;
-
 ALTER TABLE short_videos.publishing_jobs
   ADD COLUMN IF NOT EXISTS publishing_backend text NOT NULL DEFAULT 'DIRECT',
   ADD COLUMN IF NOT EXISTS postiz_integration_id text NOT NULL DEFAULT '',
@@ -27,5 +25,3 @@ ALTER TABLE short_videos.publishing_jobs
 
 COMMENT ON COLUMN short_videos.publishing_jobs.postiz_submitted_at IS
   'Time of durable submission intent, not proof that Postiz accepted the request.';
-
-COMMIT;

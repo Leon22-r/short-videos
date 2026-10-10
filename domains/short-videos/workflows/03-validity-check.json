@@ -23,60 +23,50 @@
       ]
     },
     {
-      "parameters": {
-        "operation": "read",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Source_Channels"
-        },
-        "options": {}
-      },
       "id": "a1b2c3d4-0003-4000-8000-000000000002",
       "name": "Read Source_Channels",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         220,
         0
       ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT * FROM short_videos.source_channels;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "",
+          "replaceEmptyStrings": true
+        }
+      },
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 5000,
-      "executeOnce": true
+      "waitBetweenTries": 5000
     },
     {
-      "parameters": {
-        "operation": "read",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Candidate_Videos"
-        },
-        "options": {}
-      },
       "id": "a1b2c3d4-0003-4000-8000-000000000003",
       "name": "Read Candidate_Videos",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         440,
         0
       ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT * FROM short_videos.candidate_videos;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "",
+          "replaceEmptyStrings": true
+        }
+      },
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 5000,
-      "executeOnce": true
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -93,35 +83,24 @@
       ]
     },
     {
-      "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "GOOGLE_SHEETS_DOCUMENT_ID"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Candidate_Videos"
-        },
-        "options": {},
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [
-            "video_id"
-          ]
-        }
-      },
       "id": "a1b2c3d4-0003-4000-8000-000000000005",
       "name": "Update Candidate Rows",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
         880,
         0
       ],
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "WITH rows AS (\n  SELECT (\n    SELECT jsonb_object_agg(field.key, field.value)\n    FROM jsonb_each(element) AS field\n    WHERE NULLIF(btrim(field.value #>> '{}'), '') IS NOT NULL\n  ) AS row\n  FROM jsonb_array_elements($1::jsonb) AS element\n  WHERE NULLIF(btrim(element->>'video_id'), '') IS NOT NULL\n), incoming AS (\n  SELECT jsonb_populate_record(NULL::short_videos.candidate_videos, row) AS record\n  FROM rows\n  WHERE row IS NOT NULL\n)\nUPDATE short_videos.candidate_videos AS target SET\n  like_percentage = (incoming.record).like_percentage,\n  comment_percentage = (incoming.record).comment_percentage,\n  engagement_percentage = (incoming.record).engagement_percentage,\n  validity_status = (incoming.record).validity_status,\n  validity_score = (incoming.record).validity_score,\n  rejection_reason = (incoming.record).rejection_reason,\n  processing_status = (incoming.record).processing_status\nFROM incoming\nWHERE target.video_id = (incoming.record).video_id\nRETURNING target.*;",
+        "options": {
+          "queryBatching": "single",
+          "queryReplacement": "={{ JSON.stringify($input.all().map(item => item.json)) }}",
+          "replaceEmptyStrings": true
+        }
+      },
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000

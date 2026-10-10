@@ -1,6 +1,6 @@
 # Credentials Setup
 
-This repo commits workflow placeholders only. Real secrets live in n8n credentials or Lambda environment variables, never the Google Sheet.
+This repo commits workflow placeholders only. Real secrets live in n8n credentials or Lambda environment variables, never the database or committed workflow files.
 
 For the opt-in Postiz backend, create a **Header Auth** credential named `Postiz Public API` with header `Authorization` and the raw API key. Bind it to WF12's Postiz HTTP nodes; the exported ID is a placeholder. See [Postiz setup and activation gates](postiz-publishing.md). Existing direct-platform credentials remain necessary for jobs using `DIRECT`.
 
@@ -8,12 +8,19 @@ For the opt-in Postiz backend, create a **Header Auth** credential named `Postiz
 
 Create or reuse one Google Cloud project, then enable:
 
-- Google Sheets API
 - Google Drive API
 - YouTube Data API v3
 - Gmail API
 
 Create an OAuth consent screen and add your account as a test user while local/staging is not published.
+
+### OAuth consent screen publishing status
+
+An OAuth app left in **Testing** publishing status has its refresh tokens
+expired by Google after 7 days, which is what the reauthentication every few
+weeks was. Publish the consent screen; verification is not required for this
+to take effect. The Google Drive credential still exists — media storage is
+Drive — so this setting matters whether or not the pipeline uses Sheets.
 
 Create an OAuth client for n8n with these redirect URLs:
 
@@ -22,12 +29,30 @@ Create an OAuth client for n8n with these redirect URLs:
 
 Create these n8n credentials:
 
-- `Google Sheets account`: attach to every Google Sheets node.
 - `Google Drive account`: attach to WF8 Drive upload.
 - `Gmail account`: attach to WF9 digest email.
 - `YouTube upload account`: OAuth credential with YouTube upload scope for WF12 YouTube publishing.
 
-Create a YouTube Data API key and restrict it to YouTube Data API v3. In n8n, create a Query Auth credential with query parameter name `key` and the API key as its value, then bind it to every YouTube HTTP node in WF1/WF2. The key must not appear in a URL or committed workflow JSON.
+Create a YouTube Data API key and restrict it to YouTube Data API v3. In n8n, create a Query Auth credential with query parameter name `key` and the API key as its value, then bind it to every YouTube HTTP node in WF1/WF2 (`Resolve Channel` in WF1, `Fetch Uploads` and `Fetch Video Details` in WF2). The key must not appear in a URL or committed workflow JSON.
+
+One credential, bound three times — n8n does not attach a credential to a node
+automatically, and each workflow is saved separately.
+
+Each way of getting this wrong produces a different error, so the message
+identifies the cause:
+
+| Error | Cause |
+| --- | --- |
+| `Credentials not found` (n8n, before any request) | No credential bound to the node. The node declares `genericAuthType: httpQueryAuth` and the dropdown is empty. |
+| `403 PERMISSION_DENIED` — "Method doesn't allow unregistered callers (callers without established identity)" | A credential is bound, but the **Parameter Name** is not `key`, so the value rides along under a name Google ignores and the call arrives anonymous. |
+| `400 API_KEY_INVALID` — "API key not valid. Please pass a valid API key." | The parameter name is right and the **value** is wrong. Usually the OAuth client ID (`...apps.googleusercontent.com`) or a client secret pasted instead of the API key, or a key with surrounding whitespace or quotes. An API key is a single `AIzaSy...` string. |
+| `403 SERVICE_DISABLED` — "YouTube Data API v3 has not been used in project..." | The key is valid but the API is not enabled. Enable it under APIs & Services → Library. |
+
+To check a key without n8n in the way:
+
+```bash
+curl -s "https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=<handle>&key=<key>"
+```
 
 ## OpenAI
 
@@ -48,7 +73,7 @@ The committed `hosts/heavy/Dockerfile` installs `yt-dlp`. Rebuild and recreate t
 
 ## Social Publishing
 
-WF11-WF14 add the publishing phase. Real OAuth access and refresh tokens must live in n8n credentials, not in Google Sheets or committed workflow JSON.
+WF11-WF14 add the publishing phase. Real OAuth access and refresh tokens must live in n8n credentials, not in the database or committed workflow JSON.
 
 Create an n8n credential of type `Postgres`, name it `Publishing Queue Postgres`, and bind it to every Postgres node in WF11, WF12, and WF14.
 
@@ -67,14 +92,13 @@ Create and bind these exact n8n credentials before enabling the publishing workf
 
 | Use | n8n credential type | Credential name | Required setup |
 |---|---|---|---|
-| Sheet approvals/mirror | `Google Sheets OAuth2 API` (`googleSheetsOAuth2Api`) | `Google Sheets account` | Bind to every Google Sheets node in WF11-WF14 |
 | Transactional queue | `Postgres` (`postgres`) | `Publishing Queue Postgres` | Bind to every Postgres node in WF11, WF12, and WF14 |
 | YouTube | `YouTube OAuth2 API` (`youTubeOAuth2Api`) | `YouTube Publishing OAuth2` | OAuth grant for the destination channel with YouTube upload/write access |
 | Facebook Reels | `Header Auth` (`httpHeaderAuth`) | `Facebook Reels Page Token` | Header `Authorization` with value `OAuth <PAGE_ACCESS_TOKEN>` |
 | Instagram Reels | `Header Auth` (`httpHeaderAuth`) | `Instagram Reels Token` | Header `Authorization` with value `Bearer <ACCESS_TOKEN>` appropriate to the selected Graph host/login flow |
 | TikTok draft upload | `Bearer Auth` (`httpBearerAuth`) | `TikTok Content Posting Bearer` | Creator user access token authorized for `video.upload` and `user.info.basic` |
 
-Provider credential IDs in generated JSON are placeholders; Google Sheets and Postgres nodes also require deployment-time binding. Open every credentialed node after import and bind the real credential by ID. Tokens and refresh tokens stay in n8n credentials.
+Provider credential IDs in generated JSON are placeholders; Postgres nodes also require deployment-time binding. Open every credentialed node after import and bind the real credential by ID. Tokens and refresh tokens stay in n8n credentials.
 
 WF12 currently has one statically bound credential slot/account per platform:
 
@@ -111,7 +135,7 @@ Before enabling WF12, bind the Postgres credential and open every platform HTTP/
 
 Facebook, Instagram, and TikTok pull media from `public_video_url`. It must be a stable, provider-fetchable HTTPS URL without embedded credentials. For TikTok it must also be non-redirecting, remain accessible throughout the pull window, and be under the verified domain or URL prefix. A Google Drive share URL is an operator link; it is not proven to be directly fetchable by these providers and must not be copied into `public_video_url` without a controlled provider test. Prefer an owned HTTPS object-storage/CDN URL.
 
-Provider-issued resumable session and upload URLs may contain signed tokens. WF12 stores them only in Postgres (`provider_upload_url`/`provider_response`) and they must not be added to Google Sheets, logs, or documentation.
+Provider-issued resumable session and upload URLs may contain signed tokens. WF12 stores them only in Postgres (`provider_upload_url`/`provider_response`) and they must not be added to logs or documentation.
 
 WF13 is a configuration/expiry monitor, not a live credential probe. Its `last_health_status` and `last_expiry_audit_at` fields describe what can be inferred from `enabled_status`, `audit_status`, required destination metadata, and `token_expires_at`; they do not prove that an access token works. Use a lightweight authenticated provider request before production, and treat `401`, `403`, missing scopes, or an app-review restriction as `AUTH_REQUIRED`/manual action.
 
@@ -152,12 +176,11 @@ Create one Google Drive folder per niche and replace these WF8 placeholders in `
 
 Expected committed placeholders:
 
-- `GOOGLE_SHEETS_DOCUMENT_ID`
 - `TRANSCRIPT_SERVICE_URL`
 - `YOUR_N8N_DOMAIN`
 - `GOOGLE_DRIVE_FOLDER_*`
 
-The files in `domains/short-videos/workflow-code/` are canonical and generators must emit placeholders. Bind real Google Sheet document IDs, Drive folder IDs, domains, and credential selections only in the deployment/runtime copy (or through an explicit deployment-time substitution step). Do not copy runtime-bound generated JSON back over the placeholder source, and do not regenerate deployed workflows without reapplying and verifying those bindings.
+The files in `domains/short-videos/workflow-code/` are canonical and generators must emit placeholders. Bind real Drive folder IDs, domains, and credential selections only in the deployment/runtime copy (or through an explicit deployment-time substitution step). Do not copy runtime-bound generated JSON back over the placeholder source, and do not regenerate deployed workflows without reapplying and verifying those bindings.
 
 After every create/update, validate the workflow, fetch it back from n8n, inspect its `connections`, and open each credentialed node to confirm the intended credential is selected. Validation alone does not prove the saved connections or account selection.
 

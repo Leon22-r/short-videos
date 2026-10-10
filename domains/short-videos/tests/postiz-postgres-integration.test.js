@@ -45,6 +45,8 @@ test('real Postgres: migration, frozen mapping, submission races, lease recovery
     assert.equal(row('legacy').provider_stage, 'YOUTUBE_PROCESSING');
     // The complete fresh init is repeatable against the upgraded installation.
     sql(init);
+    const retypes = read('postgres/migrations/009-publishing-jobs-retypes.sql');
+    sql(retypes);
     assert.throws(() => upsert([{ ...baseJob('bad'), publishing_backend: 'UNKNOWN' }]));
     assert.throws(() => upsert([{ ...baseJob('bad'), postiz_integration_id: '' }]));
     assert.throws(() => upsert([{ ...baseJob('bad'), publishing_backend: 'DIRECT' }]));
@@ -138,6 +140,7 @@ test('real Postgres: migration, frozen mapping, submission races, lease recovery
     // Finally prove a fresh database can use POSTIZ without running migrations separately.
     sql('DROP SCHEMA short_videos CASCADE');
     sql(init);
+    sql(retypes);
     upsert([baseJob('fresh')]);
     assert.equal(row('fresh').publishing_backend, 'POSTIZ');
   } finally {

@@ -62,9 +62,10 @@ test('remaining workflow generator is config-neutral and provider-terminal-state
   assert(wf12.nodes.some((node) => node.name === 'Check TikTok Draft Status'));
   assert(wf12Names.includes('Schedule Provider Poll Atomically'));
   assert(wf12Names.includes('Complete Provider Publish Atomically'));
-  assert.equal(wf12.connections['Claim Next Job Atomically'].main[0][0].node, 'Redact Atomic Claim For Sheet');
-  assert.equal(wf12.connections['Redact Atomic Claim For Sheet'].main[0][0].node, 'Mirror Atomic Claim');
-  assert.equal(wf12.connections['Mirror Atomic Claim'].main[0][0].node, 'Mark Uploading Atomically');
+  // The Sheets mirror and the redaction step that fed it are gone (D1), so the
+  // claim hands straight to the atomic uploading mark.
+  assert.equal(wf12.connections['Claim Next Job Atomically'].main[0][0].node, 'Mark Uploading Atomically');
+  assert.equal(wf12.nodes.some((node) => /^Redact |^Mirror /.test(node.name)), false);
 
   const claimNode = wf12.nodes.find((node) => node.name === 'Claim Next Job Atomically');
   const safeSkipCode = wf12.nodes.find((node) => node.name === 'Build Safe Skip Reason').parameters.jsCode;
@@ -94,10 +95,10 @@ test('remaining workflow generator is config-neutral and provider-terminal-state
   assert.equal(wf12.nodes.some((node) => node.name === 'Read YouTube Video'), false);
   assert.doesNotMatch(JSON.stringify(wf12), /getBinaryDataBuffer|toString\('base64'\)/);
   assert.match(wf12.nodes.find((node) => node.name === 'Upload YouTube Video Bytes').parameters.url, /provider-uploader/);
-  for (const sheetNode of wf12.nodes.filter((node) => node.type === 'n8n-nodes-base.googleSheets')) {
-    const source = Object.entries(wf12.connections).find(([, outputs]) => JSON.stringify(outputs).includes(`\"node\":\"${sheetNode.name}\"`))?.[0] || '';
-    assert.match(source, /^Redact /, `${sheetNode.name}: every Sheet mirror must receive a redacted row`);
-  }
+  // There is no Sheet mirror left to redact for, which is the stronger
+  // guarantee: no node in WF12 can leak a Postiz snapshot to a sheet because
+  // nothing writes to one.
+  assert.deepEqual(wf12.nodes.filter((node) => node.type === 'n8n-nodes-base.googleSheets'), []);
   assert.match(wf12.nodes.find((node) => node.name === 'Confirm YouTube Destination').parameters.jsCode, /credential channel mismatch/);
 
   const nodeNames = new Set(wf12.nodes.map((node) => node.name));

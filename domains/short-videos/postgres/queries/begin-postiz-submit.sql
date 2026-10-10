@@ -10,9 +10,9 @@ WHERE publish_id = $1
   AND lease_expires_at > now()
   AND publishing_backend = 'POSTIZ'
   AND provider_stage = 'POSTIZ_MEDIA_READY'
-  AND postiz_post_id = ''
+  AND postiz_post_id IS NULL
   AND postiz_submitted_at IS NULL
-  AND postiz_media_id <> '' AND postiz_media_path <> ''
+  AND postiz_media_id IS NOT NULL AND postiz_media_path IS NOT NULL
   AND jsonb_typeof($3::jsonb) = 'object'
   AND $3::jsonb <> '{}'::jsonb
   AND $3::jsonb->>'type' = 'now'

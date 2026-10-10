@@ -166,15 +166,17 @@ function buildSchemaInstructions() {
 function pickAwaitingDownloads(clips, jobs, moments, folders, options = 5) {
   const limit = typeof options === 'number' ? options : Number(options.limit || 5);
   const perSourceLimit = typeof options === 'number' ? limit : Number(options.perSourceLimit || 1);
-  const jobsById = Object.fromEntries(jobs.map((job) => [job.ssemble_job_id, job]));
+  // D7 renamed the column on both sides. The legacy Ssemble_Jobs read itself
+  // goes away with WF8 in Task 14; until then it keys off the new name.
+  const jobsById = Object.fromEntries(jobs.map((job) => [job.download_job_id, job]));
   const momentsById = Object.fromEntries(moments.map((moment) => [moment.clip_moment_id, moment]));
 
   const enriched = clips
     .filter((clip) => String(clip.review_status) === 'AWAITING_DOWNLOAD')
     .map((clip) => {
-      const job = jobsById[clip.ssemble_job_id] || {};
-      const providerMomentId = String(clip.ssemble_job_id || '').startsWith('YTDLP-')
-        ? String(clip.ssemble_job_id).slice('YTDLP-'.length)
+      const job = jobsById[clip.download_job_id] || {};
+      const providerMomentId = String(clip.download_job_id || '').startsWith('YTDLP-')
+        ? String(clip.download_job_id).slice('YTDLP-'.length)
         : '';
       const createdMomentId = String(clip.created_clip_id || '').startsWith('CC-CM-')
         ? String(clip.created_clip_id).slice('CC-'.length)
@@ -259,18 +261,20 @@ function textValue(value, limit = 2000) {
   return text.slice(0, limit);
 }
 
+// These five columns are text[] in Postgres, so the list stays a list. It used
+// to be joined with newlines (and hashtags with spaces) because a sheet cell
+// holds one string; a JSON array lands in a text[] column directly, and a
+// newline-joined string would fail as a malformed array literal. The character
+// limits went with the join: they were cell limits.
 function listValue(value, options = {}) {
   const items = Array.isArray(value) ? value : (value ? [value] : []);
   const cleaned = items
     .map((item) => String(item || '').trim())
     .filter(Boolean);
   if (options.hashtags) {
-    return cleaned
-      .map((tag) => (tag.startsWith('#') ? tag : `#${tag.replace(/^#+/, '')}`))
-      .join(' ')
-      .slice(0, options.limit || 1000);
+    return cleaned.map((tag) => (tag.startsWith('#') ? tag : `#${tag.replace(/^#+/, '')}`));
   }
-  return cleaned.join('\n').slice(0, options.limit || 4000);
+  return cleaned;
 }
 
 function numberValue(value, fallback = 0) {
@@ -362,7 +366,10 @@ function parseTransformationPlan(meta, response) {
     risk_warning: textValue(plan.risk_warning, 1000),
     originality_checklist: listValue(plan.originality_checklist, { limit: 3000 }),
     render_plan: render,
-    transformation_plan: JSON.stringify(parseError ? { parse_error: parseError, raw: response } : plan).slice(0, 40000),
+    // transformation_plan is jsonb: the object goes in as an object. A JSON
+    // string would land as a string scalar, and the 40k slice was a cell limit
+    // that would now produce unparseable JSON.
+    transformation_plan: parseError ? { parse_error: parseError, raw: response } : plan,
     review_status: parseError || !title ? 'NEEDS_RETRY' : 'NEEDS_REVIEW',
   };
 }

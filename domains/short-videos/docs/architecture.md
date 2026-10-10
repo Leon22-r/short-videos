@@ -1,6 +1,8 @@
 # Short Videos Pipeline Architecture
 
-The discovery, review, and render pipeline is Google-Sheets-driven. Publishing uses Google Sheets as the approval/operator mirror and Postgres as the transactional queue and provider-checkpoint source of truth.
+The discovery, review, render, and publishing pipeline is Postgres-driven, using
+the `short_videos` schema in Supabase as its central state store. The
+tailnet-private Review UI provides human approvals and operations.
 
 WF12 also supports an opt-in `POSTIZ` backend. Existing jobs retain `DIRECT`; Postiz jobs use a frozen integration mapping, durable submission intent and identity-checked result polling. See [Postiz publishing](postiz-publishing.md) for configuration, status semantics and recovery. The direct-provider details below apply to `DIRECT` jobs unless noted.
 
@@ -86,10 +88,10 @@ WF6 is the only workflow that downloads source clips:
 - WF4 writes transcript rows by deterministic `analysis_id`.
 - WF5 writes clip moments by deterministic `clip_moment_id`.
 - WF6 writes created clips by deterministic `created_clip_id=CC-<clip_moment_id>`.
-- WF6 stores a legacy-compatible provider id as `ssemble_job_id=YTDLP-<clip_moment_id>` so downstream sheet joins remain stable.
+- WF6 stores a legacy-compatible provider id as `download_job_id=YTDLP-<clip_moment_id>` so downstream queries remain stable.
 - WF8 saves Drive IDs immediately after upload and reuses them on retries.
 - WF11 writes deterministic `publish_id=PUB_<render_id>_<platform>_<channel_id>` so reruns do not duplicate platform jobs.
-- WF11 syncs the Sheet snapshot into `short_videos.publishing_jobs` without overwriting database-owned queue state.
+- WF11 builds publishing jobs directly from `short_videos.approved_for_posting` and `short_videos.publishing_channels` into `short_videos.publishing_jobs`.
 - WF12 claims with one Postgres `FOR UPDATE SKIP LOCKED` statement, keyed by `$execution.id`; a retry returns the same active claim instead of claiming a second job.
 - WF12 records `claimed_at`, `claimed_by`, and `lease_expires_at` before provider work; stale leases become eligible for recovery while retaining the same logical job ID.
 
@@ -98,7 +100,7 @@ WF6 is the only workflow that downloads source clips:
 - Authorization fails closed: the render must be `COMPLETED`, the approval row must be `APPROVED` or `READY`, and the platform list must be explicit.
 - Destination routing fails closed: the destination must be enabled, match the render niche and requested platform, pass the configured audit/manual-mode gate, and provide the platform-specific destination ID.
 - Time fails closed: WF12 only selects jobs whose `scheduled_at` is blank or due, and WF14 only releases retries whose `next_retry_at` is due.
-- Concurrency is transaction-backed: Postgres is the queue source of truth, and Google Sheets is an operator-facing mirror. WF12 selects and claims one row under `FOR UPDATE SKIP LOCKED`; stale-lease recovery is explicit and all transitions retain the deterministic `publish_id`.
+- Concurrency is transaction-backed: Postgres is the state and queue source of truth. WF12 selects and claims one row under `FOR UPDATE SKIP LOCKED`; stale-lease recovery is explicit and all transitions retain the deterministic `publish_id`.
 - The schema and parameterized SQL avoid provider-specific extensions, so the local Postgres queue can move to Neon by changing the n8n Postgres credential and applying the same initialization SQL.
 - Provider acceptance is not publication proof. A job becomes `PUBLISHED` only after the platform-specific terminal check; initialization, upload, finish acknowledgement, or container creation alone remains `UPLOADING` or `PROCESSING`. TikTok inbox delivery becomes `DRAFT_UPLOADED`, not `PUBLISHED`.
 - Unit tests, generated-workflow validation, and local Docker execution do not prove live OAuth scopes, provider entitlements, app-review approval, media-hosting compatibility, asynchronous processing, or public visibility. Each platform stays disabled/private/draft until a controlled live test proves its complete path.

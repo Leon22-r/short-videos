@@ -1,0 +1,21 @@
+#!/bin/sh
+# Probes a Postgres URL from inside a container on heavy-net, the way n8n will
+# reach it. Prints the server version and connection target.
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: $0 <postgres-url>" >&2
+  exit 2
+fi
+
+NETWORK="n8n_heavy-net"
+if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
+  NETWORK="heavy-net"
+fi
+
+docker run --rm --network "$NETWORK" \
+  -e PGCONNECT_TIMEOUT=10 \
+  docker.io/library/postgres:16-alpine \
+  psql "$1" -X -Atq -v ON_ERROR_STOP=1 \
+    -c "SELECT 'connected: ' || version();" \
+    -c "SELECT 'backend: ' || current_database() || ' on ' || inet_server_addr() || ':' || inet_server_port();"

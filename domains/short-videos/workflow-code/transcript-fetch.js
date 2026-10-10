@@ -1,4 +1,3 @@
-const TRANSCRIPT_LIMIT = 45000;
 const { pickFairByGroup } = require('./fair-share');
 
 function pickPendingTranscripts(candidateRows, options = {}) {
@@ -32,11 +31,9 @@ function buildTimestampedTranscript(snippets) {
 }
 
 function buildAnalysisRow(video, response, now = new Date().toISOString()) {
-  const transcriptFull = buildTimestampedTranscript(response.transcript || []);
-  let transcriptText = transcriptFull;
-  if (transcriptFull.length > TRANSCRIPT_LIMIT) {
-    transcriptText = `${transcriptFull.slice(0, TRANSCRIPT_LIMIT)}\n...[TRUNCATED]`;
-  }
+  // Postgres text is unbounded, so there is no cell limit to truncate for and
+  // no Drive stash to recover the real value from (spec Section 1 item 1).
+  const transcriptText = buildTimestampedTranscript(response.transcript || []);
 
   return {
     analysis_id: `AN-${video.youtube_video_id}`,
@@ -47,9 +44,6 @@ function buildAnalysisRow(video, response, now = new Date().toISOString()) {
     video_url: video.video_url,
     transcript_status: 'FETCHED',
     transcript_text: transcriptText,
-    transcript_full: transcriptFull,
-    transcript_full_url: '',
-    transcript_full_file_id: '',
     transcript_length_words: String(response.plain_text || '').split(/\s+/).filter(Boolean).length,
     ai_episode_score: '',
     recommended_strategy: '',

@@ -4,15 +4,13 @@ const path = require('node:path');
 // Resolved from this file's location, not the working directory.
 const DOMAIN_ROOT = path.join(__dirname, '..');
 
-const workflowPath = process.argv[2] || path.join(DOMAIN_ROOT, 'workflows/02-video-fetch.json');
+const { querySql, postgresNode } = require('./table-node');
 
-const sheet = (operation, sheetName, extra = {}) => ({
-  operation,
-  documentId: { __rl: true, mode: 'id', value: 'GOOGLE_SHEETS_DOCUMENT_ID' },
-  sheetName: { __rl: true, mode: 'name', value: sheetName },
-  options: {},
-  ...extra,
-});
+// The rows a write node sends: every item the node received, as a jsonb array
+// in $1. One statement, so it is safe on the transaction-mode pooler.
+const ROWS = '={{ JSON.stringify($input.all().map(item => item.json)) }}';
+
+const workflowPath = process.argv[2] || path.join(DOMAIN_ROOT, 'workflows/02-video-fetch.json');
 
 const codeNode = (id, name, position, jsCode) => ({
   parameters: { mode: 'runOnceForAllItems', jsCode },
@@ -21,20 +19,6 @@ const codeNode = (id, name, position, jsCode) => ({
   type: 'n8n-nodes-base.code',
   typeVersion: 2,
   position,
-});
-
-const sheetsNode = (id, name, position, parameters, extra = {}) => ({
-  parameters,
-  id,
-  name,
-  type: 'n8n-nodes-base.googleSheets',
-  typeVersion: 4.5,
-  position,
-  retryOnFail: true,
-  maxTries: 3,
-  waitBetweenTries: 5000,
-  ...(parameters.operation === 'read' ? { executeOnce: true } : {}),
-  ...extra,
 });
 
 const httpNode = (id, name, position, url, extra = {}) => ({
@@ -68,12 +52,13 @@ const workflow = {
       typeVersion: 1.2,
       position: [0, 0],
     },
-    sheetsNode('a1b2c3d4-0002-4000-8000-000000000002', 'Read Source_Channels', [220, 0], sheet('read', 'Source_Channels')),
-    sheetsNode(
+    postgresNode('a1b2c3d4-0002-4000-8000-000000000002', 'Read Source_Channels', [220, 0], querySql('select-source-channels')),
+    postgresNode(
       'a1b2c3d4-0002-4000-8000-000000000003',
       'Read Candidate_Videos',
       [440, 0],
-      sheet('read', 'Candidate_Videos'),
+      querySql('select-candidate-videos'),
+      '',
       { alwaysOutputData: true },
     ),
     codeNode('a1b2c3d4-0002-4000-8000-000000000004', 'Init Run', [660, 0], `const sd = $getWorkflowStaticData('global');
@@ -214,11 +199,15 @@ function isoDurationToSeconds(iso) {
   return { json: row, pairedItem: { item: i } };
 });`),
     codeNode('a1b2c3d4-0002-4000-8000-000000000012', 'Filter Real Rows', [2420, 20], `return $input.all().filter(i => !i.json.__noop);`),
-    sheetsNode(
+    // Sheets' append was read-then-write, so two concurrent runs could both
+    // miss the same youtube_video_id and write it twice. One INSERT ... ON
+    // CONFLICT closes that window.
+    postgresNode(
       'a1b2c3d4-0002-4000-8000-000000000013',
-      'Append Candidates',
+      'Upsert Candidates',
       [2640, 20],
-      sheet('append', 'Candidate_Videos', { columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: [] } }),
+      querySql('upsert-candidate-videos'),
+      ROWS,
     ),
     codeNode('a1b2c3d4-0002-4000-8000-000000000014', 'Emit Source Update', [1100, -160], `const sd = $getWorkflowStaticData('global');
 const channel = $('Channel Loop').first().json;
@@ -242,13 +231,14 @@ return [{
   },
   pairedItem: { item: 0 },
 }];`),
-    sheetsNode(
+    // An UPDATE, not an upsert: the channel row already exists, and an upsert
+    // naming only these columns would fail the table's NOT NULL columns.
+    postgresNode(
       'a1b2c3d4-0002-4000-8000-000000000015',
       'Update Source Backfill State',
       [1320, -160],
-      sheet('appendOrUpdate', 'Source_Channels', {
-        columns: { mappingMode: 'autoMapInputData', value: {}, matchingColumns: ['source_id'] },
-      }),
+      querySql('update-source-backfill-state'),
+      ROWS,
     ),
   ],
   connections: {
@@ -273,7 +263,7 @@ return [{
         { node: 'Emit Source Update', type: 'main', index: 0 },
       ]],
     },
-    'Filter Real Rows': { main: [[{ node: 'Append Candidates', type: 'main', index: 0 }]] },
+    'Filter Real Rows': { main: [[{ node: 'Upsert Candidates', type: 'main', index: 0 }]] },
     'Emit Source Update': { main: [[{ node: 'Update Source Backfill State', type: 'main', index: 0 }]] },
     'Update Source Backfill State': { main: [[{ node: 'Channel Loop', type: 'main', index: 0 }]] },
   },

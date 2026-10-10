@@ -1,0 +1,24 @@
+# Operator-facing, tailnet-only. Deliberately not on public-net and
+# deliberately not on the heavy host: this box holds exactly one secret,
+# the Supabase service key.
+services:
+  review-ui:
+    build: .
+    container_name: review-ui
+    restart: unless-stopped
+    mem_limit: 64m
+    # Bound to the tailnet address, never 0.0.0.0. The network is the
+    # authentication (D5), so a wrong bind address is the whole security model.
+    ports:
+      - "${REVIEW_BIND_ADDRESS:?REVIEW_BIND_ADDRESS must be set}:${REVIEW_PORT:-5680}:8080"
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL:?SUPABASE_URL must be set}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:?SUPABASE_SERVICE_KEY must be set}
+      REVIEW_BIND_ADDRESS: "0.0.0.0"
+      REVIEW_PORT: "8080"
+      # The hostnames the server answers to, which is the DNS-rebinding
+      # defence: without it an attacker's domain pointed at this address
+      # arrives with its own name in both Host and Origin, those agree with
+      # each other, and their page becomes same-origin with the review UI.
+      # Defaults to loopback, so a tailnet deployment must list its own name.
+      REVIEW_ALLOWED_HOSTS: ${REVIEW_ALLOWED_HOSTS:-127.0.0.1,localhost,[::1]}

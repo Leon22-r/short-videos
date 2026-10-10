@@ -1,5 +1,7 @@
 const fs = require('node:fs');
 
+const { querySql, postgresNode } = require('./table-node');
+
 const workflowPath = process.argv[2];
 if (!workflowPath) {
   console.error('Usage: node domains/short-videos/workflow-code/update-wf1-code.js <workflow.json>');
@@ -118,7 +120,31 @@ resolveNode.retryOnFail = true;
 resolveNode.maxTries = 3;
 resolveNode.waitBetweenTries = 5000;
 
-for (const node of workflow.nodes.filter((candidate) => candidate.type === 'n8n-nodes-base.googleSheets')) {
+// WF1 is patched in place rather than emitted whole, so the Sheets-to-Postgres
+// swap happens here: the two Sheets nodes become Postgres nodes reading the
+// same .sql files the other workflows use. Ids and positions are preserved so
+// the regenerated JSON diffs cleanly.
+const readNode = workflow.nodes.find((node) => node.name === 'Read Source_Channels');
+const writeNode = workflow.nodes.find((node) => node.name === 'Update Source Row');
+
+if (!readNode || !writeNode) {
+  throw new Error('Expected Read Source_Channels and Update Source Row nodes');
+}
+
+Object.assign(readNode, postgresNode(
+  readNode.id, readNode.name, readNode.position, querySql('select-source-channels'),
+));
+
+// An UPDATE, not an upsert: the operator created the row, WF1 only fills in
+// the ids it resolved. An upsert naming these columns alone would fail the
+// table's NOT NULL columns.
+Object.assign(writeNode, postgresNode(
+  writeNode.id, writeNode.name, writeNode.position,
+  querySql('update-source-resolution'),
+  '={{ JSON.stringify($input.all().map(item => item.json)) }}',
+));
+
+for (const node of workflow.nodes.filter((candidate) => candidate.type === 'n8n-nodes-base.postgres')) {
   node.retryOnFail = true;
   node.maxTries = 3;
   node.waitBetweenTries = 5000;
