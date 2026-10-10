@@ -107,19 +107,56 @@ const { sameOrigin } = require('../hosts/review/server');
 // CSRF token to. A page the operator has open in the same browser could still
 // POST here, which would approve or reject a clip.
 test('a cross-site POST is not treated as same-origin', () => {
-  assert.equal(sameOrigin({ headers: { 'sec-fetch-site': 'cross-site' } }, 'host:8080'), false);
-  assert.equal(sameOrigin({ headers: { 'sec-fetch-site': 'same-site' } }, 'host:8080'), false);
+  assert.equal(sameOrigin({ headers: { "sec-fetch-site": "cross-site" } }), false);
+  assert.equal(sameOrigin({ headers: { 'sec-fetch-site': 'same-site' } }), false);
 });
 
 test('the review UI own pages and direct navigation are same-origin', () => {
-  assert.equal(sameOrigin({ headers: { 'sec-fetch-site': 'same-origin' } }, 'host:8080'), true);
-  assert.equal(sameOrigin({ headers: { 'sec-fetch-site': 'none' } }, 'host:8080'), true);
+  assert.equal(sameOrigin({ headers: { 'sec-fetch-site': 'same-origin' } }), true);
+  assert.equal(sameOrigin({ headers: { 'sec-fetch-site': 'none' } }), true);
 });
 
 test('without Fetch Metadata the Origin header decides, and a bad one fails closed', () => {
-  assert.equal(sameOrigin({ headers: { origin: 'http://host:8080' } }, 'host:8080'), true);
-  assert.equal(sameOrigin({ headers: { origin: 'http://evil.example' } }, 'host:8080'), false);
-  assert.equal(sameOrigin({ headers: { origin: 'not a url' } }, 'host:8080'), false);
+  // Checked against the configured hostnames, not against this request's Host.
+  assert.equal(sameOrigin({ headers: { origin: 'http://127.0.0.1:5680' } }), true);
+  assert.equal(sameOrigin({ headers: { origin: 'http://evil.example' } }), false);
+  assert.equal(sameOrigin({ headers: { origin: 'not a url' } }), false);
   // A client that sends neither header is a plain form post, not an attack.
-  assert.equal(sameOrigin({ headers: {} }, 'host:8080'), true);
+  assert.equal(sameOrigin({ headers: {} }), true);
+});
+
+// DNS rebinding. An attacker points their own domain at this server's address;
+// the operator's browser resolves it and every request then arrives with the
+// attacker's domain in Host *and* in Origin, so an Origin-against-Host check
+// agrees with itself and passes. Once that works the attacker's page is
+// same-origin with this one, so it can read the clip queue as well as post to
+// it — which is why the Host check runs for GET too, not only for writes.
+const { hostAllowed, hostnameOf } = require('../hosts/review/server');
+
+test('only the configured hostnames are answered', () => {
+  for (const host of ['127.0.0.1', '127.0.0.1:5680', 'localhost', 'localhost:8080', '[::1]', '[::1]:5680']) {
+    assert.equal(hostAllowed(host), true, `${host} should be allowed`);
+  }
+  for (const host of ['rebind.attacker.example', 'rebind.attacker.example:5680', '127.0.0.1.attacker.example', 'evil.test']) {
+    assert.equal(hostAllowed(host), false, `${host} must be refused`);
+  }
+});
+
+test('a missing or malformed Host is refused rather than defaulted', () => {
+  for (const host of ['', undefined, null, '   ', ':5680']) {
+    assert.equal(hostAllowed(host), false);
+  }
+});
+
+test('the hostname is compared without its port, and IPv6 brackets survive', () => {
+  assert.equal(hostnameOf('127.0.0.1:5680'), '127.0.0.1');
+  assert.equal(hostnameOf('[::1]:5680'), '[::1]');
+  assert.equal(hostnameOf('LOCALHOST:8080'), 'localhost');
+});
+
+// The Origin fallback must not be checked against the request's own Host: under
+// rebinding both carry the attacker's domain.
+test('an Origin on an unlisted host is refused even when it matches Host', () => {
+  assert.equal(sameOrigin({ headers: { origin: 'http://rebind.attacker.example' } }), false);
+  assert.equal(sameOrigin({ headers: { origin: 'http://127.0.0.1:5680' } }), true);
 });

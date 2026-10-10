@@ -20,6 +20,14 @@ screens, server-rendered, no JavaScript shipped to the browser:
   Because there is no session, POSTs are checked for `Sec-Fetch-Site`/`Origin`
   instead of a CSRF token: without that, any page the operator has open could
   approve a clip.
+- **`REVIEW_ALLOWED_HOSTS` is the DNS-rebinding defence.** A request whose
+  `Host` is not on that list gets 403, for reads as well as writes. Without it,
+  an attacker who points their own domain at this address has the operator's
+  browser send requests carrying *their* name in both `Host` and `Origin` —
+  which agree with each other, so an Origin-against-Host check passes and their
+  page becomes same-origin with this one, able to read the clip queue as well as
+  post to it. The allowlist is the one input the attacker cannot influence. A
+  tailnet deployment must add its own hostname or address.
 - **One secret, and it stays server-side.** `SUPABASE_SERVICE_KEY` bypasses
   row-level security. `render.js` is pure and reads no environment, so the key
   cannot reach a page; a test asserts that.
