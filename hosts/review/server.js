@@ -80,16 +80,27 @@ const routes = {
 // same browser can still POST here, so a state-changing request must look
 // same-origin. Sec-Fetch-Site is sent by every current browser and cannot be
 // set by page script; Origin is the fallback for anything that omits it.
+// Applied to every non-GET. Both halves are required and they defend against
+// different things: ALLOWED_HOSTS stops a rebound domain (the attacker controls
+// Host, so Host can never be the thing a check trusts), and the Origin
+// comparison below stops a different origin on an allowed *host* — a browser
+// treats http://localhost:5678 and http://localhost:5680 as separate origins,
+// and n8n itself sits on one of them, so comparing hostnames while ignoring the
+// port would make any other local service same-origin with this one.
 const sameOrigin = (request) => {
   const site = request.headers['sec-fetch-site'];
-  if (site) return site === 'same-origin' || site === 'none';
+  // Only same-origin, deliberately not 'none'. 'none' is a user-initiated
+  // navigation — a typed URL or a bookmark — which is not how a form posts, so
+  // accepting it on a write would reopen the hole for any client that can set
+  // the header while omitting Origin.
+  if (site) return site === 'same-origin';
   const origin = request.headers.origin;
   if (!origin) return true; // A plain form post from a non-Fetch-Metadata client.
   try {
-    // Checked against the allowlist, never against this request's own Host:
-    // under DNS rebinding both headers carry the attacker's domain and would
-    // match each other.
-    return hostAllowed(new URL(origin).host);
+    // host, not hostname: it carries the port, and the port is part of the
+    // origin. Compared to this request's Host, which the allowlist has already
+    // vouched for — under rebinding Host is rejected before we get here.
+    return new URL(origin).host.toLowerCase() === String(request.headers.host || '').toLowerCase();
   } catch {
     return false;
   }

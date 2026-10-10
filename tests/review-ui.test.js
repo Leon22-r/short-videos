@@ -111,18 +111,23 @@ test('a cross-site POST is not treated as same-origin', () => {
   assert.equal(sameOrigin({ headers: { 'sec-fetch-site': 'same-site' } }), false);
 });
 
-test('the review UI own pages and direct navigation are same-origin', () => {
+test('only same-origin passes; a user-initiated navigation does not', () => {
   assert.equal(sameOrigin({ headers: { 'sec-fetch-site': 'same-origin' } }), true);
-  assert.equal(sameOrigin({ headers: { 'sec-fetch-site': 'none' } }), true);
+  // 'none' is a typed URL or a bookmark, which is not how a form posts.
+  assert.equal(sameOrigin({ headers: { 'sec-fetch-site': 'none' } }), false);
 });
 
-test('without Fetch Metadata the Origin header decides, and a bad one fails closed', () => {
-  // Checked against the configured hostnames, not against this request's Host.
-  assert.equal(sameOrigin({ headers: { origin: 'http://127.0.0.1:5680' } }), true);
-  assert.equal(sameOrigin({ headers: { origin: 'http://evil.example' } }), false);
-  assert.equal(sameOrigin({ headers: { origin: 'not a url' } }), false);
+test('without Fetch Metadata the Origin must equal the Host, port included', () => {
+  const host = '127.0.0.1:5680';
+  assert.equal(sameOrigin({ headers: { origin: 'http://127.0.0.1:5680', host } }), true);
+  // A different port on an allowed host is a different origin — n8n sits on
+  // one, so ignoring the port would make it same-origin with the review UI.
+  assert.equal(sameOrigin({ headers: { origin: 'http://127.0.0.1:5678', host } }), false);
+  assert.equal(sameOrigin({ headers: { origin: 'http://localhost:5680', host } }), false);
+  assert.equal(sameOrigin({ headers: { origin: 'http://evil.example', host } }), false);
+  assert.equal(sameOrigin({ headers: { origin: 'not a url', host } }), false);
   // A client that sends neither header is a plain form post, not an attack.
-  assert.equal(sameOrigin({ headers: {} }), true);
+  assert.equal(sameOrigin({ headers: { host } }), true);
 });
 
 // DNS rebinding. An attacker points their own domain at this server's address;
@@ -156,7 +161,11 @@ test('the hostname is compared without its port, and IPv6 brackets survive', () 
 
 // The Origin fallback must not be checked against the request's own Host: under
 // rebinding both carry the attacker's domain.
-test('an Origin on an unlisted host is refused even when it matches Host', () => {
-  assert.equal(sameOrigin({ headers: { origin: 'http://rebind.attacker.example' } }), false);
-  assert.equal(sameOrigin({ headers: { origin: 'http://127.0.0.1:5680' } }), true);
+// Defence in depth: Host is validated against the allowlist before routing, so
+// a rebound request never reaches this guard. Were it reordered, the Origin
+// comparison alone would still agree with a rebound Host — which is exactly why
+// the allowlist, not this comparison, is what stops rebinding.
+test('the two checks cover different attacks and neither replaces the other', () => {
+  assert.equal(hostAllowed('rebind.attacker.example'), false);
+  assert.equal(sameOrigin({ headers: { origin: 'http://rebind.attacker.example', host: 'rebind.attacker.example' } }), true);
 });
