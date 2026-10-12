@@ -80,12 +80,24 @@ const hoursSince = (value, now = Date.now()) => {
   return (now - then) / 3600000;
 };
 
+// escapeHtml stops a URL breaking out of its attribute; it does not stop
+// `javascript:` inside one, which runs on click in an href and on load in an
+// iframe src. Every URL rendered here arrives from outside: Drive URLs from
+// WF8, post URLs straight out of a provider's API response. So a URL is only
+// ever a URL if it is http(s); anything else renders as no link at all.
+const safeHref = (value) => {
+  const href = String(value ?? '').trim();
+  return /^https?:\/\//i.test(href) ? href : '';
+};
+
 // A YouTube URL plus the second the moment starts. The operator lands on the
 // original episode at the exact cut, which is the fastest way to judge whether
 // a clip was taken out of context.
 const sourceLink = (url, startSec) => {
-  const href = String(url || '');
-  if (!/^https:\/\//.test(href)) return '';
+  // https only here: these are public video URLs and there is no reason for
+  // one to be plain http.
+  const href = /^https:\/\//i.test(String(url ?? '').trim()) ? safeHref(url) : '';
+  if (!href) return '';
   const start = Number(startSec);
   const at = Number.isFinite(start) && start > 0
     ? `${href}${href.includes('?') ? '&' : '?'}t=${Math.floor(start)}s`
@@ -336,8 +348,8 @@ ${navBar(counts, current)}
 
 // D11: the operator's own browser fetches this URL with their Google session.
 // The server never proxies Drive and holds no Google credential.
-const preview = (clip) => clip.google_drive_url
-  ? `<iframe src="${escapeHtml(clip.google_drive_url)}" title="Clip preview" loading="lazy" allow="autoplay"></iframe>`
+const preview = (clip) => safeHref(clip.google_drive_url)
+  ? `<iframe src="${escapeHtml(safeHref(clip.google_drive_url))}" title="Clip preview" loading="lazy" allow="autoplay"></iframe>`
   : '<div class="shot-missing"><p>No render yet.</p>'
     + '<p class="mute">WF8 has not written a Drive URL for this clip.</p></div>';
 
@@ -908,8 +920,8 @@ ${jobs.length === 0
     <span class="mute">${escapeHtml(humanEnum(job.niche))}</span></td>
   <td>${escapeHtml(humanEnum(job.platform))}</td>
   <td class="num">${escapeHtml(ago(job.completed_at, now) || '—')}</td>
-  <td>${job.post_url
-    ? `<a href="${escapeHtml(job.post_url)}" rel="noreferrer noopener" target="_blank">open</a>`
+  <td>${safeHref(job.post_url)
+    ? `<a href="${escapeHtml(safeHref(job.post_url))}" rel="noreferrer noopener" target="_blank">open</a>`
     : `<span class="mute">${escapeHtml(humanEnum(job.publish_status))}</span>`}</td>
 </tr>`).join('')}</tbody></table>`}
 
@@ -1045,6 +1057,6 @@ module.exports = {
   momentQueue, heldBoard, pipelineBoard, stuckBoard, publishedBoard,
   parseApproveForm, parseRejectForm, parseChannelForm, parsePriorityForm,
   buildAlarms, starvedStages, alarmList, pager, empty,
-  escapeHtml, timecode, ago, hoursSince, sourceLink,
+  escapeHtml, timecode, ago, hoursSince, sourceLink, safeHref, humanEnum,
   NICHES, PLATFORMS, REJECT_REASONS, MACHINE_REASONS,
 };
