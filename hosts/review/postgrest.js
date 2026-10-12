@@ -16,10 +16,10 @@ const headers = {
   'content-profile': 'short_videos',
 };
 
-async function request(method, pathAndQuery, body) {
+async function request(method, pathAndQuery, body, extraHeaders = {}) {
   const response = await fetch(`${BASE}/rest/v1/${pathAndQuery}`, {
     method,
-    headers: { ...headers, prefer: 'return=representation' },
+    headers: { ...headers, prefer: 'return=representation', ...extraHeaders },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(15000),
   });
@@ -33,14 +33,40 @@ async function request(method, pathAndQuery, body) {
     error.status = response.status;
     throw error;
   }
-  return text ? JSON.parse(text) : null;
+  return {
+    rows: text ? JSON.parse(text) : null,
+    // Content-Range is "0-24/531" when a count was asked for, "*/*" when the
+    // range is empty. The total is what the pager needs to stop lying about
+    // how much it is hiding.
+    total: Number(String(response.headers.get('content-range') || '').split('/')[1]) || 0,
+  };
 }
 
 const query = (params) => new URLSearchParams(params).toString();
 
-const select = (table, params = {}) => request('GET', `${table}?${query(params)}`);
-const insert = (table, body) => request('POST', table, body);
-const patch = (table, filter, body) => request('PATCH', `${table}?${query(filter)}`, body);
-const rpc = (fn, args) => request('POST', `rpc/${fn}`, args);
+// PostgREST's in.() takes a bare comma-separated list, so any value carrying a
+// comma, a quote or a paren has to be double-quoted. Ids here are generated,
+// but they arrive from the database rather than from a literal, so quote them
+// all rather than assuming their shape.
+const inList = (values) => `in.(${[...new Set(values)]
+  .filter((value) => value !== null && value !== undefined && value !== '')
+  .map((value) => `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`)
+  .join(',')})`;
 
-module.exports = { select, insert, patch, rpc };
+const select = async (table, params = {}) => (await request('GET', `${table}?${query(params)}`)).rows;
+
+// Same read, plus the unfiltered total, for a screen that paginates.
+const selectPage = (table, params = {}) =>
+  request('GET', `${table}?${query(params)}`, undefined, { prefer: 'count=exact' });
+
+const selectOne = async (table, params = {}) => {
+  const rows = await select(table, { ...params, limit: '1' });
+  return Array.isArray(rows) ? rows[0] : rows;
+};
+
+const insert = async (table, body) => (await request('POST', table, body)).rows;
+const patch = async (table, filter, body) =>
+  (await request('PATCH', `${table}?${query(filter)}`, body)).rows;
+const rpc = async (fn, args) => (await request('POST', `rpc/${fn}`, args)).rows;
+
+module.exports = { select, selectPage, selectOne, insert, patch, rpc, inList };
