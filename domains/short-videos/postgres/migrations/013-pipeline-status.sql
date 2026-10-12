@@ -177,3 +177,25 @@ SELECT
 
 COMMENT ON VIEW short_videos.review_counts IS
   'One row of queue sizes for the review UI navigation.';
+
+
+-- Migration 011 granted service_role everything in this schema and set default
+-- privileges for objects created later. Those defaults only cover objects
+-- created by the role that ran 011, so they are a bet on this file being
+-- applied by that same role. Granting explicitly costs one statement and
+-- removes the bet. SELECT only: both views are read-only by construction.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    GRANT SELECT ON short_videos.pipeline_status TO service_role;
+    GRANT SELECT ON short_videos.review_counts TO service_role;
+  END IF;
+END;
+$$;
+
+-- PostgREST answers from a cached schema, so a view it has not seen is "not
+-- found in the schema cache" however correct the SQL was. Supabase reloads on
+-- a DDL event trigger, but that can lag; this makes the reload part of the
+-- migration rather than something to remember afterwards. Harmless where
+-- nothing is listening.
+NOTIFY pgrst, 'reload schema';
