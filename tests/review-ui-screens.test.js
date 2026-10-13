@@ -7,9 +7,10 @@ const {
   heldBoard, stuckBoard, pipelineBoard, channelBoard, publishedBoard,
   parseApproveForm, parseRejectForm, parsePriorityForm,
   buildAlarms, starvedStages, pager, navBar, clipItem, approveForm,
-  timecode, ago, hoursSince, sourceLink,
+  timecode, ago, hoursSince, sourceLink, momentQueue, clipQueue,
+  driveHref, redact, zonedToIso,
 } = require('../hosts/review/render');
-const { groupErrors, dailyThroughput, countReasons } = require('../hosts/review/summarise');
+const { groupErrors } = require('../hosts/review/summarise');
 
 // A fixed clock, so an age assertion does not drift with the wall clock.
 const NOW = Date.parse('2026-10-12T12:00:00Z');
@@ -87,11 +88,20 @@ test('the navigation carries the counts, and distinguishes zero from unknown', (
 // Approve and reject parsing
 // ---------------------------------------------------------------------------
 
-test('the chosen alternative title wins over the free-text box', () => {
+test('the chosen alternative title is used when nothing is typed', () => {
   const { values, errors } = parseApproveForm(new URLSearchParams(
-    'created_clip_id=c1&title_choice=A+Better+Title&final_title=ignored&platforms=TIKTOK'));
+    'created_clip_id=c1&title_choice=A+Better+Title&final_title=&platforms=TIKTOK'));
   assert.deepEqual(errors, {});
   assert.equal(values.p_final_title, 'A Better Title');
+});
+
+// The suggested radio is pre-checked, so an operator who types a title and
+// leaves the radio alone meant the typed one. Silently publishing the AI title
+// instead was the bug.
+test('a typed title wins over the pre-checked radio', () => {
+  const { values } = parseApproveForm(new URLSearchParams(
+    'created_clip_id=c1&title_choice=AI+Suggested&final_title=Mine&platforms=TIKTOK'));
+  assert.equal(values.p_final_title, 'Mine');
 });
 
 test('"write my own" falls back to what was typed', () => {
@@ -142,6 +152,20 @@ test('reviewer notes reach the RPC, which has always accepted them', () => {
   assert.equal(blank.values.p_reviewer_notes, null, 'blank notes must not overwrite with an empty string');
 });
 
+// A datetime-local value has no zone, and the container runs in UTC. Read
+// naively, a 09:00 Nairobi pick went out at 12:00 Nairobi.
+test('a publish time is read in the operator\'s named zone, not the container\'s', () => {
+  const { values } = parseApproveForm(new URLSearchParams(
+    'created_clip_id=c1&final_title=T&platforms=TIKTOK&scheduled_at=2026-10-20T09:00'),
+  { timeZone: 'Africa/Nairobi' });
+  assert.equal(values.p_scheduled_at, '2026-10-20T06:00:00.000Z');
+  assert.equal(zonedToIso('2026-10-20T09:00', 'UTC'), '2026-10-20T09:00:00.000Z');
+  // Across a DST change: London is UTC+1 in July and UTC+0 in January.
+  assert.equal(zonedToIso('2026-07-01T09:00', 'Europe/London'), '2026-07-01T08:00:00.000Z');
+  assert.equal(zonedToIso('2026-01-15T09:00', 'Europe/London'), '2026-01-15T09:00:00.000Z');
+  assert.equal(zonedToIso('tomorrow', 'UTC'), null);
+});
+
 test('an unreadable schedule is reported rather than sent as Invalid Date', () => {
   const { errors } = parseApproveForm(new URLSearchParams(
     'created_clip_id=c1&final_title=T&platforms=TIKTOK&scheduled_at=yesterday'));
@@ -164,6 +188,16 @@ test('a rejection records the reason, the note and the link as one line', () => 
     'WRONG_CUT — Starts mid-sentence — ref: https://example.com/better');
 });
 
+test('a failed reject reopens its fold with the reason, the choices and the error', () => {
+  const { errors, form } = parseRejectForm(new URLSearchParams(
+    'created_clip_id=c1&reject_reason=OTHER&reject_note=keep+me&reject_link=ftp%3A%2F%2Fx'));
+  const html = approveForm({ created_clip_id: 'c1' }, form, errors);
+  assert.match(html, /<details open>/);
+  assert.match(html, /must start with http/);
+  assert.match(html, /value="OTHER" selected/);
+  assert.match(html, />keep me</);
+});
+
 test('a reference link that is not a link is refused', () => {
   const { errors } = parseRejectForm(new URLSearchParams(
     'created_clip_id=c1&reject_reason=OTHER&reject_link=drive.google.com/x'));
@@ -176,6 +210,16 @@ test('priority is bounded, because it orders the whole fetch queue', () => {
     assert.match(parsePriorityForm(new URLSearchParams(`source_id=s1&priority=${bad}`)).errors.priority,
       /whole number/i, `${bad} should be refused`);
   }
+  for (const good of ['1', '99']) {
+    assert.deepEqual(parsePriorityForm(new URLSearchParams(`source_id=s1&priority=${good}`)).errors, {});
+  }
+  // Without an id the patch filter would be eq.null and do nothing silently.
+  assert.match(parsePriorityForm(new URLSearchParams('priority=3')).errors.source_id, /channel/i);
+});
+
+test('a priority error is shown on the channels screen', () => {
+  const html = channelBoard({ channels: [], errors: { priority: 'Priority is a whole number from 1 to 99.' } });
+  assert.match(html, /class="err">Priority is a whole number/);
 });
 
 // ---------------------------------------------------------------------------
@@ -223,6 +267,14 @@ test('an expiring or lapsed publishing credential is an alarm; a healthy one is 
   assert.match(tokens[1].what, /tiktok credential expired 2d ago/);
 });
 
+test('an unreadable token expiry says so rather than "expires in 0 days"', () => {
+  const [alarm] = buildAlarms({
+    publishingChannels: [{ channel_id: 'yt-1', platform: 'YOUTUBE_SHORTS', token_expires_at: 'soon' }],
+  }, NOW);
+  assert.match(alarm.what, /expiry is unreadable/);
+  assert.doesNotMatch(alarm.what, /0 days/);
+});
+
 test('a job claimed long ago and never finished means the worker went away', () => {
   const alarms = buildAlarms({
     leases: [
@@ -238,31 +290,47 @@ test('a job claimed long ago and never finished means the worker went away', () 
 
 // This is the "a workflow died" detector, and it is the one alarm that is
 // inferred rather than measured, so it must say so and must not cry wolf.
-test('a starved stage names the workflow between it and the next stage', () => {
+test('a starved stage names its own consumer, judged by that consumer\'s output', () => {
   const stages = [
-    { position: 5, stage: 'Awaiting download', consumer: 'WF6 yt-dlp clip download', alarm_on_stall: true, waiting: 9, oldest_waiting: hoursAgo(31), last_activity: hoursAgo(31) },
-    { position: 6, stage: 'Awaiting render', consumer: 'WF8c FFmpeg render', alarm_on_stall: true, waiting: 0, oldest_waiting: null, last_activity: hoursAgo(33) },
+    { position: 5, stage: 'Awaiting download', consumer: 'WF6 yt-dlp clip download', alarm_on_stall: true, waiting: 9, oldest_waiting: hoursAgo(31), last_activity: hoursAgo(31), consumer_last_output: hoursAgo(33) },
+    { position: 6, stage: 'Awaiting render', consumer: 'WF8c FFmpeg render', alarm_on_stall: true, waiting: 0, oldest_waiting: null, last_activity: hoursAgo(33), consumer_last_output: hoursAgo(1) },
   ];
   const starved = starvedStages(stages, NOW);
   assert.equal(starved.length, 1);
   assert.equal(starved[0].what, 'WF6 yt-dlp clip download may have stopped');
   assert.match(starved[0].why, /9 waiting at awaiting download, oldest 31h/);
-  assert.match(starved[0].why, /has received nothing in 33h/);
+  assert.match(starved[0].why, /last produced anything 33h ago/);
   assert.match(starved[0].why, /Inferred from timestamps/);
 });
 
-// When WF6 stops, every stage behind it goes quiet too. Five alarms naming
-// five workflows would bury the one that actually broke.
-test('only the first stage of a stalled run is reported, not every stage behind it', () => {
+// When one workflow stops, the stages after it drain to zero and raise
+// nothing. So two starved stages are two outages, and hiding the second as a
+// "consequence" of the first was hiding a real one.
+test('two independently stalled consumers are both reported', () => {
   const stages = [
-    { position: 2, stage: 'New candidates', consumer: 'WF3', alarm_on_stall: true, waiting: 31, oldest_waiting: hoursAgo(40), last_activity: hoursAgo(40) },
-    { position: 3, stage: 'Awaiting transcript', consumer: 'WF4', alarm_on_stall: true, waiting: 6, oldest_waiting: hoursAgo(39), last_activity: hoursAgo(39) },
-    { position: 4, stage: 'Awaiting analysis', consumer: 'WF5', alarm_on_stall: true, waiting: 2, oldest_waiting: hoursAgo(38), last_activity: hoursAgo(38) },
-    { position: 5, stage: 'Awaiting download', consumer: 'WF6', alarm_on_stall: true, waiting: 4, oldest_waiting: hoursAgo(37), last_activity: hoursAgo(37) },
+    { position: 5, stage: 'Awaiting download', consumer: 'WF6', alarm_on_stall: true, waiting: 4, oldest_waiting: hoursAgo(37), consumer_last_output: hoursAgo(37) },
+    { position: 6, stage: 'Awaiting render', consumer: 'WF8c', alarm_on_stall: true, waiting: 3, oldest_waiting: hoursAgo(20), consumer_last_output: hoursAgo(20) },
   ];
-  const starved = starvedStages(stages, NOW);
-  assert.equal(starved.length, 1);
-  assert.equal(starved[0].what, 'WF3 may have stopped');
+  assert.deepEqual(starvedStages(stages, NOW).map((alarm) => alarm.what),
+    ['WF6 may have stopped', 'WF8c may have stopped']);
+});
+
+// The last stage has no stage after it, so judging by the next stage's
+// arrivals could never alarm on a dead publisher.
+test('the last stage alarms too: a dead publisher is not silent', () => {
+  const [alarm] = starvedStages([
+    { position: 9, stage: 'Awaiting publish', consumer: 'WF12 publish to platforms', alarm_on_stall: true, waiting: 5, oldest_waiting: hoursAgo(12), consumer_last_output: hoursAgo(30) },
+  ], NOW);
+  assert.equal(alarm.what, 'WF12 publish to platforms may have stopped');
+});
+
+// WF3's output cannot be dated (candidate_videos has no updated_at), so the
+// backlog's age decides, and the alarm says that is all it is.
+test('a stage whose output cannot be dated is judged on its backlog alone', () => {
+  const [alarm] = starvedStages([
+    { position: 2, stage: 'New candidates', consumer: 'WF3', alarm_on_stall: true, waiting: 31, oldest_waiting: hoursAgo(40), consumer_last_output: null },
+  ], NOW);
+  assert.match(alarm.why, /cannot be dated/);
 });
 
 // Two stages have a backlog that means something other than a stopped
@@ -279,15 +347,15 @@ test('a stage whose backlog does not implicate a workflow never raises one', () 
 // worth reading.
 test('a stage quiet for less than the threshold is not yet starved', () => {
   assert.deepEqual(starvedStages([
-    { position: 5, stage: 'A', consumer: 'WF6', alarm_on_stall: true, waiting: 9, oldest_waiting: hoursAgo(5), last_activity: hoursAgo(5) },
-    { position: 6, stage: 'B', consumer: 'WF8c', alarm_on_stall: true, waiting: 0, oldest_waiting: null, last_activity: hoursAgo(5) },
+    { position: 5, stage: 'A', consumer: 'WF6', alarm_on_stall: true, waiting: 9, oldest_waiting: hoursAgo(5), consumer_last_output: hoursAgo(5) },
   ], NOW), []);
 });
 
-test('a stage whose downstream is still producing is not starved', () => {
+// A backlog can age behind a consumer that is alive but rate-limited (WF4's
+// fetches, WF6's per-run cap). Recent output means slow, not stopped.
+test('a stage whose consumer is still producing is not starved', () => {
   assert.deepEqual(starvedStages([
-    { position: 5, stage: 'Awaiting download', consumer: 'WF6', alarm_on_stall: true, waiting: 9, oldest_waiting: hoursAgo(31), last_activity: hoursAgo(31) },
-    { position: 6, stage: 'Awaiting render', consumer: 'WF8c', alarm_on_stall: true, waiting: 2, oldest_waiting: hoursAgo(1), last_activity: hoursAgo(0.5) },
+    { position: 5, stage: 'Awaiting download', consumer: 'WF6', alarm_on_stall: true, waiting: 9, oldest_waiting: hoursAgo(31), consumer_last_output: hoursAgo(0.5) },
   ], NOW), []);
 });
 
@@ -339,30 +407,15 @@ test('the error roll-up carries no payload column through to the page', () => {
   assert.doesNotMatch(JSON.stringify(grouped), /service-role-secret/);
 });
 
-test('throughput has one bucket per day even on days with nothing', () => {
-  const days = dailyThroughput([
-    { created_at: hoursAgo(2), review_status: 'APPROVED' },
-    { created_at: hoursAgo(3), review_status: 'REJECTED' },
-    { created_at: hoursAgo(4), review_status: 'NEEDS_REVIEW' },
-    { created_at: daysAgo(40), review_status: 'APPROVED' },
-  ], 7, NOW);
-  assert.equal(days.length, 7);
-  assert.equal(days[6].day, '2026-10-12');
-  assert.equal(days[6].created, 3, 'the clip from 40 days ago falls outside every bucket');
-  assert.equal(days[6].approved, 1);
-  assert.equal(days[6].rejected, 1);
-  assert.equal(days[0].created, 0);
-});
-
-test('rejection reasons are counted so a failing gate is visible as a class', () => {
-  const counts = countReasons([
-    { rejection_reason: 'LOW_ENGAGEMENT' },
-    { rejection_reason: 'LOW_ENGAGEMENT' },
-    { rejection_reason: 'TOO_SHORT' },
-    { rejection_reason: null },
-  ]);
-  assert.deepEqual(counts[0], { reason: 'LOW_ENGAGEMENT', count: 2 });
-  assert.equal(counts.length, 3);
+// Error text comes from workflows and providers, and HTTP errors quote the
+// request they made.
+test('error text is stripped of anything shaped like a credential and kept short', () => {
+  const text = redact('GET https://graph.example/v1?access_token=EAAB123&x=1 failed: Authorization: Bearer abc.def apikey=k1');
+  assert.doesNotMatch(text, /EAAB123|abc\.def|k1\b/);
+  assert.match(text, /access_token=\[redacted\]&x=1/);
+  assert.equal(redact('x'.repeat(500)).length, 301);
+  const html = stuckBoard({ moments: [{ clip_moment_id: 'm1', error_message: 'token=supersecret', created_at: hoursAgo(1) }] }, NOW);
+  assert.doesNotMatch(html, /supersecret/);
 });
 
 // ---------------------------------------------------------------------------
@@ -397,6 +450,30 @@ test('held offers an override for a gate rejection and a reopen for your own', (
   assert.match(html, /threshold worth changing/, 'the screen should push toward fixing the gate');
 });
 
+// Release sends a video back to WF4. WF4's own rejection would come straight
+// back (and spend another transcript fetch); a channel auto-pause would too.
+test('held offers no release that cannot work', () => {
+  const html = heldBoard({
+    rejected: [
+      { video_id: 'v3', rejection_reason: 'TRANSCRIPT_NO_CAPTIONS', created_at: daysAgo(1) },
+      { video_id: 'v4', rejection_reason: 'Channel auto-paused: skip rate', created_at: daysAgo(1) },
+    ],
+  });
+  assert.doesNotMatch(html, /value="v3"/);
+  assert.doesNotMatch(html, /value="v4"/);
+  assert.match(html, /WF4 would reject it again/);
+  assert.match(html, /no usable transcript \(no captions\)/);
+  assert.match(html, /href="\/channels">Reactivate the channel/);
+});
+
+test('a capped list says how much it is not showing', () => {
+  const html = heldBoard({
+    rejected: [{ video_id: 'v2', rejection_reason: 'TOO_SHORT', created_at: daysAgo(1) }],
+    totals: { rejected: 212 },
+  });
+  assert.match(html, /newest 1 of 212/);
+});
+
 test('an empty held screen invites rather than showing three empty tables', () => {
   const html = heldBoard({});
   assert.match(html, /Nothing is held/);
@@ -421,6 +498,19 @@ test('stuck shows the operator-facing error and never the raw payload', () => {
   assert.match(html, /action="\/publishes\/retry"/);
 });
 
+// Postiz may already have posted these; requeueing loops them through claim
+// and lease expiry while looking handled.
+test('a publish that needs reconciliation is not offered "Queue again"', () => {
+  const html = stuckBoard({
+    publishes: [
+      { publish_id: 'p1', platform: 'TIKTOK', publish_status: 'FAILED', last_error: 'POSTIZ_RECONCILIATION_REQUIRED', created_at: hoursAgo(1) },
+      { publish_id: 'p2', platform: 'TIKTOK', publish_status: 'FAILED', last_error: 'x', postiz_submitted_at: hoursAgo(2), created_at: hoursAgo(1) },
+    ],
+  }, NOW);
+  assert.doesNotMatch(html, /action="\/publishes\/retry"/);
+  assert.match(html, /Check Postiz first/);
+});
+
 test('stuck is empty-stated rather than rendering four empty tables', () => {
   assert.match(stuckBoard({}), /Nothing is stuck/);
 });
@@ -431,7 +521,7 @@ test('the pipeline table says its liveness is inferred, not measured', () => {
       position: 7, stage: 'Awaiting your review', consumer: 'you',
       waiting: 4, oldest_waiting: daysAgo(3), last_activity: hoursAgo(2),
     }],
-    throughput: dailyThroughput([], 7, NOW),
+    throughput: [{ day: '2026-10-12', created: 0, approved: 0, rejected: 0 }],
   }, NOW);
   assert.match(html, /cannot read n8n's execution log/);
   assert.match(html, /Awaiting your review/);
@@ -604,4 +694,46 @@ test('every source file this service has is copied into its image', () => {
   for (const file of fs.readdirSync(dir).filter((name) => name.endsWith('.js'))) {
     assert.ok(copied.includes(file), `${file} is not COPYed into the image`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes
+// ---------------------------------------------------------------------------
+
+// The preview is an iframe inside a console whose buttons override gates.
+test('the preview loads only Google Drive, sandboxed without top navigation', () => {
+  assert.equal(driveHref('https://drive.google.com/file/d/a/preview'), 'https://drive.google.com/file/d/a/preview');
+  assert.equal(driveHref('https://evil.example/drive.google.com/'), '');
+  assert.equal(driveHref('http://drive.google.com/x'), '');
+  const html = clipItem({ created_clip_id: 'c1', google_drive_url: 'https://lookalike.example/preview' });
+  assert.doesNotMatch(html, /<iframe/);
+  const ok = clipItem({ created_clip_id: 'c1', google_drive_url: 'https://drive.google.com/file/d/a/preview' });
+  assert.match(ok, /sandbox="allow-scripts allow-same-origin allow-presentation"/);
+  assert.doesNotMatch(ok, /allow-top-navigation/);
+});
+
+test('a page past the end of a queue offers a way back rather than claiming it is empty', () => {
+  const html = clipQueue([], { page: { offset: 50, limit: 25, total: 12 } });
+  assert.match(html, /past the end/);
+  assert.match(html, /href="\/">Back to the start/);
+  assert.doesNotMatch(html, /Nothing awaiting review/);
+  assert.match(momentQueue([], { page: { offset: 25, limit: 25, total: 0 } }), /href="\/moments"/);
+});
+
+test('a missing originality score is not shown as moderate risk', () => {
+  const html = momentQueue([{ clip_moment_id: 'm1', originality_score: null }]);
+  assert.doesNotMatch(html, /originality moderate/);
+  assert.match(momentQueue([{ clip_moment_id: 'm1', originality_score: 3 }]), /originality moderate/);
+});
+
+test('the pipeline nav item carries no count it cannot back', () => {
+  const html = navBar({ alarms: 4, clips: 2 }, '/');
+  assert.match(html, /<span>Pipeline<\/span><\/a>/);
+});
+
+test('the pager handles the middle page in both directions', () => {
+  const middle = pager({ path: '/', offset: 25, limit: 25, total: 60 });
+  assert.match(middle, /offset=0">newer/);
+  assert.match(middle, /offset=50">older/);
+  assert.match(pager({ path: '/', offset: 50, limit: 25, total: 60 }), /offset=25">newer/);
 });

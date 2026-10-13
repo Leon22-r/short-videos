@@ -22,3 +22,6 @@ services:
       # each other, and their page becomes same-origin with the review UI.
       # Defaults to loopback, so a tailnet deployment must list its own name.
       REVIEW_ALLOWED_HOSTS: ${REVIEW_ALLOWED_HOSTS:-127.0.0.1,localhost,[::1]}
+      # The zone a "Publish at" time is typed in. The container itself runs in
+      # UTC; the server converts with this name, so the image needs no tzdata.
+      REVIEW_TIMEZONE: ${REVIEW_TIMEZONE:-Africa/Nairobi}

@@ -96,8 +96,8 @@ const safeHref = (value) => {
 const sourceLink = (url, startSec) => {
   // https only here: these are public video URLs and there is no reason for
   // one to be plain http.
-  const href = /^https:\/\//i.test(String(url ?? '').trim()) ? safeHref(url) : '';
-  if (!href) return '';
+  const href = safeHref(url);
+  if (!/^https:\/\//i.test(href)) return '';
   const start = Number(startSec);
   const at = Number.isFinite(start) && start > 0
     ? `${href}${href.includes('?') ? '&' : '?'}t=${Math.floor(start)}s`
@@ -106,7 +106,27 @@ const sourceLink = (url, startSec) => {
     Number.isFinite(start) && start > 0 ? ` at ${timecode(start)}` : ''}</a>`;
 };
 
-const RISK_TIERS = { HIGH: 'high', MODERATE: 'mid', MEDIUM: 'mid', LOW: 'low', NONE: 'low' };
+// The preview is an iframe inside a console whose buttons override gates, so
+// it is the one URL held to a single host: a wrong or tampered
+// google_drive_url must not be able to load an arbitrary page in here.
+const driveHref = (value) => {
+  const href = safeHref(value);
+  return /^https:\/\/drive\.google\.com\//i.test(href) ? href : '';
+};
+
+// Error text comes from workflows and provider APIs, and an HTTP node's error
+// often quotes the request it made. Strip anything shaped like a credential and
+// keep the message to a length a table cell can hold.
+const ERROR_LIMIT = 300;
+const redact = (value) => {
+  const text = String(value ?? '')
+    .replace(/(bearer\s+)[\w.~+/=-]+/gi, '$1[redacted]')
+    .replace(/(\b(?:access_token|refresh_token|token|key|api_key|apikey|secret|signature|sig|client_secret)=)[^&\s"']+/gi, '$1[redacted]')
+    .replace(/((?:authorization|apikey|x-api-key)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi, '$1[redacted]');
+  return text.length > ERROR_LIMIT ? `${text.slice(0, ERROR_LIMIT)}…` : text;
+};
+
+const RISK_TIERS = { HIGH: 'high', MODERATE: 'mid', MEDIUM: 'mid', LOW: 'low' };
 
 const riskFlag = (label, level) => {
   const key = String(level || '').toUpperCase();
@@ -139,8 +159,8 @@ const list = (values) => {
 const empty = (heading, invitation) =>
   `<div class="empty"><p>${escapeHtml(heading)}</p><p class="mute">${escapeHtml(invitation)}</p></div>`;
 
-// Every list is capped, and until now the cap was silent: the 51st clip simply
-// did not exist. Say what is shown out of what there is, and offer the next page.
+// Every list is capped. A silent cap makes the 51st clip simply not exist, so
+// say what is shown out of what there is, and offer the next page.
 const pager = ({ path, offset = 0, limit = 25, total = 0 }) => {
   if (total <= limit) return '';
   const from = offset + 1;
@@ -151,6 +171,24 @@ const pager = ({ path, offset = 0, limit = 25, total = 0 }) => {
     offset > 0 ? link(offset - limit, 'newer') : ''}${
     to < total ? link(offset + limit, 'older') : ''}</nav>`;
 };
+
+// The same honesty for the short lists that have no pager: newest N of M.
+const capNote = (shown, total) => (total > shown
+  ? `<p class="note">Showing the newest ${escapeHtml(shown)} of ${escapeHtml(total)}.</p>`
+  : '');
+
+// A page past the end is what a reviewer lands on after working page 2 while
+// the queue drains. It must offer a way back, not claim the queue is empty.
+const pastEnd = (path, page) => (page && page.offset > 0
+  ? `<div class="empty"><p>This page is past the end of the queue.</p><p><a href="${escapeHtml(path)}">Back to the start</a>${
+    page.total ? ` <span class="mute">(${escapeHtml(page.total)} waiting)</span>` : ''}</p></div>`
+  : '');
+
+// One hidden id and one button: every row-level action on these screens.
+const postButton = (action, name, value, label, buttonClass = '') => `<form method="post" action="${escapeHtml(action)}" class="inline">
+    <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">
+    <button${buttonClass ? ` class="${escapeHtml(buttonClass)}"` : ''} type="submit">${escapeHtml(label)}</button>
+  </form>`;
 
 // ---------------------------------------------------------------------------
 // Shell
@@ -202,7 +240,6 @@ p { margin: 0 0 .6rem; max-width: 62ch; }
 .bar .n { font: 600 .8rem/1 var(--mono); color: var(--bone); }
 .bar a[aria-current] .n { color: var(--go); }
 .bar .n[data-zero] { color: var(--mute); font-weight: 400; }
-.bar .alarm .n { color: var(--hold); }
 
 main { padding: calc(var(--step) * 1.5) var(--step) 4rem; max-width: 72rem; margin: 0 auto; }
 
@@ -317,17 +354,19 @@ const NAV = [
   ['/', 'Clips', 'clips'],
   ['/moments', 'Moments', 'moments'],
   ['/held', 'Held', 'held'],
-  ['/pipeline', 'Pipeline', 'alarms'],
+  // No count: an alarm is a judgement made from several reads, too costly to
+  // repeat on every page, and a number that was not an alarm count would
+  // read as one.
+  ['/pipeline', 'Pipeline', null],
   ['/stuck', 'Stuck', 'stuck'],
   ['/channels', 'Channels', 'channels'],
   ['/published', 'Published', 'published'],
 ];
 
 const navBar = (counts = {}, current = '') => `<nav class="bar">${NAV.map(([href, label, key]) => {
-  const count = counts[key];
+  const count = key ? counts[key] : undefined;
   const shown = count === undefined || count === null ? '' : String(count);
-  return `<a href="${href}"${href === current ? ' aria-current="page"' : ''}${
-    key === 'alarms' && count ? ' class="alarm"' : ''}><span>${escapeHtml(label)}</span>${
+  return `<a href="${href}"${href === current ? ' aria-current="page"' : ''}><span>${escapeHtml(label)}</span>${
     shown ? `<span class="n"${shown === '0' ? ' data-zero' : ''}>${escapeHtml(shown)}</span>` : ''}</a>`;
 }).join('')}</nav>`;
 
@@ -348,10 +387,12 @@ ${navBar(counts, current)}
 
 // D11: the operator's own browser fetches this URL with their Google session.
 // The server never proxies Drive and holds no Google credential.
-const preview = (clip) => safeHref(clip.google_drive_url)
-  ? `<iframe src="${escapeHtml(safeHref(clip.google_drive_url))}" title="Clip preview" loading="lazy" allow="autoplay"></iframe>`
+// Sandboxed without allow-top-navigation, so even Drive cannot navigate the
+// console away.
+const preview = (clip) => driveHref(clip.google_drive_url)
+  ? `<iframe src="${escapeHtml(driveHref(clip.google_drive_url))}" title="Clip preview" loading="lazy" allow="autoplay" sandbox="allow-scripts allow-same-origin allow-presentation"></iframe>`
   : '<div class="shot-missing"><p>No render yet.</p>'
-    + '<p class="mute">WF8 has not written a Drive URL for this clip.</p></div>';
+    + '<p class="mute">WF8 has not written a Google Drive URL for this clip.</p></div>';
 
 // Everything the pipeline already decided about this clip, in the order an
 // operator needs it: what could stop it, what it is trying to say, then the
@@ -387,8 +428,9 @@ const clipHead = (clip) => {
 };
 
 // The AI already wrote alternative titles. Offering them as radios means the
-// operator picks instead of retyping, and it works without any script: the
-// parser prefers the chosen radio and falls back to the free-text box.
+// operator picks instead of retyping, and it works without any script. Typing
+// in the box is the more deliberate act, so a filled box wins over the radio
+// (which is pre-checked and easy to leave as it was).
 const titleChoice = (clip, values = {}) => {
   const alternatives = (clip.alternative_titles || []).filter(Boolean);
   const chosen = values.title_choice;
@@ -409,10 +451,11 @@ const titleChoice = (clip, values = {}) => {
   <label>Your own title
     <input type="text" name="final_title" value="${escapeHtml(values.final_title ?? '')}">
   </label>
+  <p class="note">Anything typed here is used instead of the choice above.</p>
 </fieldset>`;
 };
 
-const approveForm = (clip, values = {}, errors = {}) => {
+const approveForm = (clip, values = {}, errors = {}, timeZone = 'UTC') => {
   const ticked = new Set(values.platforms || []);
   return `<form method="post" action="/clips/approve">
   <input type="hidden" name="created_clip_id" value="${escapeHtml(clip.created_clip_id)}">
@@ -433,39 +476,47 @@ const approveForm = (clip, values = {}, errors = {}) => {
   </fieldset>
   <label>Publish at
     <input type="datetime-local" name="scheduled_at" value="${escapeHtml(values.scheduled_at ?? '')}">
+    ${errors.scheduled_at ? `<span class="err">${escapeHtml(errors.scheduled_at)}</span>` : ''}
   </label>
-  <p class="note">Leave empty to publish as soon as the queue reaches it. A time is read in this server's timezone.</p>
+  <p class="note">Leave empty to publish as soon as the queue reaches it. A time is read as ${escapeHtml(timeZone)}.</p>
   <label>Notes for the record
     <textarea name="reviewer_notes" rows="2">${escapeHtml(values.reviewer_notes ?? '')}</textarea>
   </label>
   <div class="verdict">
     <button class="go" type="submit">Approve clip</button>
-    ${rejectFold(clip.created_clip_id)}
+    ${rejectFold(clip.created_clip_id, values, errors)}
   </div>
 </form>`;
 };
 
-// Rejecting used to be one unlabelled click with no reason and no way back.
-// Now it costs a disclosure and a reason, and /held can undo it.
-const rejectFold = (clipId) => `<details>
+// Rejecting costs a disclosure and a reason, where approving is one button,
+// and /held can undo it. A failed reject reopens the disclosure with the
+// operator's choices and the reason it failed.
+const rejectFold = (clipId, values = {}, errors = {}) => {
+  const failed = errors.reject_reason || errors.reject_link;
+  const id = `reject-${escapeHtml(clipId)}`;
+  return `<details${failed ? ' open' : ''}>
   <summary>Reject…</summary>
   <div class="fold">
     <label>Why
-      <select name="reject_reason" form="reject-${escapeHtml(clipId)}" required>
+      <select name="reject_reason" form="${id}" required>
         <option value="">Pick a reason</option>
         ${REJECT_REASONS.map(([code, label]) =>
-          `<option value="${code}">${escapeHtml(label)}</option>`).join('')}
+          `<option value="${code}"${values.reject_reason === code ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('')}
       </select>
+      ${errors.reject_reason ? `<span class="err">${escapeHtml(errors.reject_reason)}</span>` : ''}
     </label>
     <label>Notes
-      <textarea name="reject_note" form="reject-${escapeHtml(clipId)}" rows="2"></textarea>
+      <textarea name="reject_note" form="${id}" rows="2">${escapeHtml(values.reject_note ?? '')}</textarea>
     </label>
     <label>Reference link
-      <input type="url" name="reject_link" form="reject-${escapeHtml(clipId)}" placeholder="https://">
+      <input type="url" name="reject_link" form="${id}" placeholder="https://" value="${escapeHtml(values.reject_link ?? '')}">
+      ${errors.reject_link ? `<span class="err">${escapeHtml(errors.reject_link)}</span>` : ''}
     </label>
-    <button type="submit" form="reject-${escapeHtml(clipId)}">Reject clip</button>
+    <button type="submit" form="${id}">Reject clip</button>
   </div>
 </details>`;
+};
 
 // The reject form sits outside the approve form because forms cannot nest; the
 // controls above reach it by its id.
@@ -473,7 +524,7 @@ const rejectForm = (clipId) => `<form method="post" action="/clips/reject" id="r
   <input type="hidden" name="created_clip_id" value="${escapeHtml(clipId)}">
 </form>`;
 
-const clipItem = (clip, { values, errors } = {}) => `<section class="item" id="${escapeHtml(clip.created_clip_id)}">
+const clipItem = (clip, { values, errors, timeZone } = {}) => `<section class="item" id="${escapeHtml(clip.created_clip_id)}">
   <div class="shot">
     ${preview(clip)}
     <p class="meta">${[
@@ -485,7 +536,7 @@ const clipItem = (clip, { values, errors } = {}) => `<section class="item" id="$
   <div>
     ${clipHead(clip)}
     ${clipEvidence(clip)}
-    ${approveForm(clip, values, errors)}
+    ${approveForm(clip, values, errors, timeZone)}
   </div>
 </section>
 ${rejectForm(clip.created_clip_id)}`;
@@ -493,10 +544,14 @@ ${rejectForm(clip.created_clip_id)}`;
 const clipQueue = (clips, context = {}) => {
   const heading = '<h1>Clip review</h1>';
   if (clips.length === 0) {
+    const back = pastEnd('/', context.page);
+    if (back) return `${heading}${back}`;
     return `${heading}${empty('Nothing awaiting review.',
       'When WF8 finishes a render it lands here. Check Pipeline if the queue has been empty longer than you expect.')}`;
   }
-  return `${heading}${clips.map((clip) => clipItem(clip, context[clip.created_clip_id])).join('')}${pager({ path: '/', ...context.page })}`;
+  return `${heading}${clips.map((clip) => clipItem(clip, {
+    ...context[clip.created_clip_id], timeZone: context.timeZone,
+  })).join('')}${pager({ path: '/', ...context.page })}`;
 };
 
 // ---------------------------------------------------------------------------
@@ -504,10 +559,20 @@ const clipQueue = (clips, context = {}) => {
 // ---------------------------------------------------------------------------
 
 // This screen exists because the source is high-risk, so the risk is what it
-// leads with — until now it showed a niche and an idea and nothing else.
+// leads with, ahead of the niche and the idea.
+// A missing score is not a moderate one; say nothing rather than invent it.
+const originalityFlag = (score) => {
+  if (score === null || score === undefined || score === '') return '';
+  const value = Number(score);
+  if (!Number.isFinite(value)) return '';
+  return riskFlag('originality', value >= 7 ? 'LOW' : 'MODERATE');
+};
+
 const momentQueue = (moments, context = {}) => {
   const heading = '<h1>High-risk moments</h1>';
   if (moments.length === 0) {
+    const back = pastEnd('/moments', context.page);
+    if (back) return `${heading}${back}`;
     return `${heading}${empty('Nothing awaiting approval.',
       'Moments from channels marked high-risk wait here before WF6 downloads them.')}`;
   }
@@ -527,7 +592,7 @@ ${moments.map((moment) => `<section class="item" id="${escapeHtml(moment.clip_mo
         Number.isFinite(Number(moment.clip_score)) ? `score ${Number(moment.clip_score)}` : '',
       ].filter(Boolean).join('  ')}</span>
     </div>
-    <p>${[riskFlag('rights', moment.rights_risk), riskFlag('originality', moment.originality_score >= 7 ? 'LOW' : 'MODERATE')].filter(Boolean).join(' ')}</p>
+    <p>${[riskFlag('rights', moment.rights_risk), originalityFlag(moment.originality_score)].filter(Boolean).join(' ')}</p>
     <dl>
       ${field('Recommendation', moment.final_recommendation)}
       ${field('Core idea', moment.core_idea)}
@@ -557,18 +622,40 @@ ${moments.map((moment) => `<section class="item" id="${escapeHtml(moment.clip_mo
 //   - a clip a person rejected
 // Grouping the first by reason is the useful part: one video is an override,
 // a whole class failing the same gate is a threshold to change.
-const heldBoard = ({ flagged = [], rejected = [], clips = [], reasonCounts = [] } = {}) => {
-  const releaseButton = (videoId, label) => `<form method="post" action="/held/release" class="inline">
-    <input type="hidden" name="video_id" value="${escapeHtml(videoId)}">
-    <button type="submit">${escapeHtml(label)}</button>
-  </form>`;
+// A gate's reason, as a sentence. WF4 writes TRANSCRIPT_<code> and WF5 writes
+// "Channel auto-paused: ..." as free text, so neither is in the table above.
+const machineReason = (reason) => {
+  const code = String(reason || '');
+  if (MACHINE_REASONS[code]) return MACHINE_REASONS[code];
+  if (code.startsWith('TRANSCRIPT_')) return `no usable transcript (${humanEnum(code.slice('TRANSCRIPT_'.length))})`;
+  return code;
+};
 
+// Releasing sends a video back to WF4. Two kinds of rejection would only come
+// straight back: WF4's own (it fetches the same missing transcript again, and
+// each fetch risks an IP block), and WF5's channel auto-pause (it skips the
+// video again while the channel is paused). Neither gets a button that cannot
+// work; the auto-pause points at the screen where the real fix is.
+const releaseAction = (video, label) => {
+  const reason = String(video.rejection_reason || '');
+  if (reason.startsWith('TRANSCRIPT_')) {
+    return '<span class="mute">WF4 would reject it again</span>';
+  }
+  if (reason.startsWith('Channel auto-paused')) {
+    return '<a href="/channels">Reactivate the channel</a>';
+  }
+  return postButton('/held/release', 'video_id', video.video_id, label);
+};
+
+const heldBoard = ({
+  flagged = [], rejected = [], clips = [], reasonCounts = [], totals = {},
+} = {}) => {
   const videoRow = (video, label) => `<tr>
     <td>${escapeHtml(video.video_title || video.video_id)}<br>
       <span class="mute">${escapeHtml(video.source_name || '')} ${sourceLink(video.video_url, 0)}</span></td>
-    <td>${escapeHtml(MACHINE_REASONS[video.rejection_reason] || video.rejection_reason || '')}</td>
+    <td>${escapeHtml(machineReason(video.rejection_reason))}</td>
     <td class="num">${escapeHtml(ago(video.created_at))}</td>
-    <td>${releaseButton(video.video_id, label)}</td>
+    <td>${releaseAction(video, label)}</td>
   </tr>`;
 
   const nothing = flagged.length === 0 && rejected.length === 0 && clips.length === 0;
@@ -588,7 +675,7 @@ ${reasonCounts.length ? (() => {
 <thead><tr><th>Reason</th><th class="num">Videos</th></tr></thead>
 <tbody>${reasonCounts.map(({ reason, count }) => `<tr>
   <td style="--fill:${Math.round((count / most) * 100)}%">${
-      escapeHtml(MACHINE_REASONS[reason] || reason || 'unrecorded')}</td>
+      escapeHtml(machineReason(reason) || 'unrecorded')}</td>
   <td class="num">${escapeHtml(count)}</td>
 </tr>`).join('')}</tbody></table>`;
   })() : ''}
@@ -596,12 +683,14 @@ ${reasonCounts.length ? (() => {
 ${flagged.length ? `<h3>Flagged, waiting on you</h3>
 <table><caption>WF4 takes only VALID, so these advance no further until released. Nothing else will pick them up.</caption>
 <thead><tr><th>Video</th><th>Why</th><th class="num">Age</th><th></th></tr></thead>
-<tbody>${flagged.map((video) => videoRow(video, 'Release')).join('')}</tbody></table>` : ''}
+<tbody>${flagged.map((video) => videoRow(video, 'Release')).join('')}</tbody></table>
+${capNote(flagged.length, totals.flagged)}` : ''}
 
 ${rejected.length ? `<h3>Rejected by a gate</h3>
 <table><caption>Releasing one overrides the rule that stopped it.</caption>
 <thead><tr><th>Video</th><th>Why</th><th class="num">Age</th><th></th></tr></thead>
-<tbody>${rejected.map((video) => videoRow(video, 'Override')).join('')}</tbody></table>` : ''}
+<tbody>${rejected.map((video) => videoRow(video, 'Override')).join('')}</tbody></table>
+${capNote(rejected.length, totals.rejected)}` : ''}
 
 ${clips.length ? `<h3>Clips you rejected</h3>
 <table><caption>Reopening puts a clip back in the review queue. Nothing was deleted.</caption>
@@ -611,11 +700,9 @@ ${clips.length ? `<h3>Clips you rejected</h3>
     <span class="mute">${escapeHtml(humanEnum(clip.niche))}</span></td>
   <td>${escapeHtml(clip.reviewer_notes || '')}</td>
   <td class="num">${escapeHtml(ago(clip.created_at))}</td>
-  <td><form method="post" action="/clips/reopen" class="inline">
-    <input type="hidden" name="created_clip_id" value="${escapeHtml(clip.created_clip_id)}">
-    <button type="submit">Reopen</button>
-  </form></td>
-</tr>`).join('')}</tbody></table>` : ''}`;
+  <td>${postButton('/clips/reopen', 'created_clip_id', clip.created_clip_id, 'Reopen')}</td>
+</tr>`).join('')}</tbody></table>
+${capNote(clips.length, totals.clips)}` : ''}`;
 };
 
 // ---------------------------------------------------------------------------
@@ -631,38 +718,44 @@ const STARVED_AFTER_HOURS = 6;
 const STALE_AFTER_HOURS = 6;
 const TOKEN_WARN_DAYS = 14;
 const LEASE_STALE_HOURS = 1;
+// A channel auto-paused in the last day is news; one paused last week is
+// already on /channels as a warn row.
+const AUTO_PAUSE_RECENT_HOURS = 24;
+// A row on the pipeline table turns amber once its oldest item is a day old.
+const STAGE_WARN_HOURS = 24;
 
-// A stage is starved when work has aged there and the stage after it has
-// received nothing in that time. That is as close as this service can get to
-// "the workflow between them is down" without n8n's execution log, which lives
-// on another host behind a second credential.
+// A stage is starved when work has aged there and its consumer has produced
+// nothing in that time. That is as close as this service can get to "the
+// workflow is down" without n8n's execution log, which lives on another host
+// behind a second credential.
 //
-// Only the first stage of a consecutive run is reported. When WF6 stops, every
-// stage behind it also goes quiet, and five alarms naming five workflows hide
-// the one that broke.
-const starvedStages = (stages = [], now = Date.now()) => {
-  const ordered = [...stages].sort((a, b) => a.position - b.position);
-  const starved = ordered.map((stage, index) => {
-    const next = ordered[index + 1];
+// Each stage is judged by its own consumer's output (consumer_last_output).
+// Judging it by the next stage's arrivals misses the last stage entirely and
+// blames the wrong workflow where two of them write one table. When the
+// consumer's output cannot be dated, the age of the backlog decides alone.
+//
+// Every starved stage is reported. When one workflow stops, the stages after
+// it drain to zero and so raise nothing; two alarms mean two outages.
+const starvedStages = (stages = [], now = Date.now()) => [...stages]
+  .sort((a, b) => a.position - b.position)
+  .map((stage) => {
     // alarm_on_stall is false where a backlog means something other than a
     // stopped workflow: the source fleet, and the queue a person works.
-    if (!next || !stage.waiting || stage.alarm_on_stall === false) return null;
+    if (!stage.waiting || stage.alarm_on_stall === false) return null;
     const waitingFor = hoursSince(stage.oldest_waiting, now);
-    const downstreamQuiet = hoursSince(next.last_activity, now);
     if (waitingFor === null || waitingFor < STARVED_AFTER_HOURS) return null;
-    if (downstreamQuiet !== null && downstreamQuiet < STALE_AFTER_HOURS) return null;
+    const quietFor = hoursSince(stage.consumer_last_output, now);
+    if (quietFor !== null && quietFor < STALE_AFTER_HOURS) return null;
     return {
       kind: 'starved',
       what: `${stage.consumer} may have stopped`,
       why: `${stage.waiting} waiting at ${stage.stage.toLowerCase()}, oldest ${ago(stage.oldest_waiting, now)}, and ${
-        next.stage.toLowerCase()} has received nothing ${
-        next.last_activity ? `in ${ago(next.last_activity, now)}` : 'ever'}. Inferred from timestamps, not from an execution log.`,
+        stage.consumer_last_output
+          ? `it last produced anything ${ago(stage.consumer_last_output, now)} ago`
+          : 'its output cannot be dated, so this is the age of the backlog alone'}. Inferred from timestamps, not from an execution log.`,
     };
-  });
-  // Drop any starved stage whose predecessor is also starved: it is the
-  // consequence, not the cause.
-  return starved.filter((alarm, index) => alarm && !starved[index - 1]);
-};
+  })
+  .filter(Boolean);
 
 const buildAlarms = ({ stages = [], channels = [], publishingChannels = [], leases = [] } = {}, now = Date.now()) => {
   const alarms = [];
@@ -688,7 +781,7 @@ const buildAlarms = ({ stages = [], channels = [], publishingChannels = [], leas
 
   for (const channel of channels) {
     const pausedFor = hoursSince(channel.auto_paused_at, now);
-    if (pausedFor === null || pausedFor > 24) continue;
+    if (pausedFor === null || pausedFor > AUTO_PAUSE_RECENT_HOURS) continue;
     alarms.push({
       kind: 'auto-paused',
       what: `${channel.source_name || channel.source_id} was auto-paused ${ago(channel.auto_paused_at, now)} ago`,
@@ -701,7 +794,17 @@ const buildAlarms = ({ stages = [], channels = [], publishingChannels = [], leas
   for (const channel of publishingChannels) {
     const expires = channel.token_expires_at;
     if (!expires) continue;
-    const days = -(hoursSince(expires, now) ?? 0) / 24;
+    const since = hoursSince(expires, now);
+    if (since === null) {
+      // Unreadable is not "expires today": say what is actually known.
+      alarms.push({
+        kind: 'token',
+        what: `${humanEnum(channel.platform)} credential expiry is unreadable`,
+        why: `Channel ${channel.channel_id} has token_expires_at "${expires}", which is not a date.`,
+      });
+      continue;
+    }
+    const days = -since / 24;
     if (days > TOKEN_WARN_DAYS) continue;
     alarms.push({
       kind: 'token',
@@ -735,21 +838,21 @@ ${alarms.length
     : `<p class="mute">Nothing is asking for attention.</p>`}
 
 <h3>Where work is sitting</h3>
-<table><caption>Waiting counts come from each workflow's own input filter. Last activity is the newest row that stage produced — this service cannot read n8n's execution log, so a stale stage is inferred, not measured.</caption>
-<thead><tr><th>Stage</th><th>Waited on by</th><th class="num">Waiting</th><th class="num">Oldest</th><th class="num">Last activity</th></tr></thead>
+<table><caption>Waiting counts come from each workflow's own input filter. Last output is the newest thing that workflow produced — this service cannot read n8n's execution log, so a stopped workflow is inferred, not measured.</caption>
+<thead><tr><th>Stage</th><th>Waited on by</th><th class="num">Waiting</th><th class="num">Oldest</th><th class="num">Last output</th></tr></thead>
 <tbody>${stages.map((stage) => {
   const waitingFor = hoursSince(stage.oldest_waiting, now);
-  return `<tr${waitingFor !== null && waitingFor > 24 ? ' class="warn"' : ''}>
+  return `<tr${waitingFor !== null && waitingFor > STAGE_WARN_HOURS ? ' class="warn"' : ''}>
   <td>${escapeHtml(stage.stage)}</td>
   <td class="mute">${escapeHtml(stage.consumer)}</td>
   <td class="num">${escapeHtml(stage.waiting ?? 0)}</td>
   <td class="num">${escapeHtml(ago(stage.oldest_waiting, now) || '—')}</td>
-  <td class="num">${escapeHtml(ago(stage.last_activity, now) || '—')}</td>
+  <td class="num">${escapeHtml(ago(stage.consumer_last_output ?? stage.last_activity, now) || '—')}</td>
 </tr>`;
 }).join('')}</tbody></table>
 
 ${throughput.length ? `<h3>Clips reviewed</h3>
-<table><caption>The approve-to-reject ratio is the early warning that WF5's output is drifting.</caption>
+<table><caption>By UTC day. The approve-to-reject ratio is the early warning that WF5's output is drifting.</caption>
 <thead><tr><th>Day</th><th class="num">Created</th><th class="num">Approved</th><th class="num">Rejected</th></tr></thead>
 <tbody>${throughput.map((day) => `<tr>
   <td class="tc">${escapeHtml(day.day)}</td>
@@ -759,14 +862,14 @@ ${throughput.length ? `<h3>Clips reviewed</h3>
 </tr>`).join('')}</tbody></table>` : ''}
 
 ${errors.length ? `<h3>Errors by workflow</h3>
-<table><caption>From error_log, last seven days. Payloads are not rendered.</caption>
+<table><caption>From error_log, last seven days. Payloads are not rendered, and anything shaped like a credential is blanked.</caption>
 <thead><tr><th>Workflow</th><th>Node</th><th class="num">Count</th><th class="num">Latest</th><th>Newest message</th></tr></thead>
 <tbody>${errors.map((row) => `<tr>
   <td>${escapeHtml(row.workflow_name || 'unnamed')}</td>
   <td class="mute">${escapeHtml(row.node_name || '')}</td>
   <td class="num">${escapeHtml(row.count)}</td>
   <td class="num">${escapeHtml(ago(row.latest, now))}</td>
-  <td>${escapeHtml(row.error_message || '')}</td>
+  <td>${escapeHtml(redact(row.error_message))}</td>
 </tr>`).join('')}</tbody></table>` : '<h3>Errors by workflow</h3><p class="mute">No errors logged in the last seven days.</p>'}`;
 
 // ---------------------------------------------------------------------------
@@ -777,46 +880,61 @@ ${errors.length ? `<h3>Errors by workflow</h3>
 // operator-facing message is rendered: raw_payload, provider_response and
 // postiz_submit_payload carry provider references and credential slots, so
 // they stay out of the HTML.
-const stuckBoard = ({ moments = [], renders = [], publishes = [], clips = [] } = {}, now = Date.now()) => {
+// A job Postiz may already have posted must not be put back in the queue: the
+// submit guard refuses it, so it loops claim-to-lease-expiry while looking
+// handled. These need a person to check Postiz first.
+const needsReconciliation = (job) => Boolean(job.postiz_submitted_at || job.postiz_post_id)
+  || /POSTIZ_RECONCILIATION_REQUIRED|AMBIGUOUS_PROVIDER_SIDE_EFFECT|PROVIDER_POLL_LIMIT_EXCEEDED|manual reconciliation/i
+    .test(String(job.last_error || ''));
+
+const publishAction = (job) => {
+  if (needsReconciliation(job)) return '<span class="mute">Check Postiz first; it may have posted</span>';
+  if (job.publish_status === 'AUTH_REQUIRED') {
+    return `${postButton('/publishes/retry', 'publish_id', job.publish_id, 'Queue again')}<br><a class="mute" href="/published">fix the credential first</a>`;
+  }
+  return postButton('/publishes/retry', 'publish_id', job.publish_id, 'Queue again');
+};
+
+const stuckBoard = ({
+  moments = [], renders = [], publishes = [], clips = [], totals = {},
+} = {}, now = Date.now()) => {
   if (!moments.length && !renders.length && !publishes.length && !clips.length) {
     return `<h1>Stuck</h1>${empty('Nothing is stuck.',
       'Failed downloads, renders and publishes show up here with their error and a way to retry.')}`;
   }
-  const retry = (action, name, value, label) => `<form method="post" action="${action}" class="inline">
-    <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">
-    <button type="submit">${escapeHtml(label)}</button>
-  </form>`;
-
   return `<h1>Stuck</h1>
 ${moments.length ? `<h3>Downloads that failed</h3>
 <table><thead><tr><th>Moment</th><th>Error</th><th class="num">Age</th><th></th></tr></thead>
 <tbody>${moments.map((moment) => `<tr>
   <td><a href="/moments/${escapeHtml(moment.clip_moment_id)}">${escapeHtml(moment.suggested_title || moment.clip_moment_id)}</a><br>
     <span class="mute">${sourceLink(moment.source_video_url, moment.start_sec)}</span></td>
-  <td>${escapeHtml(moment.error_message || '')}</td>
+  <td>${escapeHtml(redact(moment.error_message))}</td>
   <td class="num">${escapeHtml(ago(moment.created_at, now))}</td>
-  <td>${retry('/moments/retry', 'clip_moment_id', moment.clip_moment_id, 'Retry download')}</td>
-</tr>`).join('')}</tbody></table>` : ''}
+  <td>${postButton('/moments/retry', 'clip_moment_id', moment.clip_moment_id, 'Retry download')}</td>
+</tr>`).join('')}</tbody></table>
+${capNote(moments.length, totals.moments)}` : ''}
 
 ${renders.length ? `<h3>Renders that failed</h3>
 <table><thead><tr><th>Render</th><th>Error</th><th class="num">Age</th><th></th></tr></thead>
 <tbody>${renders.map((render) => `<tr>
   <td class="tc">${escapeHtml(render.render_id)}<br><span class="mute">${escapeHtml(humanEnum(render.niche))}</span></td>
-  <td>${escapeHtml(render.error_message || render.warning_message || '')}</td>
+  <td>${escapeHtml(redact(render.error_message || render.warning_message))}</td>
   <td class="num">${escapeHtml(ago(render.created_at, now))}</td>
-  <td>${retry('/renders/retry', 'render_id', render.render_id, 'Retry render')}</td>
-</tr>`).join('')}</tbody></table>` : ''}
+  <td>${postButton('/renders/retry', 'render_id', render.render_id, 'Retry render')}</td>
+</tr>`).join('')}</tbody></table>
+${capNote(renders.length, totals.renders)}` : ''}
 
 ${publishes.length ? `<h3>Publishes that failed</h3>
 <table><thead><tr><th>Job</th><th>Platform</th><th>Error</th><th class="num">Tries</th><th class="num">Age</th><th></th></tr></thead>
 <tbody>${publishes.map((job) => `<tr>
   <td class="tc">${escapeHtml(job.publish_id)}<br><span class="mute">${escapeHtml(humanEnum(job.publish_status))}</span></td>
   <td>${escapeHtml(humanEnum(job.platform))}</td>
-  <td>${escapeHtml(job.last_error || '')}</td>
+  <td>${escapeHtml(redact(job.last_error))}</td>
   <td class="num">${escapeHtml(job.retry_count ?? 0)}</td>
   <td class="num">${escapeHtml(ago(job.created_at, now))}</td>
-  <td>${retry('/publishes/retry', 'publish_id', job.publish_id, 'Queue again')}</td>
-</tr>`).join('')}</tbody></table>` : ''}
+  <td>${publishAction(job)}</td>
+</tr>`).join('')}</tbody></table>
+${capNote(publishes.length, totals.publishes)}` : ''}
 
 ${clips.length ? `<h3>Clips waiting on a download</h3>
 <table><caption>Marked AWAITING_DOWNLOAD or NEEDS_RETRY, so they never reached review.</caption>
@@ -825,7 +943,8 @@ ${clips.length ? `<h3>Clips waiting on a download</h3>
   <td><a href="/clips/${escapeHtml(clip.created_clip_id)}">${escapeHtml(clip.clip_title || clip.created_clip_id)}</a></td>
   <td class="mute">${escapeHtml(humanEnum(clip.review_status))}</td>
   <td class="num">${escapeHtml(ago(clip.created_at, now))}</td>
-</tr>`).join('')}</tbody></table>` : ''}`;
+</tr>`).join('')}</tbody></table>
+${capNote(clips.length, totals.clips)}` : ''}`;
 };
 
 // ---------------------------------------------------------------------------
@@ -858,29 +977,20 @@ const channelForm = (values = {}, errors = {}) => `<h3>Add a channel</h3>
   <button class="go" type="submit">Add channel</button>
 </form>`;
 
-// The add form was the whole screen, so auto-paused channels went out by email
-// and could not be acted on anywhere. Now the fleet is the screen and the form
-// sits under it.
+// The fleet is the screen and the add form sits under it, so an auto-paused
+// channel can be acted on where it is seen rather than only read about by email.
 const channelBoard = ({ channels = [], values, errors } = {}, now = Date.now()) => {
   const state = (channel) => {
     if (channel.auto_paused_at) return `<span class="flag flag-high">auto-paused</span>`;
     if (!channel.active_status) return `<span class="flag flag-low">off</span>`;
     return `<span class="flag flag-low">active</span>`;
   };
-  const action = (channel) => {
-    if (channel.auto_paused_at || !channel.active_status) {
-      return `<form method="post" action="/channels/activate" class="inline">
-        <input type="hidden" name="source_id" value="${escapeHtml(channel.source_id)}">
-        <button type="submit">Reactivate</button>
-      </form>`;
-    }
-    return `<form method="post" action="/channels/deactivate" class="inline">
-      <input type="hidden" name="source_id" value="${escapeHtml(channel.source_id)}">
-      <button class="quiet" type="submit">Switch off</button>
-    </form>`;
-  };
+  const action = (channel) => (channel.auto_paused_at || !channel.active_status
+    ? postButton('/channels/activate', 'source_id', channel.source_id, 'Reactivate')
+    : postButton('/channels/deactivate', 'source_id', channel.source_id, 'Switch off', 'quiet'));
 
   return `<h1>Channels</h1>
+${errors?.priority ? `<p class="err">${escapeHtml(errors.priority)}</p>` : ''}
 ${channels.length === 0
     ? empty('No channels yet.', 'Add one below and WF1 will resolve its playlist on the next run.')
     : `<table>
@@ -910,7 +1020,7 @@ ${channelForm(values, errors)}`;
 // Published
 // ---------------------------------------------------------------------------
 
-const publishedBoard = ({ jobs = [], credentials = [] } = {}, now = Date.now()) => `<h1>Published</h1>
+const publishedBoard = ({ jobs = [], credentials = [], total = 0 } = {}, now = Date.now()) => `<h1>Published</h1>
 ${jobs.length === 0
     ? empty('Nothing published yet.', 'Approved clips appear here once WF12 has posted them.')
     : `<table>
@@ -923,7 +1033,8 @@ ${jobs.length === 0
   <td>${safeHref(job.post_url)
     ? `<a href="${escapeHtml(safeHref(job.post_url))}" rel="noreferrer noopener" target="_blank">open</a>`
     : `<span class="mute">${escapeHtml(humanEnum(job.publish_status))}</span>`}</td>
-</tr>`).join('')}</tbody></table>`}
+</tr>`).join('')}</tbody></table>
+${capNote(jobs.length, total)}`}
 
 <h3>Publishing credentials</h3>
 ${credentials.length === 0
@@ -948,16 +1059,37 @@ ${credentials.length === 0
 // Form parsing
 // ---------------------------------------------------------------------------
 
+// A datetime-local value has no zone. Read it as the operator's zone, named
+// explicitly, rather than as whatever zone the container happens to run in —
+// node:alpine is UTC, which put a 09:00 Nairobi post out at 12:00. Intl does
+// the zone arithmetic, so this needs no tz database in the image. The second
+// pass settles a time that lands across a DST change.
+const zonedToIso = (local, timeZone) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(local);
+  if (!m) return null;
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+  const format = new Intl.DateTimeFormat('en-US', {
+    timeZone, hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const offsetAt = (instant) => {
+    const part = Object.fromEntries(format.formatToParts(new Date(instant)).map(({ type, value }) => [type, value]));
+    return Date.UTC(+part.year, +part.month - 1, +part.day, +part.hour, +part.minute, +part.second) - instant;
+  };
+  const first = wall - offsetAt(wall);
+  return new Date(wall - offsetAt(first)).toISOString();
+};
+
 // Kept alongside the forms they read, so a renamed field breaks in one place.
-// Returns the values back out as well as the parsed arguments: a validation
-// failure re-renders the form the operator typed into, which until now threw
-// their work away and showed a bare error page.
-const parseApproveForm = (formData) => {
+// Returns the values back out as well as the parsed arguments, so a validation
+// failure re-renders the form the operator typed into with the errors in place.
+const parseApproveForm = (formData, { timeZone = 'UTC' } = {}) => {
   const errors = {};
   const choice = formData.get('title_choice');
   const typed = (formData.get('final_title') || '').trim();
-  // The radio wins unless it is the "write my own" sentinel.
-  const title = (choice && choice !== '__custom' ? String(choice).trim() : typed);
+  // A filled box wins; otherwise the chosen radio, unless it is the "write my
+  // own" sentinel with nothing written.
+  const title = typed || (choice && choice !== '__custom' ? String(choice).trim() : '');
   const platforms = formData.getAll('platforms').filter((platform) => PLATFORMS.includes(platform));
   const caption = (formData.get('final_caption') || '').trim();
   const hashtagText = (formData.get('hashtags') || '').trim();
@@ -971,9 +1103,8 @@ const parseApproveForm = (formData) => {
 
   let scheduledAt = null;
   if (scheduled) {
-    const parsed = new Date(scheduled);
-    if (Number.isNaN(parsed.getTime())) errors.scheduled_at = 'That is not a time I can read.';
-    else scheduledAt = parsed.toISOString();
+    scheduledAt = zonedToIso(scheduled, timeZone);
+    if (!scheduledAt) errors.scheduled_at = 'That is not a time I can read.';
   }
 
   return {
@@ -1018,6 +1149,7 @@ const parseRejectForm = (formData) => {
 
   return {
     errors,
+    form: { reject_reason: reason, reject_note: note, reject_link: link },
     values: {
       p_created_clip_id: formData.get('created_clip_id'),
       p_reviewer_notes: [reason, note, link && `ref: ${link}`].filter(Boolean).join(' — ') || null,
@@ -1046,6 +1178,9 @@ const parseChannelForm = (formData) => {
 const parsePriorityForm = (formData) => {
   const priority = Number(formData.get('priority'));
   const errors = {};
+  // Without it the patch filter would be eq.null, which matches nothing and
+  // reports nothing.
+  if (!(formData.get('source_id') || '').trim()) errors.source_id = 'Which channel? The form lost its id.';
   if (!Number.isInteger(priority) || priority < 1 || priority > 99) {
     errors.priority = 'Priority is a whole number from 1 to 99.';
   }
@@ -1053,10 +1188,10 @@ const parsePriorityForm = (formData) => {
 };
 
 module.exports = {
-  page, navBar, clipQueue, clipItem, approveForm, rejectFold, channelForm, channelBoard,
+  page, navBar, clipQueue, clipItem, approveForm, channelBoard,
   momentQueue, heldBoard, pipelineBoard, stuckBoard, publishedBoard,
   parseApproveForm, parseRejectForm, parseChannelForm, parsePriorityForm,
-  buildAlarms, starvedStages, alarmList, pager, empty,
-  escapeHtml, timecode, ago, hoursSince, sourceLink, safeHref, humanEnum,
-  NICHES, PLATFORMS, REJECT_REASONS, MACHINE_REASONS,
+  buildAlarms, starvedStages, pager, empty, postButton,
+  escapeHtml, timecode, ago, hoursSince, sourceLink, safeHref, driveHref, redact, zonedToIso, humanEnum,
+  NICHES, PLATFORMS,
 };
