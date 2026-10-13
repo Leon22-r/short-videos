@@ -158,9 +158,12 @@ new ones later. Verify afterwards:
 
 ```bash
 psql "$SUPABASE_MIGRATION_URL" -Atc \
-  "SELECT count(*) FROM short_videos.schema_migrations;"   # expect 12
+  "SELECT count(*) FROM short_videos.schema_migrations;"   # expect 14
 psql "$SUPABASE_MIGRATION_URL" -Atc \
-  "SELECT count(*) FROM information_schema.tables WHERE table_schema='short_videos';"  # expect 12
+  "SELECT table_type, count(*) FROM information_schema.tables
+   WHERE table_schema='short_videos' GROUP BY 1 ORDER BY 1;"
+# expect: BASE TABLE|13  (12 from the migrations, plus schema_migrations)
+#         VIEW|4         (pipeline_status, review_counts, held_reasons_30d, clip_throughput_7d)
 ```
 
 PostgREST also needs `short_videos` added as an exposed schema in the Supabase
