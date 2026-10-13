@@ -17,8 +17,23 @@
 -- is wrong until it changes too. The workflow is named in each branch so the
 -- pairing is findable.
 --
--- Read-only. No privilege change: migration 011 set ALTER DEFAULT PRIVILEGES
--- GRANT ALL ON TABLES to service_role, which covers views created later.
+-- Two liveness columns, because they answer different questions:
+--   last_activity         the newest row that arrived at this stage
+--   consumer_last_output  the newest thing this stage's consumer produced
+-- A stage is stalled when work has aged here AND its consumer has produced
+-- nothing in that time. Judging stage N by stage N+1's arrivals instead gets
+-- the last stage wrong (there is no N+1) and blames the wrong workflow where
+-- two workflows write the same table. NULL means the consumer's output cannot
+-- be dated from this schema (WF3 updates candidate_videos in place and the
+-- table has no updated_at); the UI then judges on the age of the backlog alone.
+--
+-- Read-only views. SELECT is granted explicitly at the bottom of this file
+-- rather than trusted to 011's default privileges; the comment there says why.
+--
+-- run-migrations.sh replays every file on every boot, so this file is edited
+-- in place rather than amended by a later one: a later CREATE OR REPLACE that
+-- added a column would make this file's own CREATE OR REPLACE fail on replay.
+-- Columns are only ever appended, never reordered, for the same reason.
 
 CREATE OR REPLACE VIEW short_videos.pipeline_status AS
 
@@ -33,7 +48,8 @@ SELECT
   false                                                    AS alarm_on_stall,
   count(*) FILTER (WHERE active_status)                     AS waiting,
   min(last_checked_at) FILTER (WHERE active_status)         AS oldest_waiting,
-  max(last_checked_at)                                      AS last_activity
+  max(last_checked_at)                                      AS last_activity,
+  max(last_checked_at)                                      AS consumer_last_output
 FROM short_videos.source_channels
 
 UNION ALL
@@ -48,7 +64,8 @@ SELECT
   min(created_at) FILTER (
     WHERE processing_status = 'NEW'
       AND coalesce(validity_status, '') = ''),
-  max(created_at)
+  max(created_at),
+  NULL::timestamptz
 FROM short_videos.candidate_videos
 
 UNION ALL
@@ -56,9 +73,9 @@ UNION ALL
 -- WF4 reads validity_status = 'VALID' with transcript_available unset
 -- (workflow-code/transcript-fetch.js:7). Its filter is
 -- String(transcript_available || '') === '', so boolean false counts as "not
--- fetched yet" there; IS NOT TRUE mirrors that rather than narrowing to NULL. Note FLAGGED is not 'VALID', so a
--- flagged candidate waits here forever until an operator releases it — which
--- is what /held exists for.
+-- fetched yet" there; IS NOT TRUE mirrors that rather than narrowing to NULL.
+-- FLAGGED is not 'VALID', so a flagged candidate is not counted here at all:
+-- it is waiting on a person, and /held is where it shows.
 SELECT
   3, 'Awaiting transcript', 'WF4 transcript fetch', true,
   count(*) FILTER (
@@ -67,23 +84,28 @@ SELECT
   min(created_at) FILTER (
     WHERE validity_status = 'VALID'
       AND transcript_available IS NOT TRUE),
-  -- What WF4 produces lands in another table, so this stage's liveness is the
-  -- newest transcript rather than anything in candidate_videos.
+  max(created_at) FILTER (WHERE validity_status = 'VALID'),
+  -- WF4's output lands in another table.
   (SELECT max(created_at) FROM short_videos.transcript_analysis)
 FROM short_videos.candidate_videos
 
 UNION ALL
 
--- WF5 scores a fetched transcript. Unscored means it has not run on it yet.
+-- WF5 scores a fetched or truncated transcript (ai-transcript-analysis.js,
+-- pickUnanalyzed). Unscored means it has not run on it yet. TRUNCATED dates
+-- from the Sheets store and this table's CHECK does not admit it; it stays so
+-- the predicate is a copy of WF5's, not a judgement about which half matters.
 SELECT
   4, 'Awaiting analysis', 'WF5 AI transcript analysis', true,
   count(*) FILTER (
-    WHERE transcript_status = 'FETCHED'
+    WHERE transcript_status IN ('FETCHED', 'TRUNCATED')
       AND ai_episode_score IS NULL),
   min(created_at) FILTER (
-    WHERE transcript_status = 'FETCHED'
+    WHERE transcript_status IN ('FETCHED', 'TRUNCATED')
       AND ai_episode_score IS NULL),
-  max(created_at)
+  max(created_at),
+  -- WF5's output is the moments it proposes.
+  (SELECT max(created_at) FROM short_videos.clip_moments)
 FROM short_videos.transcript_analysis
 
 UNION ALL
@@ -95,7 +117,9 @@ SELECT
   5, 'Awaiting download', 'WF6 yt-dlp clip download', true,
   count(*) FILTER (WHERE download_status = 'PENDING'),
   min(created_at) FILTER (WHERE download_status = 'PENDING'),
-  max(created_at)
+  max(created_at),
+  -- A downloaded moment becomes a created clip.
+  (SELECT max(created_at) FROM short_videos.created_clips)
 FROM short_videos.clip_moments
 
 UNION ALL
@@ -104,7 +128,10 @@ SELECT
   6, 'Awaiting render', 'WF8c FFmpeg render', true,
   count(*) FILTER (WHERE render_status IN ('PENDING', 'DOWNLOADING_ASSETS', 'RENDERING', 'UPLOADING')),
   min(created_at) FILTER (WHERE render_status IN ('PENDING', 'DOWNLOADING_ASSETS', 'RENDERING', 'UPLOADING')),
-  max(created_at)
+  max(created_at),
+  -- Not created_clips: WF6 and WF8 write that table, so new clips there say
+  -- nothing about whether the renderer is alive.
+  max(completed_at)
 FROM short_videos.render_jobs
 
 UNION ALL
@@ -114,54 +141,78 @@ SELECT
   7, 'Awaiting your review', 'you', false,
   count(*) FILTER (WHERE review_status = 'NEEDS_REVIEW'),
   min(created_at) FILTER (WHERE review_status = 'NEEDS_REVIEW'),
-  max(created_at)
+  max(created_at),
+  NULL::timestamptz
 FROM short_videos.created_clips
 
 UNION ALL
 
--- WF11 turns an approval into one publishing job per platform.
+-- WF11 turns an approval into one publishing job per platform. It reads
+-- APPROVED and READY (publishing.js, buildPublishingJobs) and never moves the
+-- status on afterwards — it de-duplicates against the jobs it already built —
+-- so "waiting" is an approval with no job yet, not every approval ever made.
 SELECT
   8, 'Approved, not queued', 'WF11 build publishing jobs', true,
-  count(*) FILTER (WHERE status IN ('PENDING', 'APPROVED')),
-  min(created_at) FILTER (WHERE status IN ('PENDING', 'APPROVED')),
-  max(created_at)
-FROM short_videos.approved_for_posting
+  count(*) FILTER (WHERE a.status IN ('APPROVED', 'READY') AND NOT EXISTS (
+    SELECT 1 FROM short_videos.publishing_jobs j WHERE j.approved_id = a.approved_id)),
+  min(a.created_at) FILTER (WHERE a.status IN ('APPROVED', 'READY') AND NOT EXISTS (
+    SELECT 1 FROM short_videos.publishing_jobs j WHERE j.approved_id = a.approved_id)),
+  max(a.created_at),
+  (SELECT max(created_at) FROM short_videos.publishing_jobs)
+FROM short_videos.approved_for_posting a
 
 UNION ALL
 
--- WF12 claims PENDING jobs; WF14 moves a failed one to RETRY_PENDING and back.
+-- WF12 claims a job once it is due (claim-next-publishing-job.sql): PENDING,
+-- or RETRY_PENDING under the retry cap with its backoff elapsed, and in both
+-- cases not scheduled for later. A post booked for tomorrow is not a stall, so
+-- only due jobs count, and a job's wait is measured from when it fell due.
 SELECT
   9, 'Awaiting publish', 'WF12 publish to platforms', true,
-  count(*) FILTER (WHERE publish_status IN ('PENDING', 'RETRY_PENDING')),
-  min(created_at) FILTER (WHERE publish_status IN ('PENDING', 'RETRY_PENDING')),
-  max(coalesce(completed_at, started_at, created_at))
+  count(*) FILTER (
+    WHERE (scheduled_at IS NULL OR scheduled_at <= now())
+      AND (publish_status = 'PENDING'
+        OR (publish_status = 'RETRY_PENDING' AND retry_count < 4
+          AND (next_retry_at IS NULL OR next_retry_at <= now())))),
+  min(greatest(created_at, scheduled_at, next_retry_at)) FILTER (
+    WHERE (scheduled_at IS NULL OR scheduled_at <= now())
+      AND (publish_status = 'PENDING'
+        OR (publish_status = 'RETRY_PENDING' AND retry_count < 4
+          AND (next_retry_at IS NULL OR next_retry_at <= now())))),
+  max(created_at),
+  -- started_at is stamped at claim, so a run that only fails still counts.
+  max(coalesce(completed_at, started_at))
 FROM short_videos.publishing_jobs
 
 ORDER BY position;
 
 COMMENT ON VIEW short_videos.pipeline_status IS
-  'Per-stage waiting count, age of the oldest waiting row, and when the stage '
-  'last produced anything, plus whether a stall there implicates a workflow. '
-  'last produced anything. Each waiting predicate mirrors the input filter of '
-  'the workflow named in "consumer"; they must change together.';
+  'Per-stage waiting count, age of the oldest waiting row, when work last '
+  'arrived, when the consumer last produced anything, and whether a stall '
+  'there implicates a workflow. Each waiting predicate mirrors the input '
+  'filter of the workflow named in "consumer"; they must change together.';
 
 
 -- The navigation carries a live count beside every screen, which is what lets
 -- the screens drop a stats strip. Counting that from PostgREST would be six
--- requests on every page render; this is one row.
+-- requests on every page render; this is one row. Each count must match the
+-- predicate of the server.js loader for that screen — the loader is named on
+-- each line.
 CREATE OR REPLACE VIEW short_videos.review_counts AS
 SELECT
+  -- loadClipQueue
   (SELECT count(*) FROM short_videos.created_clips
     WHERE review_status = 'NEEDS_REVIEW')                              AS clips,
+  -- GET /moments
   (SELECT count(*) FROM short_videos.clip_moments
     WHERE download_status = 'AWAITING_MANUAL_APPROVAL')                AS moments,
-  -- Everything a person could push through: gate-stopped videos plus clips
-  -- this operator rejected. FLAGGED is counted because nothing downstream
-  -- accepts it, so it is held whether or not anyone meant it to be.
+  -- loadHeld, flagged only. FLAGGED is held whether or not anyone meant it to
+  -- be: nothing downstream accepts it, so it waits on a person. A gate's
+  -- REJECTED is the filter doing its job, and counting it would make the
+  -- badge grow for ever and stop meaning "needs you".
   (SELECT count(*) FROM short_videos.candidate_videos
-    WHERE validity_status IN ('FLAGGED', 'REJECTED'))
-  + (SELECT count(*) FROM short_videos.created_clips
-    WHERE review_status = 'REJECTED')                                  AS held,
+    WHERE validity_status = 'FLAGGED')                                 AS held,
+  -- loadStuck
   (SELECT count(*) FROM short_videos.clip_moments
     WHERE download_status = 'ERROR')
   + (SELECT count(*) FROM short_videos.render_jobs
@@ -170,10 +221,12 @@ SELECT
     WHERE publish_status IN ('FAILED', 'AUTH_REQUIRED'))
   + (SELECT count(*) FROM short_videos.created_clips
     WHERE review_status IN ('AWAITING_DOWNLOAD', 'NEEDS_RETRY'))       AS stuck,
+  -- GET /channels, active only
   (SELECT count(*) FROM short_videos.source_channels
     WHERE active_status)                                               AS channels,
+  -- GET /published
   (SELECT count(*) FROM short_videos.publishing_jobs
-    WHERE publish_status = 'PUBLISHED')                                AS published;
+    WHERE publish_status IN ('PUBLISHED', 'DRAFT_UPLOADED'))           AS published;
 
 COMMENT ON VIEW short_videos.review_counts IS
   'One row of queue sizes for the review UI navigation.';
