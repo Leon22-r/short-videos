@@ -24,8 +24,9 @@
 -- nothing in that time. Judging stage N by stage N+1's arrivals instead gets
 -- the last stage wrong (there is no N+1) and blames the wrong workflow where
 -- two workflows write the same table. NULL means the consumer's output cannot
--- be dated from this schema (WF3 updates candidate_videos in place and the
--- table has no updated_at); the UI then judges on the age of the backlog alone.
+-- be dated from this schema; the UI then judges on the age of the backlog
+-- alone. Where a consumer only updates rows in place (WF3), the newest row it
+-- has judged stands in for when it last ran.
 --
 -- Read-only views. SELECT is granted explicitly at the bottom of this file
 -- rather than trusted to 011's default privileges; the comment there says why.
@@ -65,7 +66,12 @@ SELECT
     WHERE processing_status = 'NEW'
       AND coalesce(validity_status, '') = ''),
   max(created_at),
-  NULL::timestamptz
+  -- candidate_videos has no updated_at, so WF3's last run is approximated by
+  -- the newest candidate it has judged. WF2 rejects music videos and live
+  -- streams itself at insert, so those rows say nothing about WF3.
+  max(created_at) FILTER (
+    WHERE coalesce(validity_status, '') <> ''
+      AND coalesce(rejection_reason, '') NOT IN ('MUSIC_VIDEO', 'LIVE_STREAM'))
 FROM short_videos.candidate_videos
 
 UNION ALL
@@ -148,40 +154,53 @@ FROM short_videos.created_clips
 UNION ALL
 
 -- WF11 turns an approval into one publishing job per platform. It reads
--- APPROVED and READY (publishing.js, buildPublishingJobs) and never moves the
+-- APPROVED and READY whose render is complete with a file to post
+-- (publishing.js, buildPublishingJobs and renderReady), and never moves the
 -- status on afterwards — it de-duplicates against the jobs it already built —
--- so "waiting" is an approval with no job yet, not every approval ever made.
+-- so "waiting" is a ready approval with no job yet, not every approval ever
+-- made. Not mirrored: WF11 also skips a platform with no active publishing
+-- channel. An approval for such a platform waits here, and the alarm it
+-- raises is the right prompt to configure the channel.
 SELECT
   8, 'Approved, not queued', 'WF11 build publishing jobs', true,
-  count(*) FILTER (WHERE a.status IN ('APPROVED', 'READY') AND NOT EXISTS (
+  count(*) FILTER (WHERE a.status IN ('APPROVED', 'READY') AND r.render_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM short_videos.publishing_jobs j WHERE j.approved_id = a.approved_id)),
-  min(a.created_at) FILTER (WHERE a.status IN ('APPROVED', 'READY') AND NOT EXISTS (
+  min(a.created_at) FILTER (WHERE a.status IN ('APPROVED', 'READY') AND r.render_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM short_videos.publishing_jobs j WHERE j.approved_id = a.approved_id)),
   max(a.created_at),
   (SELECT max(created_at) FROM short_videos.publishing_jobs)
 FROM short_videos.approved_for_posting a
+LEFT JOIN short_videos.render_jobs r
+  ON r.render_id = a.render_id
+ AND r.render_status = 'COMPLETED'
+ AND coalesce(r.final_drive_file_id, r.final_drive_url, r.final_local_path, '') <> ''
 
 UNION ALL
 
 -- WF12 claims a job once it is due (claim-next-publishing-job.sql): PENDING,
--- or RETRY_PENDING under the retry cap with its backoff elapsed, and in both
--- cases not scheduled for later. A post booked for tomorrow is not a stall, so
--- only due jobs count, and a job's wait is measured from when it fell due.
+-- RETRY_PENDING under the retry cap with its backoff elapsed, or PROCESSING
+-- whose next poll is due — and never one scheduled for later. A post booked
+-- for tomorrow is not a stall, so only due jobs count, and a job's wait is
+-- measured from when it fell due. A lease that expired mid-upload is also
+-- reclaimable there; the lease alarm on /pipeline reports those instead.
 SELECT
   9, 'Awaiting publish', 'WF12 publish to platforms', true,
   count(*) FILTER (
     WHERE (scheduled_at IS NULL OR scheduled_at <= now())
       AND (publish_status = 'PENDING'
         OR (publish_status = 'RETRY_PENDING' AND retry_count < 4
-          AND (next_retry_at IS NULL OR next_retry_at <= now())))),
-  min(greatest(created_at, scheduled_at, next_retry_at)) FILTER (
+          AND (next_retry_at IS NULL OR next_retry_at <= now()))
+        OR (publish_status = 'PROCESSING' AND (poll_after IS NULL OR poll_after <= now())))),
+  min(greatest(created_at, scheduled_at, next_retry_at, poll_after)) FILTER (
     WHERE (scheduled_at IS NULL OR scheduled_at <= now())
       AND (publish_status = 'PENDING'
         OR (publish_status = 'RETRY_PENDING' AND retry_count < 4
-          AND (next_retry_at IS NULL OR next_retry_at <= now())))),
+          AND (next_retry_at IS NULL OR next_retry_at <= now()))
+        OR (publish_status = 'PROCESSING' AND (poll_after IS NULL OR poll_after <= now())))),
   max(created_at),
-  -- started_at is stamped at claim, so a run that only fails still counts.
-  max(coalesce(completed_at, started_at))
+  -- claimed_at is stamped at claim and started_at only at upload, so a run
+  -- that claims and then fails early still shows the publisher is alive.
+  max(coalesce(completed_at, started_at, claimed_at))
 FROM short_videos.publishing_jobs
 
 ORDER BY position;

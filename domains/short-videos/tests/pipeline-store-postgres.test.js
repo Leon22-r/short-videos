@@ -268,11 +268,18 @@ test('real Postgres: pipeline_status counts only what each consumer would pick u
          ('v-old',  'FINANCE_BUSINESS', 'src-1', 'y4', 'REJECTED', 'LOW_ENGAGEMENT', now() - interval '40 days')`);
     sql(`INSERT INTO short_videos.created_clips(created_clip_id, video_id, niche, review_status) VALUES
          ('clip-a', 'v-flag', 'FINANCE_BUSINESS', 'APPROVED'),
-         ('clip-b', 'v-flag', 'FINANCE_BUSINESS', 'APPROVED')`);
-    // Two approvals: one WF11 has already turned into a job, one it has not.
-    sql(`INSERT INTO short_videos.approved_for_posting(approved_id, created_clip_id, niche, platforms, final_title, status, created_at) VALUES
-         ('ap-done', 'clip-a', 'FINANCE_BUSINESS', ARRAY['TIKTOK'], 'T', 'APPROVED', now() - interval '3 days'),
-         ('ap-wait', 'clip-b', 'FINANCE_BUSINESS', ARRAY['TIKTOK'], 'T', 'APPROVED', now() - interval '2 hours')`);
+         ('clip-b', 'v-flag', 'FINANCE_BUSINESS', 'APPROVED'),
+         ('clip-c', 'v-flag', 'FINANCE_BUSINESS', 'APPROVED')`);
+    sql(`INSERT INTO short_videos.render_jobs(render_id, created_clip_id, niche, render_status, final_drive_url) VALUES
+         ('r-done', 'clip-a', 'FINANCE_BUSINESS', 'COMPLETED', 'https://drive.google.com/a'),
+         ('r-wait', 'clip-b', 'FINANCE_BUSINESS', 'COMPLETED', 'https://drive.google.com/b'),
+         ('r-busy', 'clip-c', 'FINANCE_BUSINESS', 'RENDERING', NULL)`);
+    // Three approvals: one WF11 has already turned into a job, one it has
+    // not, and one whose render is not finished, which WF11 skips.
+    sql(`INSERT INTO short_videos.approved_for_posting(approved_id, created_clip_id, render_id, niche, platforms, final_title, status, created_at) VALUES
+         ('ap-done', 'clip-a', 'r-done', 'FINANCE_BUSINESS', ARRAY['TIKTOK'], 'T', 'APPROVED', now() - interval '3 days'),
+         ('ap-wait', 'clip-b', 'r-wait', 'FINANCE_BUSINESS', ARRAY['TIKTOK'], 'T', 'APPROVED', now() - interval '2 hours'),
+         ('ap-busy', 'clip-c', 'r-busy', 'FINANCE_BUSINESS', ARRAY['TIKTOK'], 'T', 'APPROVED', now() - interval '4 days')`);
     sql(`INSERT INTO short_videos.publishing_jobs(publish_id, approved_id, platform, tiktok_open_id, publish_status, scheduled_at, created_at) VALUES
          ('pj-done',   'ap-done', 'TIKTOK', 'tt-1', 'PUBLISHED', NULL, now() - interval '3 days'),
          ('pj-due',    NULL,      'TIKTOK', 'tt-1', 'PENDING',   now() - interval '1 hour', now() - interval '5 hours'),
@@ -281,25 +288,29 @@ test('real Postgres: pipeline_status counts only what each consumer would pick u
     sql(`INSERT INTO short_videos.publishing_jobs(publish_id, platform, tiktok_open_id, publish_status, retry_count, next_retry_at) VALUES
          ('pj-backoff', 'TIKTOK', 'tt-1', 'RETRY_PENDING', 1, now() + interval '2 hours'),
          ('pj-capped',  'TIKTOK', 'tt-1', 'RETRY_PENDING', 4, NULL)`);
+    sql(`INSERT INTO short_videos.publishing_jobs(publish_id, platform, tiktok_open_id, publish_status, poll_after, created_at) VALUES
+         ('pj-poll-due',   'TIKTOK', 'tt-1', 'PROCESSING', now() - interval '10 minutes', now() - interval '1 hour'),
+         ('pj-poll-later', 'TIKTOK', 'tt-1', 'PROCESSING', now() + interval '1 hour', now() - interval '1 hour')`);
 
     const stage = (position, column) => sql(
       `SELECT ${column} FROM short_videos.pipeline_status WHERE position = ${position}`);
 
     // Stage 8: an approval that already has a job is not waiting, so the
-    // stage no longer counts every approval ever made.
+    // stage no longer counts every approval ever made; nor is one whose
+    // render WF11 would not yet accept.
     assert.equal(stage(8, 'waiting'), '1');
     assert.equal(stage(8, "oldest_waiting > now() - interval '3 hours'"), 't',
       'the oldest waiting approval is the unqueued one, not the first ever');
 
     // Stage 9: only due work counts — not tomorrow's post, not a backoff
-    // still running, not a job past the retry cap — and its wait runs from
-    // when it fell due.
-    assert.equal(stage(9, 'waiting'), '1');
+    // still running, not a job past the retry cap, not a poll not yet due —
+    // and its wait runs from when it fell due.
+    assert.equal(stage(9, 'waiting'), '2', 'the due PENDING job and the due PROCESSING poll');
     assert.equal(stage(9, "oldest_waiting > now() - interval '2 hours'"), 't');
 
     // Every stage carries its own consumer's output column.
-    assert.equal(sql('SELECT string_agg(position::text, \',\' ORDER BY position) FROM short_videos.pipeline_status WHERE consumer_last_output IS NOT NULL'), '5,8',
-      'only the consumers with output in this fixture are dated: clips exist (WF6), jobs exist (WF11)');
+    assert.equal(sql('SELECT string_agg(position::text, \',\' ORDER BY position) FROM short_videos.pipeline_status WHERE consumer_last_output IS NOT NULL'), '2,5,8',
+      'dated: the newest candidate WF3 judged, clips (WF6), jobs (WF11); no render has completed_at');
     assert.equal(stage(9, 'consumer_last_output'), '',
       'no job has been claimed, so the publisher has produced nothing to date it by');
 
@@ -311,6 +322,6 @@ test('real Postgres: pipeline_status counts only what each consumer would pick u
     assert.equal(sql("SELECT reason || '=' || count FROM short_videos.held_reasons_30d"), 'TOO_SHORT=2',
       'grouped, and the 40-day-old rejection is outside the window');
     assert.equal(sql('SELECT count(*) FROM short_videos.clip_throughput_7d'), '7');
-    assert.equal(sql("SELECT created || '/' || approved FROM short_videos.clip_throughput_7d ORDER BY day DESC LIMIT 1"), '2/2');
+    assert.equal(sql("SELECT created || '/' || approved FROM short_videos.clip_throughput_7d ORDER BY day DESC LIMIT 1"), '3/3');
   });
 });

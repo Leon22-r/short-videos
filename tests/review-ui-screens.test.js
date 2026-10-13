@@ -472,6 +472,12 @@ test('a capped list says how much it is not showing', () => {
     totals: { rejected: 212 },
   });
   assert.match(html, /newest 1 of 212/);
+  // Flagged is worked oldest first, so its note must not say "newest".
+  const flagged = heldBoard({
+    flagged: [{ video_id: 'v1', rejection_reason: 'LANGUAGE_CHECK', created_at: daysAgo(9) }],
+    totals: { flagged: 80 },
+  });
+  assert.match(flagged, /oldest 1 of 80/);
 });
 
 test('an empty held screen invites rather than showing three empty tables', () => {

@@ -172,9 +172,10 @@ const pager = ({ path, offset = 0, limit = 25, total = 0 }) => {
     to < total ? link(offset + limit, 'older') : ''}</nav>`;
 };
 
-// The same honesty for the short lists that have no pager: newest N of M.
-const capNote = (shown, total) => (total > shown
-  ? `<p class="note">Showing the newest ${escapeHtml(shown)} of ${escapeHtml(total)}.</p>`
+// The same honesty for the short lists that have no pager: newest N of M, or
+// oldest N of M for a list that is worked oldest first.
+const capNote = (shown, total, end = 'newest') => (total > shown
+  ? `<p class="note">Showing the ${escapeHtml(end)} ${escapeHtml(shown)} of ${escapeHtml(total)}.</p>`
   : '');
 
 // A page past the end is what a reviewer lands on after working page 2 while
@@ -684,7 +685,7 @@ ${flagged.length ? `<h3>Flagged, waiting on you</h3>
 <table><caption>WF4 takes only VALID, so these advance no further until released. Nothing else will pick them up.</caption>
 <thead><tr><th>Video</th><th>Why</th><th class="num">Age</th><th></th></tr></thead>
 <tbody>${flagged.map((video) => videoRow(video, 'Release')).join('')}</tbody></table>
-${capNote(flagged.length, totals.flagged)}` : ''}
+${capNote(flagged.length, totals.flagged, 'oldest')}` : ''}
 
 ${rejected.length ? `<h3>Rejected by a gate</h3>
 <table><caption>Releasing one overrides the rule that stopped it.</caption>
@@ -944,7 +945,7 @@ ${clips.length ? `<h3>Clips waiting on a download</h3>
   <td class="mute">${escapeHtml(humanEnum(clip.review_status))}</td>
   <td class="num">${escapeHtml(ago(clip.created_at, now))}</td>
 </tr>`).join('')}</tbody></table>
-${capNote(clips.length, totals.clips)}` : ''}`;
+${capNote(clips.length, totals.clips, 'oldest')}` : ''}`;
 };
 
 // ---------------------------------------------------------------------------
